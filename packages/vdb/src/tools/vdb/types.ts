@@ -1,8 +1,33 @@
 /** Public `.vdb` parser types (docs/SPEC.md §4, docs/PLAN.md Phase 5). */
 
+/**
+ * Cheap description of one grid in a `.vdb`, read from the grid's header (name, type string, metadata and
+ * transform) without decoding its tree. `VdbFile.descriptors` lists every grid in file order.
+ */
+export interface VdbGridDescriptor {
+  name: string;
+  /** The grid type without the `_HalfFloat` suffix, e.g. `Tree_float_5_4_3`. */
+  gridType: string;
+  /** The `<valueType>` parsed from `gridType` (`float`, `vec3s`, `half`, ...), or `""` when the type string is unrecognised. */
+  valueType: string;
+  /** The grid's `class` metadata (`level set`, `fog volume`, `staggered`, `unknown`), or `""` when absent. */
+  gridClass: string;
+  /** `null` when the grid was not read far enough to know it (an unsupported type or instanced grid) or its transform is unsupported. */
+  transform: VdbTransformInfo | null;
+  /** From the grid's `file_bbox_min` / `file_bbox_max` metadata, or `null`. */
+  indexBBox: VdbBBox | null;
+  /** The grid's compression flags (`zip`: zlib, `blosc`: Blosc, `activeMask`: node masks are compressed). */
+  compression: { zip: boolean; activeMask: boolean; blosc: boolean };
+  /** Why this parser cannot decode the grid (value type, tree layout, transform or instancing), or `null` when it can. */
+  unsupported: string | null;
+}
+
 export interface VdbFile {
   fileVersion: number;
+  /** The decoded grids (every supported grid, or the ones `ParseVdbOptions.select` accepted), in file order. */
   grids: VdbGrid[];
+  /** Every grid in the file, decoded or not, in file order. */
+  descriptors: VdbGridDescriptor[];
 }
 
 export interface VdbTransformInfo {

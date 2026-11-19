@@ -37,7 +37,7 @@ import { createVdbGrid } from "./grid.js";
 import { readMetadataMap } from "./metadata.js";
 import { readTransform } from "./transform.js";
 import { readTree } from "./tree.js";
-import type { VdbBBox, VdbFile, VdbGrid, VdbValueType } from "./types.js";
+import type { VdbBBox, VdbFile, VdbGrid, VdbGridDescriptor, VdbTransformInfo, VdbValueType } from "./types.js";
 
 const MAGIC_LOW = 0x56444220; // 'V','D','B',' ' read little-endian, low 32 bits
 const MIN_SUPPORTED_VERSION = 213; // OPENVDB_FILE_VERSION_ROOTNODE_MAP
@@ -89,7 +89,24 @@ function readBBoxFromMetadata(metadata: Record<string, unknown>): VdbBBox | null
   return null;
 }
 
-export function parseVdb(buffer: ArrayBuffer): VdbFile {
+export interface ParseVdbOptions {
+  /**
+   * Called for every grid once its header (name, type, metadata, transform) is read, before its tree. Return `false`
+   * to skip decoding that grid; it still appears in `VdbFile.descriptors`. Passing `select` also switches the
+   * parser to report mode: a grid it cannot decode (unsupported value type, tree layout, transform or instancing)
+   * is listed with `descriptor.unsupported` set and skipped, instead of throwing. `select` is not called for it.
+   *
+   * Without `select`, every grid is decoded and an unsupported grid throws `VDBUnsupportedError`, as before.
+   * `select: () => false` is a cheap listing pass: no tree is decoded or decompressed.
+   */
+  select?: (descriptor: VdbGridDescriptor) => boolean;
+}
+
+/**
+ * Parse a `.vdb` file. Returns the decoded `grids` and a `descriptors` entry for every grid in the file.
+ * See {@link ParseVdbOptions.select} to list grids cheaply or decode only some of them.
+ */
+export function parseVdb(buffer: ArrayBuffer, options: ParseVdbOptions = {}): VdbFile {
   const reader = new ByteReader(buffer);
 
   if (reader.length < 8) {
@@ -135,6 +152,9 @@ export function parseVdb(buffer: ArrayBuffer): VdbFile {
 
   const gridCount = reader.u32();
   const grids: VdbGrid[] = [];
+  const descriptors: VdbGridDescriptor[] = [];
+  const select = options.select;
+  const strict = !select;
 
   for (let i = 0; i < gridCount; i++) {
     const uniqueName = reader.string();
@@ -151,7 +171,8 @@ export function parseVdb(buffer: ArrayBuffer): VdbFile {
     if (fileVersion >= VERSION_GRID_INSTANCING) {
       instanceParentName = reader.string();
     }
-    if (instanceParentName !== "") {
+    const instanced = instanceParentName !== "";
+    if (instanced && strict) {
       throw new VDBUnsupportedError(`grid "${name}": instanced grids (sharing another grid's tree) are not supported`);
     }
 
@@ -170,54 +191,81 @@ export function parseVdb(buffer: ArrayBuffer): VdbFile {
     const metadata = readMetadataMap(reader);
     const useHalf = savedAsHalfFloat || metadata["is_saved_as_half_float"] === true;
 
+    const indexBBox = readBBoxFromMetadata(metadata);
+    const gridClass = typeof metadata["class"] === "string" ? (metadata["class"] as string) : "";
+
+    // Why this grid cannot be decoded, or null. Strict mode (no `select`) throws it; report mode records it.
+    let unsupported: string | null = null;
+    let valueType = "";
     const match = GRID_TYPE_RE.exec(gridType);
-    if (!match) {
-      throw new VDBUnsupportedError(
-        `grid "${name}": unrecognized grid type "${gridType}" (expected "Tree_<valueType>_<log2dim>_<log2dim>_<log2dim>")`,
-      );
+    if (instanced) {
+      unsupported = "instanced grids (sharing another grid's tree) are not supported";
+    } else if (!match) {
+      unsupported = `unrecognized grid type "${gridType}" (expected "Tree_<valueType>_<log2dim>_<log2dim>_<log2dim>")`;
+    } else {
+      const [, vt, d0, d1, d2] = match;
+      valueType = vt!;
+      if (!isSupportedValueType(valueType)) {
+        unsupported = `value type "${valueType}" is not supported (supported: ${Object.keys(VALUE_FORMATS).join(", ")})`;
+      } else if (d0 !== "5" || d1 !== "4" || d2 !== "3") {
+        unsupported = `tree configuration ${d0}-${d1}-${d2} is not supported (only the 5-4-3 tree is in scope)`;
+      }
     }
-    const [, valueType, d0, d1, d2] = match;
-    if (!isSupportedValueType(valueType!)) {
-      throw new VDBUnsupportedError(
-        `grid "${name}": value type "${valueType}" is not supported ` +
-          `(supported: ${Object.keys(VALUE_FORMATS).join(", ")})`,
-      );
-    }
-    if (d0 !== "5" || d1 !== "4" || d2 !== "3") {
-      throw new VDBUnsupportedError(
-        `grid "${name}": tree configuration ${d0}-${d1}-${d2} is not supported (only the 5-4-3 tree is in scope)`,
-      );
+    if (unsupported !== null && strict) throw new VDBUnsupportedError(`grid "${name}": ${unsupported}`);
+
+    let transform: VdbTransformInfo | null = null;
+    if (unsupported === null) {
+      try {
+        transform = readTransform(reader);
+      } catch (e) {
+        if (strict || !(e instanceof VDBUnsupportedError)) throw e;
+        unsupported = `transform: ${e.message}`;
+      }
     }
 
-    const transform = readTransform(reader);
-    const { background, leaves, tiles, activeVoxelCount, pointLeaves, pointOutputBudget } = readTree(reader, {
-      fileVersion,
-      compression,
-      useHalf,
-      format: VALUE_FORMATS[valueType],
-      pointData: valueType === "ptdataidx32",
-    });
+    const descriptor: VdbGridDescriptor = {
+      name,
+      gridType,
+      valueType,
+      gridClass,
+      transform,
+      indexBBox,
+      compression: { zip: compression.zip, activeMask: compression.activeMask, blosc: compression.blosc },
+      unsupported,
+    };
+    descriptors.push(descriptor);
 
-    grids.push(
-      createVdbGrid({
-        name,
-        gridType,
-        valueType,
-        transform,
-        metadata,
-        indexBBox: readBBoxFromMetadata(metadata),
-        activeVoxelCount,
-        background,
-        leaves,
-        tiles,
-        ...(pointLeaves ? { pointLeaves, pointOutputBudget } : {}),
-      }),
-    );
+    if (unsupported === null && transform !== null && (select === undefined || select(descriptor))) {
+      const vt = valueType as VdbValueType;
+      const { background, leaves, tiles, activeVoxelCount, pointLeaves, pointOutputBudget } = readTree(reader, {
+        fileVersion,
+        compression,
+        useHalf,
+        format: VALUE_FORMATS[vt],
+        pointData: vt === "ptdataidx32",
+      });
+
+      grids.push(
+        createVdbGrid({
+          name,
+          gridType,
+          valueType: vt,
+          transform,
+          metadata,
+          indexBBox,
+          activeVoxelCount,
+          background,
+          leaves,
+          tiles,
+          ...(pointLeaves ? { pointLeaves, pointOutputBudget } : {}),
+        }),
+      );
+    }
 
     // Defensive re-sync (matches the `mjurczyk/openvdb` reader's own hack):
     // land exactly on the next grid descriptor regardless of any drift.
     reader.seek(endPos);
   }
 
-  return { fileVersion, grids };
+  return { fileVersion, grids, descriptors };
 }

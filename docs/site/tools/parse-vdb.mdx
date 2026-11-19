@@ -37,6 +37,30 @@ for (const grid of file.grids) {
 Every grid has `vdbReadValueCpu(ijk)`, `iterLeaves()` (each leaf with its `origin`, `values` and `valueMask`), `iterTiles()`
 and `iterInactiveTiles()`, plus the `transform` and `metadata` from the file.
 
+## Listing grids and decoding some
+
+`parseVdb(buffer, { select })` calls `select(descriptor)` for every grid after its header (name, type, metadata,
+transform) is read and before its tree. Return `false` to skip decoding that grid. `VdbFile.descriptors` lists every
+grid in file order, decoded or not, with its `name`, `gridType`, `valueType`, `gridClass`, `transform`, `indexBBox`,
+`compression` (`zip`, `blosc`, `activeMask`) and `unsupported`.
+
+Passing `select` also turns an undecodable grid (a value type, tree layout, transform or instancing the parser does
+not read) into a descriptor with `unsupported` set to the reason, instead of a thrown `VDBUnsupportedError`. `select`
+is not called for it. Without `select`, behaviour is as before: every grid is decoded and an unsupported one throws.
+`select: () => false` is a cheap listing pass.
+
+{/* snippet: parse-select */}
+```ts
+// List the grids without decoding any tree (no decompression, so it is cheap on a large file).
+const listing = parseVdb(bytes, { select: () => false });
+for (const d of listing.descriptors) {
+    console.log(d.name, d.valueType, d.gridClass, d.compression, d.indexBBox, d.unsupported);
+}
+
+// Decode only chosen grids. An unsupported grid is reported in `descriptors`, not thrown.
+const file = parseVdb(bytes, { select: (d) => d.name === 'density' });
+```
+
 ## Point data
 
 A `ptdataidx32` grid is a point-data grid. `points()` decodes it into positions, the named attribute arrays and

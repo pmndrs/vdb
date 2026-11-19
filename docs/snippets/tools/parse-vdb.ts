@@ -18,3 +18,17 @@ export function parseVdbSample(bytes: ArrayBuffer): Uint32Array[] {
     // #endregion
     return images;
 }
+
+export function listAndSelectSample(bytes: ArrayBuffer): string[] {
+    // #region parse-select
+    // List the grids without decoding any tree (no decompression, so it is cheap on a large file).
+    const listing = parseVdb(bytes, { select: () => false });
+    for (const d of listing.descriptors) {
+        console.log(d.name, d.valueType, d.gridClass, d.compression, d.indexBBox, d.unsupported);
+    }
+
+    // Decode only chosen grids. An unsupported grid is reported in `descriptors`, not thrown.
+    const file = parseVdb(bytes, { select: (d) => d.name === 'density' });
+    // #endregion
+    return file.grids.map((g) => g.name);
+}

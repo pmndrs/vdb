@@ -32,7 +32,10 @@ One package with three entry points plus `@pmndrs/vdb/pnanovdb.wgsl`: `@pmndrs/v
 **Tools (`@pmndrs/vdb/tools`)**
 
 - `parseVdb`: OpenVDB `.vdb` files including Blosc and zlib compression, active tiles, vector grids, point grids
-  and half-float storage.
+  and half-float storage. `parseVdb(buffer, { select })` lists grids cheaply and decodes only chosen ones:
+  `VdbFile.descriptors` (`VdbGridDescriptor`: name, grid type, value type, class, compression flags, transform,
+  index bounding box, and an `unsupported` reason) covers every grid, and with `select` an unsupported grid is
+  reported instead of thrown. Without `select` the call behaves as before.
 - Build and quantize: `vdbBuildFromDense`, `buildFromVdb`, `vdbBuildFromLeavesDetailed`, `vdbQuantize` to Fp4, Fp8,
   Fp16 and FpN; `vdbResampleGrid`, `vdbCollapseGrid`, `vdbTransform`, `vdbInspect`. `vdbBuildFromDense` and
   `vdbBuildFromLeavesDetailed` take `voxelSize` as a number or `[x, y, z]` (an anisotropic, diagonal Map; G15a).
