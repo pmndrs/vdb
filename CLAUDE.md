@@ -424,6 +424,19 @@ From v1; details in docs/archive/handoffs/.
 - Two `vdbCreateLevelSetPassGpu` instances with the same formats share one pipeline (the cache key has no label): use a
   second instance for a light's depth map (one `record()` per instance per encoder); its pass needs a colour attachment
   of the pass's `colorFormat` beside the depth (no depth-only variant yet).
+- K6.4 spectral composite (core `render()` and `./three`'s core material) needs the scene colour and draws without
+  blending: one hardware alpha cannot carry three transmittances. `render()` throws `VDB_BAD_OPTION` without
+  `targets.sceneColor` when `outputs.froxels.integratedAlpha` is set.
+- Spectral volume shadow maps keep their optical depth rgb in a second texture (`VDBVolumeShadowMap.rgbTexture`), not in
+  extra layers: a cube view needs exactly 6 layers, and three's cube stand-in views the whole texture.
+- The frame WGSL name test flags a function and a variable of one name: the spectral absorption stack's binding is
+  `vdbFrameAbsorptionGrid` (`vdbFrameShadowAbsorption` is a function).
+- Spectral transmittance targets sit at `transmittanceOrigin[3 (g · count + c) + k]` with `count` the LIVE cascade count
+  (not the allocated one); probes and twins must index the stack layout the same way.
+- Spectral kernels write 3 storage textures (default limit 4): stack new outputs along z (as the spectral history) rather
+  than adding a binding.
+- The k6-core compile probe with grey and spectral variants together exceeds Playwright's 15 min on SwiftShader: they are
+  separate runs (`?probe=compile` and `?probe=compile&spectral=1`).
 - `scripts/k6/reference-report.mjs` pages run on Vite's live sources: editing any file under `packages/vdb/src` (the
   reference page imports `core/internal`) reloads a reference render mid-run. Don't edit while it renders; use
   `--reuse` (keeps a group's references for the same query), `--rows=<regex>` and `--query=<a=b>` for setting A/Bs.
@@ -437,3 +450,6 @@ From v1; details in docs/archive/handoffs/.
 - Push with `git push` (main tracks the `pmndrs` remote, `pmndrs/vdb`), never `git push origin`: `origin` is the old
   `DennisSmolek/WebVDB`, which has no Pages site, so its Pages run fails and `pmndrs/vdb` never gets the commit.
   Watch runs with `--repo pmndrs/vdb` (`gh` has no default repo here).
+- K6.Q1's shadowed ambient lives only in the grey kernels (the 4th grey transmittance target's z, w; the grey 'volume'
+  pairs). The spectral kernels (K6.4) have their own copies of the ambient / probe / hemisphere terms and ignore
+  `ambientOcclusion` (warned): a change to one lighting term must be made in both the grey and the spectral WGSL.

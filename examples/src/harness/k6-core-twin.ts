@@ -27,6 +27,12 @@ import {
   vdbMat4Point,
   vdbShIrradianceAt,
   vdbFrameEnvironmentIrradiance,
+  vdbFrameSpectralInjectSlice,
+  vdbFrameSpectralShadowMarch,
+  vdbFrameSpectralShadowTotal,
+  vdbFrameSpectralShadowedLight,
+  vdbFrameGatherFroxelSpectral,
+  type VDBFrameSpectralVolumeFroxel,
   vdbFrameAmbientIrradiance,
   vdbFrameAmbientPairTotals,
   vdbFrameAmbientVisibility,
@@ -96,7 +102,13 @@ export type TwinMutation =
   // K6.5b host occluder maps: the twin without them, the transmittance's scattered part unoccluded, one texel
   | "occluder"
   | "occluder-scattered"
-  | "occluder-filter";
+  | "occluder-filter"
+  // K6.4 spectral: the twin ignores the volume's extinction spectrum; swaps a slot group's entries; the resolve / composite
+  // use the green alpha for every channel; grey absorption (luminance) in the spectral shadow grid
+  | "spectrum"
+  | "spectral-pack"
+  | "spectral-alpha"
+  | "spectral-absorption";
 
 /** The source as the twin reads it: the `vdbSrc*` functions on the CPU (uvw already offset and wrapped). */
 export interface TwinSampler {
@@ -153,6 +165,8 @@ export interface TwinVolume {
   levels: number;
   emissiveIntensity: number;
   temperatureRange: [number, number];
+  /** K6.4: the extinction scale of each channel (spectral; default 1, 1, 1). */
+  extinctionSpectrum?: V3;
 }
 
 /** The frame values the gather kernel reads. */
@@ -386,6 +400,129 @@ export function volumeFroxelTwin(frame: TwinFrame, r: TwinVolume, cell: V3, muta
   const lit = scale(mul3(albedo, irradiance), 1 / Math.PI);
   const radiance = add([Math.max(r.scatterColor[0], lit[0]), Math.max(r.scatterColor[1], lit[1]), Math.max(r.scatterColor[2], lit[2])], emissionAt(r, local, readLod));
   return { radiance, alpha: slice.alpha };
+}
+
+/** K6.4: one volume in one froxel, spectral (the WGSL spectral `vdbFrameVolumeFroxel`), or null when it adds nothing. */
+export function volumeFroxelSpectralTwin(frame: TwinFrame, r: TwinVolume, cell: V3, mutate: TwinMutation = "none"): VDBFrameSpectralVolumeFroxel | null {
+  if (cell[0] < r.rect[0] || cell[1] < r.rect[1] || cell[0] >= r.rect[2] || cell[1] >= r.rect[3] || cell[2] < r.first || cell[2] >= r.first + r.count) return null;
+  const spectrum: V3 = mutate === "spectrum" ? [1, 1, 1] : (r.extinctionSpectrum ?? [1, 1, 1]);
+  const tile: VDBFrameVec2 = [cell[2] % frame.columns, Math.floor(cell[2] / frame.columns)];
+  const fragCoord: VDBFrameVec2 = [tile[0] * frame.grid[0] + cell[0] + 0.5, tile[1] * frame.grid[1] + cell[1] + 0.5];
+  const f = vdbFrameFroxel(frame.grid, frame.columns, frame.range, frame.projectionInverse, fragCoord);
+  const localNear = vdbMat4Point(r.viewToLocal, f.viewNear);
+  const localFar = vdbMat4Point(r.viewToLocal, f.viewFar);
+  const seg = boxSegment(localNear, localFar);
+  if (seg[0] >= seg[1]) return null;
+  const segment = seg[1] - seg[0];
+  const dims = r.volume.texels;
+  const maxTexels = Math.max(dims[0], dims[1], dims[2]);
+  const middle = (f.sliceNear + f.sliceFar) * 0.5;
+  const width = len(sub(vdbFrameViewPosition(frame.projectionInverse, [f.uv[0] + 1 / frame.grid[0], f.uv[1]], middle), vdbFrameViewPosition(frame.projectionInverse, f.uv, middle)));
+  const widthLod = lodOf(width / r.worldScale, maxTexels);
+  const sampledLod = r.mipmaps ? Math.min(widthLod, r.levels) : 0;
+  const steps = vdbFrameBoxSteps(len(sub(localFar, localNear)) * segment, maxTexels, sampledLod, frame.subSteps);
+  const subStepLength = (len(sub(f.viewFar, f.viewNear)) * segment) / steps;
+  const lod = Math.max(widthLod, lodOf(subStepLength / r.worldScale, maxTexels));
+  const readLod = r.mipmaps ? lod : 0;
+  const jitter = vdbFrameNoise(frame.jitter, fragCoord);
+  const depths: number[] = [];
+  for (let i = 0; i < steps; i++) {
+    const t = seg[0] + segment * ((i + jitter) / steps);
+    depths.push(extinctionAt(r, mix3(localNear, localFar, t), readLod, mutate) * r.opacity * vdbFrameDistanceFade(frame.fadeRadius, mix3(f.viewNear, f.viewFar, t)) * subStepLength);
+  }
+  const slice = vdbFrameSpectralInjectSlice(depths, spectrum, seg, jitter);
+  if (!slice) return null;
+  const local = mix3(localNear, localFar, slice.t);
+  const view = vdbMat4Point(r.localToView, local);
+  const world = vdbMat4Point(frame.cameraWorld, view);
+  const rayDirection = norm(mat3(frame.cameraWorld, sub(f.viewFar, f.viewNear)));
+  const shadowNoise = vdbFrameNoise(frame.jitter, [fragCoord[0] + 17, fragCoord[1] + 31]);
+  const albedo = albedoAt(r, local, readLod);
+  const diffusion = r.multipleScattering > 0;
+  const octaves: V4 = mutate === "octaves" ? vdbFrameOctavesOff : (frame.octaves ?? vdbFrameOctavesOff);
+  const iso = (fz: V3, bz: V3, fw: V3): V3 => [0, 1, 2].map((c) => vdbFrameIsotropicDiffusion(fz[c]!, bz[c]!, fw[c]!)) as V3;
+  const total = (y: V3) => vdbFrameSpectralShadowTotal(y, octaves, albedo);
+  const none = () => ({ x: [1, 1, 1] as V3, y: [1, 1, 1] as V3, z: [0, 0, 0] as V3, w: [0, 0, 0] as V3 });
+  const march = (origin: V3, localDirection: V3, maxDistance: number) => {
+    if (r.absorbance <= 0 || r.shadowSteps === 0) return none();
+    const d = norm(localDirection);
+    const distance = Math.min(boxExit(origin, d), maxDistance);
+    if (distance <= 0) return none();
+    const step = distance / r.shadowSteps;
+    const stepLod = r.mipmaps ? Math.max(lod, lodOf(step, maxTexels)) : 0;
+    const stepScale = step * len(mat3(r.localToView, d)) * r.absorbance;
+    const samples: number[] = [];
+    for (let k = 0; k < r.shadowSteps; k++) samples.push(extinctionAt(r, add(origin, scale(d, step * shadowNoise + step * k)), stepLod, mutate) * stepScale);
+    return vdbFrameSpectralShadowMarch(samples, spectrum, albedo, r.multipleScattering, octaves);
+  };
+  const outward = len(local) > 1e-4 ? norm(mat3(frame.cameraWorld, mat3(r.localToView, local))) : ([0, 1, 0] as V3);
+  let irradiance: V3 = [0, 0, 0];
+  if (r.lights & 32) irradiance = add(add(irradiance, frame.ambient), vdbShIrradianceAt(outward, frame.probe));
+  if (r.lights & 2) {
+    for (const h of frame.hemi) {
+      const up = mat3(r.worldToLocal, h.up);
+      const front = march(local, up, 1e6);
+      const back = march(local, scale(up, -1), 1e6);
+      const sky = diffusion ? iso(front.z, back.z, front.w) : total(front.y);
+      const ground = diffusion ? iso(back.z, front.z, back.w) : total(back.y);
+      irradiance = add(irradiance, add(mul3(h.sky, scale(sky, 0.5)), mul3(h.ground, scale(ground, 0.5))));
+    }
+  }
+  const env = frame.environment;
+  if (env && env.valid && r.lights & 1) {
+    if (env.count > 0) {
+      let sum: V3 = [0, 0, 0];
+      for (let i = 0; i < env.count; i++) {
+        const dir = mat3(r.worldToLocal, env.directions[i]!);
+        const front = march(local, dir, 1e6);
+        const t = diffusion ? iso(front.z, march(local, scale(dir, -1), 1e6).z, front.w) : total(front.y);
+        sum = add(sum, mul3(env.colors[i]!, t));
+      }
+      irradiance = add(irradiance, [Math.max(sum[0], 0), Math.max(sum[1], 0), Math.max(sum[2], 0)]);
+    } else {
+      const dir = mat3(r.worldToLocal, outward);
+      const front = march(local, dir, 1e6);
+      if (diffusion) {
+        const back = march(local, scale(dir, -1), 1e6);
+        irradiance = add(irradiance, mul3(vdbFrameEnvironmentIrradiance(env.sh, outward), scale(iso(front.z, back.z, front.w), 0.5)));
+        irradiance = add(irradiance, mul3(vdbFrameEnvironmentIrradiance(env.sh, scale(outward, -1)), scale(iso(back.z, front.z, back.w), 0.5)));
+      } else irradiance = add(irradiance, mul3(vdbFrameEnvironmentIrradiance(env.sh, outward), total(front.y)));
+    }
+  }
+  for (const [index, l] of frame.lights.entries()) {
+    const isDirectional = l.position[3] < 1.5;
+    const isSpot = l.position[3] > 2.5;
+    const bit = isDirectional ? 8 : isSpot ? 4 : 16;
+    const toLightWorld = sub(l.position, world);
+    const spot = (isSpot ? smoothstep(l.spot[3], l.color[3], dot(norm(toLightWorld), l.spot)) : 1) * (frame.occluder ? frame.occluder(index, world) : 1);
+    if (!(r.lights & bit) || spot <= 0) continue;
+    const toLight = sub(vdbMat4Point(r.worldToLocal, l.position), local);
+    const direction = isDirectional ? mat3(r.worldToLocal, l.position) : toLight;
+    const maxDistance = isDirectional ? 1e6 : len(toLight);
+    const lightDirection = isDirectional ? ([l.position[0], l.position[1], l.position[2]] as V3) : norm(toLightWorld);
+    const s = march(local, direction, maxDistance);
+    if (frame.twoSided && mutate !== "two-sided") {
+      const back = march(local, scale(direction, -1), 1e6);
+      s.y = [0, 1, 2].map((c) => vdbFrameTwoSidedDiffusion(s.x[c]!, s.z[c]!, s.w[c]!, back.z[c]!)) as V3;
+    }
+    const light = vdbFrameSpectralShadowedLight(r.phase, r.phaseSpectrum, octaves, rayDirection, lightDirection, { x: s.x, y: s.y }, albedo);
+    irradiance = add(irradiance, scale(mul3([l.color[0], l.color[1], l.color[2]], light), spot));
+  }
+  const lit = scale(mul3(albedo, irradiance), 1 / Math.PI);
+  const radiance = add([Math.max(r.scatterColor[0], lit[0]), Math.max(r.scatterColor[1], lit[1]), Math.max(r.scatterColor[2], lit[2])], emissionAt(r, local, readLod));
+  return { radiance, alpha: slice.alpha };
+}
+
+/** K6.4: the spectral gather's (scatter, scatterAlpha) texels at `cell`: (L·α rgb, α green), (α red, α blue, 0, α green). */
+export function gatherSpectralTwin(frame: TwinFrame, records: readonly TwinVolume[], cell: V3, mode: VDBFrameFroxelMix, mutate: TwinMutation = "none"): { scatter: V4; alpha: V4 } {
+  const lit: VDBFrameSpectralVolumeFroxel[] = [];
+  for (const r of records) {
+    const v = volumeFroxelSpectralTwin(frame, r, cell, mutate);
+    if (v) lit.push(v);
+  }
+  const m: VDBFrameFroxelMix = mutate === "mix" ? (mode === "mixture" ? "over" : "mixture") : mode;
+  const g = vdbFrameGatherFroxelSpectral(lit, m);
+  return { scatter: [g.color[0], g.color[1], g.color[2], g.alpha[1]], alpha: [g.alpha[0], g.alpha[2], 0, g.alpha[1]] };
 }
 
 /** The gather kernel's scatter texel at `cell`: every volume in record order, combined. */

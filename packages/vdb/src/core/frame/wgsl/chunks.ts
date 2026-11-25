@@ -9,7 +9,9 @@
 // Changes: TSL → WGSL for the core compute kernels (K6.1); the froxel of a 3D texel replaces the atlas
 // pixel (the noise keeps his virtual atlas coordinate); K6.3: the Lorenz-Mie table reads (frameMieTexel, L206–271), octaves
 // (L316–399: frameShadowMarchDepth, frameOctaveLight, frameShadowTotal, frameShadowedLight) and frameTwoSidedDiffusion
-// (L416–451); spectral chunks wait for K6.4. CPU twins: tools/frame (index.ts, froxel.ts, mie.ts). Divergences:
+// (L416–451); K6.4: the spectral chunks (L483–622: frameMeanComponent, frameSpectralShadowUnit / Step / Depth /
+// Transmittance, frameSpectralGridAlbedo, frameSpectralOctaveLight / ShadowTotal / ShadowedLight). CPU twins: tools/frame
+// (index.ts, froxel.ts, mie.ts, spectral.ts). Divergences:
 // DIVERGES.md (K3.1, K6.1 rows).
 
 import { vdbFrameMieAsymmetry, vdbFrameMieRgbMode, vdbFrameMieTableSize } from "../../../tools/frame/mie.js";
@@ -388,6 +390,131 @@ fn vdbFrameShadowedLight(phase: vec4f, spectrum: vec3f, octaves: vec4f, cosTheta
     },
   ],
   [
+    "spectral",
+    {
+      deps: ["shadow", "octaveTotal", "phase"],
+      code: `// K6.4 spectral media (his frameShaderChunks L483–622): values of each channel (red, green, blue). Depths are
+// (x extinction, y effective extinction, z reduced scattering) of each channel; shadows (x direct, y total).
+struct VdbFrameSpectralDepths {
+  x: vec3f,
+  y: vec3f,
+  z: vec3f,
+};
+struct VdbFrameSpectralShadow {
+  x: vec3f,
+  y: vec3f,
+};
+// A spectral march: direct, total, reduced depth, effective depth of each channel
+struct VdbFrameSpectralMarch {
+  x: vec3f,
+  y: vec3f,
+  z: vec3f,
+  w: vec3f,
+};
+fn vdbFrameMeanComponent(v: vec3f) -> f32 {
+  return dot(v, vec3f(1.0 / 3.0));
+}
+fn vdbFrameMinComponent(v: vec3f) -> f32 {
+  return min(v.x, min(v.y, v.z));
+}
+fn vdbFrameMaxComponent(v: vec3f) -> f32 {
+  return max(v.x, max(v.y, v.z));
+}
+fn vdbFrameSpectralUnmarched() -> VdbFrameSpectralMarch {
+  return VdbFrameSpectralMarch(vec3f(1.0), vec3f(1.0), vec3f(0.0), vec3f(0.0));
+}
+// frameSpectralShadowUnit: the depths of one unit of extinction for a volume's spectrum and albedo
+fn vdbFrameSpectralShadowUnit(spectrum: vec3f, albedo: vec3f, multipleScattering: f32) -> VdbFrameSpectralDepths {
+  let absorbed = spectrum * (vec3f(1.0) - clamp(albedo, vec3f(0.0), vec3f(1.0)));
+  let reduced = (spectrum - absorbed) * multipleScattering;
+  return VdbFrameSpectralDepths(spectrum, sqrt(absorbed * 3.0 * (absorbed + reduced)), reduced);
+}
+// frameSpectralShadowStep: the step depths of each channel from the grid's (extinction, absorption) of each channel
+fn vdbFrameSpectralShadowStep(extinction: vec3f, absorption: vec3f, multipleScattering: f32) -> VdbFrameSpectralDepths {
+  let absorbed = min(absorption, extinction);
+  let reduced = (extinction - absorbed) * multipleScattering;
+  return VdbFrameSpectralDepths(extinction, sqrt(absorbed * 3.0 * (absorbed + reduced)), reduced);
+}
+// frameSpectralGridAlbedo: 1 - absorption / extinction of each channel, 1 with no extinction
+fn vdbFrameSpectralGridAlbedo(extinction: vec3f, absorption: vec3f) -> vec3f {
+  if (!(vdbFrameMaxComponent(extinction) > 0.0)) {
+    return vec3f(1.0);
+  }
+  return clamp(vec3f(1.0) - absorption / max(extinction, vec3f(1e-8)), vec3f(0.0), vec3f(1.0));
+}
+// frameShadowDepth of each channel
+fn vdbFrameSpectralShadowDepth(d: VdbFrameSpectralDepths, multipleScattering: f32) -> vec3f {
+  return select(d.x, min(d.x, d.y + log(d.z * 0.75 + vec3f(1.0))), multipleScattering > 0.0);
+}
+// frameShadowMarchDepth of each channel (a march stops when the smallest is past its limit)
+fn vdbFrameSpectralShadowMarchDepth(d: VdbFrameSpectralDepths, multipleScattering: f32, octaves: vec4f) -> vec3f {
+  if (octaves.x > 0.0) {
+    return d.x * pow(octaves.y, octaves.x);
+  }
+  return vdbFrameSpectralShadowDepth(d, multipleScattering);
+}
+// frameSpectralShadowTransmittance: (direct, total) of each channel; octaves: total is 1 / (1 + depth)
+fn vdbFrameSpectralShadowTransmittance(d: VdbFrameSpectralDepths, multipleScattering: f32, octaves: vec4f) -> VdbFrameSpectralShadow {
+  if (octaves.x > 0.0) {
+    return VdbFrameSpectralShadow(exp(-d.x), vec3f(1.0) / (d.x + vec3f(1.0)));
+  }
+  return VdbFrameSpectralShadow(exp(-d.x), exp(-vdbFrameSpectralShadowDepth(d, multipleScattering)));
+}
+// frameIsotropicDiffusion of each channel
+fn vdbFrameIsotropicDiffusion3(frontReduced: vec3f, backReduced: vec3f, frontEffective: vec3f) -> vec3f {
+  return (backReduced + vec3f(2.0 / 3.0)) * 2.0 / (frontReduced + backReduced + vec3f(4.0 / 3.0)) * exp(-frontEffective);
+}
+// frameTwoSidedDiffusion of each channel
+fn vdbFrameTwoSidedDiffusion3(direct: vec3f, frontReduced: vec3f, frontEffective: vec3f, backReduced: vec3f) -> vec3f {
+  return vec3f(
+    vdbFrameTwoSidedDiffusion(direct.x, frontReduced.x, frontEffective.x, backReduced.x),
+    vdbFrameTwoSidedDiffusion(direct.y, frontReduced.y, frontEffective.y, backReduced.y),
+    vdbFrameTwoSidedDiffusion(direct.z, frontReduced.z, frontEffective.z, backReduced.z),
+  );
+}
+// frameSpectralOctaveLight: sum over n = 1..N of albedo^n b^n phase(g c^n) exp(-a^n depth) of each channel (each octave
+// is one more scattering); phased false: isotropic (phase 1)
+fn vdbFrameSpectralOctaveLight(octaves: vec4f, opticalDepth: vec3f, albedo: vec3f, phase: vec4f, cosTheta: f32, phased: bool) -> vec3f {
+  var light = vec3f(0.0);
+  var extinctionScale = 1.0;
+  var contribution = 1.0;
+  var gScale = 1.0;
+  var albedoScale = vec3f(1.0);
+  let octaveAlbedo = clamp(albedo, vec3f(0.0), vec3f(1.0));
+  for (var i = 0u; i < ${MAX_OCTAVES}u; i++) {
+    if (f32(i + 1u) > octaves.x) {
+      break;
+    }
+    extinctionScale *= octaves.y;
+    contribution *= octaves.z;
+    gScale *= octaves.w;
+    albedoScale *= octaveAlbedo;
+    let p = select(1.0, vdbFramePhaseWeightScaled(phase, cosTheta, gScale), phased);
+    light += albedoScale * (contribution * p) * exp(-opticalDepth * extinctionScale);
+  }
+  return light;
+}
+// frameSpectralShadowTotal: total transmittance of isotropic light of each channel from the y shadow values
+fn vdbFrameSpectralShadowTotal(shadowY: vec3f, octaves: vec4f, albedo: vec3f) -> vec3f {
+  if (octaves.x > 0.0) {
+    let depth = max(vec3f(1.0) / max(shadowY, vec3f(1e-6)) - vec3f(1.0), vec3f(0.0));
+    return exp(-depth) + vdbFrameSpectralOctaveLight(octaves, depth, albedo, vec4f(0.0), 0.0, false);
+  }
+  return shadowY;
+}
+// frameSpectralShadowedLight: phase x direct + scattered of each channel (octaves: the spectral octave light)
+fn vdbFrameSpectralShadowedLight(phase: vec4f, spectrum: vec3f, octaves: vec4f, cosTheta: f32, shadow: VdbFrameSpectralShadow, albedo: vec3f) -> vec3f {
+  let direct = vdbFramePhaseColor(phase, spectrum, cosTheta) * shadow.x;
+  if (octaves.x > 0.0) {
+    let depth = max(vec3f(1.0) / max(shadow.y, vec3f(1e-6)) - vec3f(1.0), vec3f(0.0));
+    return direct + vdbFrameSpectralOctaveLight(octaves, depth, albedo, phase, cosTheta, true);
+  }
+  return direct + shadow.y - shadow.x;
+}
+`,
+    },
+  ],
+  [
     "sh",
     {
       deps: [],
@@ -494,7 +621,7 @@ fn vdbFrameSrgbEotf(color: vec3f) -> vec3f {
 const BY_NAME = new Map(CHUNKS);
 
 /** Names of the chunks {@link frameChunksWgsl} knows. */
-export type VDBFrameChunk = "constants" | "mat3" | "sliceDepth" | "viewPosition" | "froxel" | "noise" | "fade" | "box" | "lod" | "phase" | "shadow" | "octaveTotal" | "octaves" | "sh" | "envSh" | "grid" | "srgb";
+export type VDBFrameChunk = "constants" | "mat3" | "sliceDepth" | "viewPosition" | "froxel" | "noise" | "fade" | "box" | "lod" | "phase" | "shadow" | "octaveTotal" | "octaves" | "spectral" | "sh" | "envSh" | "grid" | "srgb";
 
 /** The closure of `roots` (with dependencies), in the fixed chunk order. */
 export function frameChunksWgsl(roots: Iterable<VDBFrameChunk>): string {

@@ -80,6 +80,28 @@ export const VDB_FRAME_COMPOSITE_COLOR_FN_WGSL = `fn vdbFrameCompositeColor(r: v
 /** The sRGB functions and `vdbFrameCompositeColor`. */
 export const VDB_FRAME_COMPOSITE_COLOR_WGSL = `${VDB_FRAME_SRGB_OETF_WGSL}${VDB_FRAME_SRGB_EOTF_WGSL}${VDB_FRAME_COMPOSITE_COLOR_FN_WGSL}`;
 
+/**
+ * K6.4 `fn vdbFrameCompositeSpectralColor(radiance: vec3f, transmittance: vec3f, sceneColor: vec4f, srgb: u32, clampColors: u32)
+ * -> vec4f` (needs the two sRGB functions): his spectral composite (FrameIntegrateMaterial L171–216): the scene colour ×
+ * the transmittance of each channel + the radiance, or (sRGB) the per-channel mix in sRGB; alpha from green. It blends
+ * itself: the pass draws without hardware blending.
+ */
+export const VDB_FRAME_COMPOSITE_SPECTRAL_FN_WGSL = `fn vdbFrameCompositeSpectralColor(radiance: vec3f, transmittance: vec3f, sceneColor: vec4f, srgb: u32, clampColors: u32) -> vec4f {
+  let alpha = vec3f(1.0) - transmittance;
+  let outputAlpha = alpha.y + sceneColor.a * (1.0 - alpha.y);
+  if (srgb == 0u) {
+    return vec4f(radiance + sceneColor.rgb * transmittance, outputAlpha);
+  }
+  var volumeColor = vdbFrameSrgbOetfColor(radiance / max(alpha, vec3f(1e-6)));
+  var backgroundColor = vdbFrameSrgbOetfColor(sceneColor.rgb);
+  if (clampColors != 0u) {
+    volumeColor = clamp(volumeColor, vec3f(0.0), vec3f(1.0));
+    backgroundColor = clamp(backgroundColor, vec3f(0.0), vec3f(1.0));
+  }
+  return vec4f(vdbFrameSrgbEotfColor(mix(backgroundColor, volumeColor, alpha)), outputAlpha);
+}
+`;
+
 /** The pure integrate functions, keyed by name (one function each, for `wgslFn`). */
 export const VDB_FRAME_INTEGRATE_FUNCTIONS = {
   vdbFrameSliceCoord: VDB_FRAME_SLICE_COORD_WGSL,
@@ -88,8 +110,14 @@ export const VDB_FRAME_INTEGRATE_FUNCTIONS = {
 
 /** Options of {@link vdbFrameIntegrateWgsl}. */
 export interface VDBFrameIntegrateWgslOptions {
-  /** Spectral (K6.4: a second prefix); K6.1 has only grey. */
+  /**
+   * K6.4 spectral: a second prefix (`outputs.froxels.integratedAlpha`: the red and blue opacity) at `alphaBinding`;
+   * `vdbFrameIntegrate` returns the transmittance of each channel and `vdbFrameComposite` blends itself (no hardware
+   * blending: one alpha cannot carry three transmittances), so the host passes the scene colour.
+   */
   readonly spectral?: boolean;
+  /** K6.4: the binding of the spectral alpha prefix in the slot's group (default `slot.firstBinding + 3`). */
+  readonly alphaBinding?: number;
   /** Where the three bindings start (texture, sampler, `VdbFrameUniforms`); default group 0, binding 0. */
   readonly slot?: VDBSlot;
   /**
@@ -101,16 +129,37 @@ export interface VDBFrameIntegrateWgslOptions {
 
 /** The integrate seam's WGSL (design §2.5). */
 export function vdbFrameIntegrateWgsl(o: VDBFrameIntegrateWgslOptions = {}): string {
-  if (o.spectral) throw new Error("vdbFrameIntegrateWgsl: spectral is K6.4");
   const slot = o.slot ?? { group: 0, firstBinding: 0 };
   const g = slot.group;
   const b = slot.firstBinding;
+  const spectral = !!o.spectral;
   const uniforms = o.sharedUniforms
     ? ""
     : `${VDB_FRAME_UNIFORMS.wgsl}@group(${g}) @binding(${b + 2}) var<uniform> vdbFrame: VdbFrameUniforms;\n`;
+  // K6.4 spectral: the same two-tap formula for each channel, the opacity of red and blue from the alpha prefix
+  const taps = spectral
+    ? `  let aAlpha = textureSampleLevel(vdbFrameIntegratedAlphaMap, vdbFrameIntegratedSampler, vec3f(xy, (kc.x + 0.5) / (grid.z + 1.0)), 0.0);
+  let bAlpha = textureSampleLevel(vdbFrameIntegratedAlphaMap, vdbFrameIntegratedSampler, vec3f(xy, (kc.x + 1.5) / (grid.z + 1.0)), 0.0);
+  let r = vdbFrameIntegrateTaps(vec4f(a.x, 0.0, 0.0, aAlpha.x), vec4f(b.x, 0.0, 0.0, bAlpha.x), kc.y);
+  let gg = vdbFrameIntegrateTaps(vec4f(a.y, 0.0, 0.0, a.w), vec4f(b.y, 0.0, 0.0, b.w), kc.y);
+  let bb = vdbFrameIntegrateTaps(vec4f(a.z, 0.0, 0.0, aAlpha.y), vec4f(b.z, 0.0, 0.0, bAlpha.y), kc.y);
+  return VdbFrameIntegrated(vec3f(r.x, gg.x, bb.x), vec3f(r.w, gg.w, bb.w));`
+    : `  let r = vdbFrameIntegrateTaps(a, b, kc.y);
+  return VdbFrameIntegrated(r.rgb, vec3f(r.w));`;
+  const composite = spectral
+    ? `// K6.4 spectral: the scene colour x the transmittance of each channel + the radiance (or the per-channel sRGB mix); the
+// result replaces the scene colour (draw without blending)
+fn vdbFrameComposite(i: VdbFrameIntegrated, sceneColor: vec4f, srgbBlending: bool) -> vec4f {
+  return vdbFrameCompositeSpectralColor(i.radiance, i.transmittance, sceneColor, select(0u, 1u, srgbBlending), select(0u, 1u, vdbFrame.screen.z > 0.5));
+}`
+    : `// The volumes over the scene colour: sRGB blending as WebGLRenderer (srgbBlending, clamped to [0, 1]
+// without tone mapping) or premultiplied (blend with one, one-minus-src-alpha).
+fn vdbFrameComposite(i: VdbFrameIntegrated, sceneColor: vec4f, srgbBlending: bool) -> vec4f {
+  return vdbFrameCompositeColor(vec4f(i.radiance, i.transmittance.y), sceneColor, select(0u, 1u, srgbBlending), select(0u, 1u, vdbFrame.screen.z > 0.5));
+}`;
   return `${uniforms}@group(${g}) @binding(${b}) var vdbFrameIntegratedMap: texture_3d<f32>;
 @group(${g}) @binding(${b + 1}) var vdbFrameIntegratedSampler: sampler;
-
+${spectral ? `@group(${g}) @binding(${o.alphaBinding ?? b + 3}) var vdbFrameIntegratedAlphaMap: texture_3d<f32>;\n` : ""}
 struct VdbFrameIntegrated {
   radiance: vec3f,
   transmittance: vec3f,
@@ -118,7 +167,7 @@ struct VdbFrameIntegrated {
 
 ${VDB_FRAME_SLICE_COORD_WGSL}
 ${VDB_FRAME_INTEGRATE_TAPS_WGSL}
-${VDB_FRAME_COMPOSITE_COLOR_WGSL}
+${VDB_FRAME_COMPOSITE_COLOR_WGSL}${spectral ? VDB_FRAME_COMPOSITE_SPECTRAL_FN_WGSL : ""}
 // The volumes in front of the scene depth at a screen position (bottom-left uv): two taps of the prefix
 // at the boundaries around the depth's slice, bilinear in x, y.
 fn vdbFrameIntegrate(screenUv: vec2f, sceneViewDepth: f32) -> VdbFrameIntegrated {
@@ -127,34 +176,55 @@ fn vdbFrameIntegrate(screenUv: vec2f, sceneViewDepth: f32) -> VdbFrameIntegrated
   let xy = clamp(screenUv * grid.xy, vec2f(0.5), grid.xy - 0.5) / grid.xy;
   let a = textureSampleLevel(vdbFrameIntegratedMap, vdbFrameIntegratedSampler, vec3f(xy, (kc.x + 0.5) / (grid.z + 1.0)), 0.0);
   let b = textureSampleLevel(vdbFrameIntegratedMap, vdbFrameIntegratedSampler, vec3f(xy, (kc.x + 1.5) / (grid.z + 1.0)), 0.0);
-  let r = vdbFrameIntegrateTaps(a, b, kc.y);
-  return VdbFrameIntegrated(r.rgb, vec3f(r.w));
+${taps}
 }
-// The volumes over the scene colour: sRGB blending as WebGLRenderer (srgbBlending, clamped to [0, 1]
-// without tone mapping) or premultiplied (blend with one, one-minus-src-alpha).
-fn vdbFrameComposite(i: VdbFrameIntegrated, sceneColor: vec4f, srgbBlending: bool) -> vec4f {
-  return vdbFrameCompositeColor(vec4f(i.radiance, i.transmittance.y), sceneColor, select(0u, 1u, srgbBlending), select(0u, 1u, vdbFrame.screen.z > 0.5));
-}
+${composite}
 `;
 }
 
-/** Bind group layout entries of {@link vdbFrameIntegrateWgsl} at `slot`: texture, filtering sampler, uniforms. */
-export function vdbFrameIntegrateEntries(slot: VDBSlot = { group: 0, firstBinding: 0 }, visibility: GPUShaderStageFlags = 0x2 /* FRAGMENT */, sharedUniforms = false): GPUBindGroupLayoutEntry[] {
+/**
+ * Bind group layout entries of {@link vdbFrameIntegrateWgsl} at `slot`: texture, filtering sampler, uniforms (K6.4
+ * `spectral`: the alpha prefix at `alphaBinding`, default `firstBinding + 3`).
+ */
+export function vdbFrameIntegrateEntries(
+  slot: VDBSlot = { group: 0, firstBinding: 0 },
+  visibility: GPUShaderStageFlags = 0x2 /* FRAGMENT */,
+  sharedUniforms = false,
+  spectral: { alphaBinding?: number } | false = false,
+): GPUBindGroupLayoutEntry[] {
   const b = slot.firstBinding;
   return [
     { binding: b, visibility, texture: { sampleType: "float", viewDimension: "3d" } },
     { binding: b + 1, visibility, sampler: { type: "filtering" } },
     ...(sharedUniforms ? [] : [{ binding: b + 2, visibility, buffer: { type: "uniform" as const } }]),
+    ...(spectral ? [{ binding: spectral.alphaBinding ?? b + 3, visibility, texture: { sampleType: "float" as const, viewDimension: "3d" as const } }] : []),
   ];
 }
 
-/** The core composite pass's WGSL (after the frame uniforms): a fullscreen triangle scissored by the host call. */
-export function vdbFrameCompositeWgsl(o: { depth: "depth" | "r32float"; srgb: boolean }): string {
+/** Group-1 binding of the composite pass's alpha prefix (K6.4 spectral; 3 is the scene colour). */
+export const VDB_FRAME_COMPOSITE_ALPHA_BINDING = 4;
+
+/**
+ * The core composite pass's WGSL (after the frame uniforms): a fullscreen triangle scissored by the host call. K6.4
+ * `spectral`: the alpha prefix at binding 4 and the scene colour (binding 3) always; the pass draws without blending.
+ */
+export function vdbFrameCompositeWgsl(o: { depth: "depth" | "r32float"; srgb: boolean; spectral?: boolean }): string {
   const depthType = o.depth === "depth" ? "texture_depth_2d" : "texture_2d<f32>";
   const depthRead = o.depth === "depth" ? "textureLoad(vdbFrameSceneDepth, pixel, 0)" : "textureLoad(vdbFrameSceneDepth, pixel, 0).r";
-  return `${vdbFrameIntegrateWgsl({ slot: { group: 1, firstBinding: 0 }, sharedUniforms: true })}
+  const spectral = !!o.spectral;
+  const sceneColor = o.srgb || spectral;
+  const result = spectral
+    ? `if (min(integrated.transmittance.x, min(integrated.transmittance.y, integrated.transmittance.z)) >= 1.0) {
+    discard;
+  }
+  return vdbFrameComposite(integrated, textureLoad(vdbFrameSceneColor, pixel, 0), ${o.srgb ? "true" : "false"});`
+    : `if (integrated.transmittance.y >= 1.0) {
+    discard;
+  }
+  ${o.srgb ? "return vdbFrameComposite(integrated, textureLoad(vdbFrameSceneColor, pixel, 0), true);" : "return vdbFrameComposite(integrated, vec4f(0.0), false);"}`;
+  return `${vdbFrameIntegrateWgsl({ slot: { group: 1, firstBinding: 0 }, sharedUniforms: true, spectral, alphaBinding: VDB_FRAME_COMPOSITE_ALPHA_BINDING })}
 @group(1) @binding(2) var vdbFrameSceneDepth: ${depthType};
-${o.srgb ? "@group(1) @binding(3) var vdbFrameSceneColor: texture_2d<f32>;" : ""}
+${sceneColor ? "@group(1) @binding(3) var vdbFrameSceneColor: texture_2d<f32>;" : ""}
 
 // The scene's view depth (three's perspective / orthographic depthToViewZ); empty depth: 1e20
 fn vdbFrameSceneViewDepth(depth: f32) -> f32 {
@@ -187,10 +257,7 @@ fn vdbFrameCompositeFs(@builtin(position) fragCoord: vec4f) -> @location(0) vec4
   let size = vdbFrame.screen.xy;
   let screenUv = vec2f(fragCoord.x / size.x, 1.0 - fragCoord.y / size.y);
   let integrated = vdbFrameIntegrate(screenUv, vdbFrameSceneViewDepth(${depthRead}));
-  if (integrated.transmittance.y >= 1.0) {
-    discard;
-  }
-  ${o.srgb ? "return vdbFrameComposite(integrated, textureLoad(vdbFrameSceneColor, pixel, 0), true);" : "return vdbFrameComposite(integrated, vec4f(0.0), false);"}
+  ${result}
 }
 `;
 }

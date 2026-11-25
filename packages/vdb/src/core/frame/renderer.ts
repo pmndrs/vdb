@@ -43,8 +43,10 @@ import {
 } from "../../tools/frame/view.js";
 import { vdbFrameGridCascades, vdbFrameGridSignatureState, vdbFrameUpdateGridSignatures, vdbSameValues } from "../../tools/frame/grid.js";
 import { vdbFrameStackLayout, type VDBFrameStackLayout } from "../../tools/frame/stack.js";
-import { GATHER_BINDINGS } from "./wgsl/gather.js";
-import { FRAME_GATHER_BINDINGS, GRID_DENSITY_BINDINGS, TRANSMITTANCE_BINDINGS, VDB_FRAME_SUM_WORDS } from "./wgsl/lighting.js";
+import { GATHER_BINDINGS, VDB_FRAME_GATHER_WORDS } from "./wgsl/gather.js";
+import { FRAME_GATHER_BINDINGS, GRID_DENSITY_BINDINGS, TRANSMITTANCE_BINDINGS, VDB_FRAME_SPECTRAL_GRID_WORDS, VDB_FRAME_SUM_WORDS } from "./wgsl/lighting.js";
+import { VDB_FRAME_COMPOSITE_ALPHA_BINDING } from "./wgsl/integrate.js";
+import { vdbFrameExtinctionSpectrum, vdbFrameSpectralGroups } from "../../tools/frame/spectral.js";
 import { RESOLVE_BINDINGS } from "./wgsl/resolve.js";
 import { VDB_FRAME_OCCLUDER_BINDING } from "./wgsl/occluders.js";
 import { ENV_GRID_BINDINGS } from "./wgsl/environment.js";
@@ -89,6 +91,7 @@ import {
   VDB_FRAME_MAX_VOLUMES,
   VDB_FRAME_OCCLUDER_LAYERS,
   VDB_FRAME_SHADOW_SLOTS,
+  VDB_FRAME_SPECTRAL_GROUPS,
   VDB_FRAME_UNIFORMS,
   VDB_FRAME_VOLUME,
   VDB_FRAME_VOLUME_BYTES,
@@ -210,8 +213,10 @@ interface Textures {
   integrated: GPUTexture;
   history: [GPUTexture, GPUTexture] | null;
   partials: GPUTexture | null;
-  /** Slices per froxel slice the partials hold (2 for 'volume', 8 for 'frame'). */
+  /** Slices per froxel slice the partials hold (2 for 'volume', 8 for 'frame'; K6.4 spectral 'volume': 3). */
   partialLayers: number;
+  /** K6.4 spectral: the second scatter texture (red α, blue α, 0, green α) and the alpha prefix (red, blue opacity). */
+  spectral: { scatterAlpha: GPUTexture; integratedAlpha: GPUTexture; alphaFormat: "rg16float" | "rgba16float" } | null;
 }
 
 /** The 'frame' lighting grid textures (K6.2): the shadow grid and transmittance stacks (design §3.2). */
@@ -225,6 +230,10 @@ interface GridTextures {
   partials: GPUTexture | null;
   /** K6.2b: the environment grid (the last cascade, R³ rgba16float). */
   environment: GPUTexture;
+  /** K6.4 spectral: the absorption stack (rgb; the shadow stack holds the extinction rgb), null when grey. */
+  absorption: GPUTexture | null;
+  /** K6.4: the slot groups the transmittance stack holds (3 targets each per cascade); 0 when grey (4 targets). */
+  groups: number;
 }
 
 class FrameRenderer implements VDBFrameRendererGpu {
@@ -298,6 +307,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
    * generic MLP evaluator; default his trained weights (V48). null: those modes run as 1D diffusion (warned).
    */
   mlp: VDBFrameMlp | null = vdbFrameMlpFromNeural(vdbFrameNeuralWeights);
+  /** K6.4: rg16float storage (`texture-formats-tier1`) for the spectral alpha prefix; else rgba16float. */
+  readonly #tier1: boolean;
   // K6.5b: this update's host occluder map views (slots 0–3) and the 1 × 1 placeholder of the empty slots
   #occluderViews: GPUTextureView[] = [];
   #occluderPlaceholder: { texture: GPUTexture; view: GPUTextureView } | null = null;
@@ -307,6 +318,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     this.#label = o.label ?? "vdb frame";
     this.settings = { ...vdbFrameDefaultSettings(), ...(o.settings ?? {}) };
     this.#composite = o.composite ?? null;
+    this.#tier1 = o.features?.tier1 ?? !!device.features?.has?.("texture-formats-tier1");
     this.#maxVolumes = Math.min(VDB_FRAME_MAX_VOLUMES, Math.floor((device.limits?.maxUniformBufferBindingSize ?? 65536) / VDB_FRAME_VOLUME_BYTES));
     this.#frameBuffer = device.createBuffer({ label: `${this.#label} uniforms`, size: VDB_FRAME_UNIFORMS.size, usage: BUFFER_USAGE.UNIFORM | BUFFER_USAGE.COPY_DST });
     this.#lightsBuffer = device.createBuffer({ label: `${this.#label} lights`, size: VDB_FRAME_LIGHTS.size, usage: BUFFER_USAGE.UNIFORM | BUFFER_USAGE.COPY_DST });
@@ -360,6 +372,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
       colorFormat: this.#composite.colorFormat,
       depth: DEPTH_FORMATS.has(this.#composite.depthFormat) ? "depth" : "r32float",
       srgb: this.settings.srgbBlending,
+      spectral: !!this.settings.spectral,
     };
   }
 
@@ -369,6 +382,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     // K6.5: the emission hooks validate first (a hook pipeline is built only once its hook is valid)
     await this.#colors.settled(this.#volumes.map((v) => v.params.emissionColor));
     const jobs: Promise<void>[] = [];
+    const spectral = !!this.settings.spectral;
     const sources = new Set(this.#volumes.map((v) => v.slot.source));
     const shadows = modes.includes("frame") || this.settings.castShadows;
     for (const source of sources) {
@@ -376,22 +390,22 @@ class FrameRenderer implements VDBFrameRendererGpu {
       if (source.channels.emission) for (const v of this.#volumes) if (v.slot.source === source) hooks.add(this.#colors.codeOf(v.params.emissionColor).hook);
       for (const hook of hooks) {
         for (const multi of [false, true]) {
-          for (const lighting of modes) jobs.push(prepareCompute(this.device, vdbFrameGatherSpec(source, { mix: this.settings.froxelMix, multi, maxVolumes: this.#maxVolumes, lighting, hook })));
+          for (const lighting of modes) jobs.push(prepareCompute(this.device, vdbFrameGatherSpec(source, { mix: this.settings.froxelMix, multi, maxVolumes: this.#maxVolumes, lighting, hook, spectral })));
         }
         if (source.channels.emission) jobs.push(prepareCompute(this.device, vdbFrameEmissionDirectionSpec(source, { maxVolumes: this.#maxVolumes, hook })));
       }
-      if (shadows) for (const multi of [false, true]) jobs.push(prepareCompute(this.device, vdbFrameGridDensitySpec(source, { multi, maxVolumes: this.#maxVolumes })));
+      if (shadows) for (const multi of [false, true]) jobs.push(prepareCompute(this.device, vdbFrameGridDensitySpec(source, { multi, maxVolumes: this.#maxVolumes, spectral })));
     }
     if (modes.includes("frame")) {
       // K6.3: the transmittance variant of the scattered-light term ('mlp' also its feature mips)
-      const scattering = this.#scattering.kind(this.settings, this.mlp);
-      jobs.push(prepareCompute(this.device, vdbFrameTransmittanceSpec({ scattering })), prepareCompute(this.device, vdbFrameEnvironmentGridSpec()));
+      const scattering = spectral ? "none" : this.#scattering.kind(this.settings, this.mlp);
+      jobs.push(prepareCompute(this.device, vdbFrameTransmittanceSpec({ scattering, spectral })), prepareCompute(this.device, vdbFrameEnvironmentGridSpec({ spectral })));
       if (scattering === "mlp") jobs.push(prepareCompute(this.device, vdbFrameGridMipSpec({ first: true })), prepareCompute(this.device, vdbFrameGridMipSpec({ first: false })));
     }
     for (const spec of this.#env.specs(["equirect", "cube"])) jobs.push(prepareCompute(this.device, spec));
-    if (this.settings.castShadows) jobs.push(prepareCompute(this.device, vdbFrameVolumeShadowSpec()));
+    if (this.settings.castShadows) jobs.push(prepareCompute(this.device, vdbFrameVolumeShadowSpec({ spectral })));
     if ([...sources].some((s) => s.channels.emission)) jobs.push(prepareCompute(this.device, vdbFrameEmissionReduceSpec()), prepareCompute(this.device, vdbFrameEmissionProbeSpec()));
-    jobs.push(prepareCompute(this.device, vdbFrameResolveSpec({ temporal: this.settings.temporal })));
+    jobs.push(prepareCompute(this.device, vdbFrameResolveSpec(this.#resolveKey())));
     const key = this.#compositeKey();
     if (key) jobs.push(prepareRender(this.device, vdbFrameCompositeSpec(key)));
     await Promise.all(jobs);
@@ -404,7 +418,10 @@ class FrameRenderer implements VDBFrameRendererGpu {
     this.#retire.advance();
     const s = this.settings;
     const frameLighting = s.lighting === "frame";
-    if (s.spectral) this.#warnOnce("spectral", "settings.spectral is K6.4; the core renders grey.");
+    // K6.4: spectral media (a pipeline key of every kernel with a spectral variant)
+    const spectral = !!s.spectral;
+    // K6.Q1 × K6.4: the shadowed ambient is grey-only (K6.Q1a); spectral kernels light the ambient unshadowed
+    if (spectral && s.ambientOcclusion) this.#warnOnce("spectral-ambient", "settings.ambientOcclusion is grey-only (K6.Q1a): spectral media light the ambient, probe and hemisphere terms unshadowed.");
 
     if (options.froxels === false && this.#textures) return { outputs: this.outputs, recorded: this.#recorded, volumes: 0 };
     const versions = [this.#shadows.version, this.#probes.version];
@@ -415,8 +432,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
     let W = size.width;
     let H = size.height;
     let D = Math.max(1, Math.round(s.depth));
-    // multi-group partials stack 2 ('volume') or 8 ('frame') slices per froxel slice along z
-    const layers = frameLighting ? VDB_FRAME_SUM_WORDS : 2;
+    // multi-group partials stack 2 ('volume'; K6.4 spectral 3) or 8 ('frame') slices per froxel slice along z
+    const layers = frameLighting ? VDB_FRAME_SUM_WORDS : spectral ? VDB_FRAME_GATHER_WORDS.spectral : VDB_FRAME_GATHER_WORDS.grey;
     if (W > maxDim || H > maxDim || D + 1 > maxDim || layers * D > maxDim) {
       this.#warnOnce("size", `the froxel grid ${W}x${H}x${D} exceeds maxTextureDimension3D (${maxDim}); clamped.`);
       W = Math.min(W, maxDim);
@@ -540,7 +557,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const lut = this.#colors.texture();
 
     // Textures (a new size or temporal / multi-group need retires the old ones and drops the history)
-    const tex = froxelWork ? this.#ensureTextures(W, H, D, s.temporal, multi, layers) : null;
+    const tex = froxelWork ? this.#ensureTextures(W, H, D, s.temporal, multi, layers, spectral) : null;
 
     // Temporal validity (his historyValid && historyCamera === camera; plus a consecutive frameId)
     const prev = this.#previous;
@@ -551,7 +568,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const historyOut = tex?.history ? tex.history[1 - this.#historyIndex]! : null;
     let box: VDBFroxelArea = area ? { rect: [...area.rect], first: 0, count: D } : { rect: [0, 0, 0, 0], first: 0, count: D };
     if (tex) {
-      for (const t of [tex.scatter, tex.integrated, historyOut]) {
+      for (const t of [tex.scatter, tex.integrated, historyOut, tex.spectral?.scatterAlpha, tex.spectral?.integratedAlpha]) {
         const w = t && this.#written.get(t);
         if (w) box = vdbFroxelAreaUnion(box, w);
       }
@@ -582,6 +599,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
     // K6.3: octaves (count 0: off) and 'two-sided' for both lightings ('frame' rewrites lighting.xzw in #frameGrid)
     fw.set(U, 0, "octaves", vdbFrameScatteringOctaves(s));
     fw.set(U, 0, "lighting", [0, s.multipleScattering === "two-sided" ? 1 : 0, 0, 0]);
+    // K6.4: spectral, slot groups in use ('frame' rewrites the groups in #frameGrid)
+    fw.set(U, 0, "spectral", [spectral ? 1 : 0, spectral ? 1 : 0, 0, 0]);
     // K6.2b: the environment kernels this update runs (reduced on the GPU; no readback)
     this.#env.prepare(frame.environment, s);
     const lightInfo = this.#packLights(frame.lights, s.occlusion ? (frame.occluders ?? []) : [], frameLighting && this.#env.present && this.#env.mode === "outward");
@@ -601,6 +620,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
       camera: { view: cam.view, cameraWorld, projectionInverse, near: cam.near, far: cam.far, orthographic: !!cam.orthographic },
       grid: last >= 0 ? { min: [this.#gridMin[last]!.x, this.#gridMin[last]!.y, this.#gridMin[last]!.z], size: [this.#gridSize[last]!.x, this.#gridSize[last]!.y, this.#gridSize[last]!.z] } : null,
       castVersion: this.#gridState.castVersion,
+      spectral,
     });
     this.redrawStats.volumeShadows.drawn = this.#shadows.stats.drawn;
     this.redrawStats.volumeShadows.waiting = this.#shadows.stats.waiting;
@@ -620,7 +640,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     }
     const emission = this.#probes.plan(emissionLight, emitters, [cameraWorld[12]!, cameraWorld[13]!, cameraWorld[14]!], emissionLight?.steps ?? 24);
 
-    this.#packVolumes(ordered, codes);
+    this.#packVolumes(ordered, codes, spectral);
     this.#packGroups(groups, gatherGroups, casterGroups);
 
     // Sparse sources (K6.7) record their own work after the host's pool.update(encoder); group 2 follows their version.
@@ -635,7 +655,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
       const gt = this.#grid!;
       const r = gt.resolution;
       casterGroups.forEach((g) => {
-        const built = computePipeline(this.device, vdbFrameGridDensitySpec(g.source, { multi: casterGroups.length > 1, maxVolumes: this.#maxVolumes }));
+        const built = computePipeline(this.device, vdbFrameGridDensitySpec(g.source, { multi: casterGroups.length > 1, maxVolumes: this.#maxVolumes, spectral }));
         pass.setPipeline(built.pipeline);
         pass.setBindGroup(0, group0);
         pass.setBindGroup(1, this.#gridDensityBind(built.layouts[1]!, gt, casterGroups.length > 1), [groups.indexOf(g) * VDB_FRAME_GROUP_STRIDE]);
@@ -643,7 +663,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
         pass.dispatchWorkgroups(Math.ceil(r / 4), Math.ceil(r / 4), Math.ceil((r * grid.count) / 4));
       });
     }
-    if (this.#grid && grid && grid.count > 0) this.#shadows.record(pass, computePipeline(this.device, vdbFrameVolumeShadowSpec()), group0, this.#grid.shadow);
+    if (this.#grid && grid && grid.count > 0) this.#shadows.record(pass, computePipeline(this.device, vdbFrameVolumeShadowSpec({ spectral })), group0, this.#grid.shadow);
     // K6.3: the scattered-light term's grid mips ('mlp': box mips in this pass; 'multi-scale': K7.3's own pass), redrawn
     // with the shadow grid
     if (grid?.drawTransmittance && grid.count > 0) {
@@ -659,18 +679,19 @@ class FrameRenderer implements VDBFrameRendererGpu {
     if (grid?.drawTransmittance) {
       const gt = this.#grid!;
       const r = gt.resolution;
-      const built = computePipeline(this.device, vdbFrameTransmittanceSpec({ scattering: grid.scattering }));
+      const built = computePipeline(this.device, vdbFrameTransmittanceSpec({ scattering: grid.scattering, spectral }));
       pass.setPipeline(built.pipeline);
       pass.setBindGroup(0, group0);
       pass.setBindGroup(1, this.#transmittanceBind(built.layouts[1]!, gt));
-      const group2 = this.#scattering.group2(grid.scattering, built.layouts[2]);
+      const group2 = spectral ? null : this.#scattering.group2(grid.scattering, built.layouts[2]);
       if (group2) pass.setBindGroup(2, group2);
-      pass.dispatchWorkgroups(Math.ceil(r / 4), Math.ceil(r / 4), Math.ceil((r * grid.count) / 4));
+      // K6.4 spectral: one dispatch over the cascades x the slot groups in use
+      pass.dispatchWorkgroups(Math.ceil(r / 4), Math.ceil(r / 4), Math.ceil((r * grid.count * (spectral ? grid.groups : 1)) / 4));
     }
     if (grid?.drawEnvironmentGrid) {
       const gt = this.#grid!;
       const r = gt.resolution;
-      const built = computePipeline(this.device, vdbFrameEnvironmentGridSpec());
+      const built = computePipeline(this.device, vdbFrameEnvironmentGridSpec({ spectral }));
       pass.setPipeline(built.pipeline);
       pass.setBindGroup(0, group0);
       pass.setBindGroup(1, this.#environmentGridBind(built.layouts[1]!, gt));
@@ -679,14 +700,14 @@ class FrameRenderer implements VDBFrameRendererGpu {
     if (emission) this.#recordEmission(pass, group0, groups, emission, lut);
     if (tex && area) {
       gatherGroups.forEach((g) => {
-        const built = computePipeline(this.device, vdbFrameGatherSpec(g.source, { mix: s.froxelMix, multi, maxVolumes: this.#maxVolumes, lighting: s.lighting, hook: g.hook }));
+        const built = computePipeline(this.device, vdbFrameGatherSpec(g.source, { mix: s.froxelMix, multi, maxVolumes: this.#maxVolumes, lighting: s.lighting, hook: g.hook, spectral }));
         pass.setPipeline(built.pipeline);
         pass.setBindGroup(0, group0);
         pass.setBindGroup(1, this.#gatherBind(built.layouts[1]!, tex, multi, frameLighting, g.source.channels.emission ? lut : null), [groups.indexOf(g) * VDB_FRAME_GROUP_STRIDE]);
         pass.setBindGroup(2, this.#sourceBind(g.source, built.layouts[2]!));
         pass.dispatchWorkgroups(Math.ceil((box.rect[2] - box.rect[0]) / 8), Math.ceil((box.rect[3] - box.rect[1]) / 8), D);
       });
-      const resolve = computePipeline(this.device, vdbFrameResolveSpec({ temporal: s.temporal }));
+      const resolve = computePipeline(this.device, vdbFrameResolveSpec(this.#resolveKey()));
       pass.setPipeline(resolve.pipeline);
       pass.setBindGroup(0, group0);
       pass.setBindGroup(1, this.#resolveBind(resolve.layouts[1]!, tex, s.temporal));
@@ -700,14 +721,14 @@ class FrameRenderer implements VDBFrameRendererGpu {
       return { outputs: this.outputs, recorded: false, volumes: 0 };
     }
     // Book-keeping: what each texture holds, the history swap, the previous frame
-    for (const t of [tex.scatter, tex.integrated, historyOut]) if (t) this.#written.set(t, area);
+    for (const t of [tex.scatter, tex.integrated, historyOut, tex.spectral?.scatterAlpha, tex.spectral?.integratedAlpha]) if (t) this.#written.set(t, area);
     if (tex.history) {
       this.#historyIndex = 1 - this.#historyIndex;
       this.#historyValid = true;
     }
     this.#previous = { view: Float64Array.from(cam.view), projection: Float64Array.from(cam.projection), range, cameraId: cam.id ?? null, frameId: frame.frameId };
     const layout: VDBFroxelLayout = { width: W, height: H, depth: D, range, screenRect: vdbFrameClipRect(area.rect, W, H, 1) };
-    this.outputs.froxels = { integrated: tex.integrated, integratedAlpha: null, layout };
+    this.outputs.froxels = { integrated: tex.integrated, integratedAlpha: tex.spectral?.integratedAlpha ?? null, layout };
     this.#recorded = true;
     return { outputs: this.outputs, recorded: true, volumes: visible.length };
   }
@@ -805,13 +826,18 @@ class FrameRenderer implements VDBFrameRendererGpu {
     lights: { sorted: readonly number[][]; sky: readonly number[]; occluderOf: readonly (VDBFrameOccluder | null)[]; ambient: readonly number[] },
     jitter: number,
     transmittance = true,
-  ): { count: number; drawGrid: boolean; drawTransmittance: boolean; drawEnvironmentGrid: boolean; scattering: VDBFrameScatteringKernel } {
+  ): { count: number; drawGrid: boolean; drawTransmittance: boolean; drawEnvironmentGrid: boolean; scattering: VDBFrameScatteringKernel; groups: number } {
     const s = this.settings;
     const fw = this.#frameWriter;
     const U = VDB_FRAME_UNIFORMS;
     const resolution = Math.max(2, Math.round(s.shadowResolution));
     const cascades = Math.min(VDB_FRAME_MAX_CASCADES, Math.max(1, Math.round(s.shadowCascades)));
-    const gt = this.#ensureGrid(resolution, cascades, casterGroups.length > 1);
+    const spectral = !!s.spectral;
+    // K6.4: the slot groups in use (his getFrameSpectralGroups over the scene slots and the environment slot, set below)
+    const sceneSlotCount = Math.min(lights.sorted.length, VDB_FRAME_SHADOW_SLOTS);
+    const envSlotWanted = this.#env.present && this.#env.mode === "directional" && sceneSlotCount < VDB_FRAME_SHADOW_SLOTS && !(!!s.multipleScattering && s.multipleScattering !== "octaves");
+    const groups = spectral ? vdbFrameSpectralGroups(sceneSlotCount + (envSlotWanted ? 1 : 0)) : 0;
+    const gt = this.#ensureGrid(resolution, cascades, casterGroups.length > 1, spectral, groups);
     const casters = casterGroups.flatMap((g) => g.records.filter((r) => r.caster));
     const boxes = casters.map((r) => {
       const b = vdbUnitBoxBounds(r.volume.params.matrixWorld);
@@ -824,6 +850,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
       const slot = r.volume.slot;
       for (let i = 0; i < 16; i++) values.push(p.matrixWorld[i]!);
       values.push(this.#sourceId(slot.source), slot.v, slot.version, ...p.baseColor, this.#densityScaleOf(p, slot), p.densityCutoff, p.extinction, p.absorbance, p.mipmaps ? 1 : 0, WRAP_CODE[p.wrap3D] ?? 0, ...p.offset3D);
+      // K6.4: the spectral grid holds each channel's extinction
+      if (spectral) values.push(...p.extinctionScale, p.angstromExponent);
     });
     const shadowSlots = Math.min(lights.sorted.length, VDB_FRAME_SHADOW_SLOTS);
     const ms = vdbFrameMultipleScatteringValue(s.multipleScattering === "octaves" ? false : s.multipleScattering, this.#phaseOf(null));
@@ -845,15 +873,32 @@ class FrameRenderer implements VDBFrameRendererGpu {
       at("gridSize", v(this.#gridSize[c]!));
       at("gridVoxel", v(this.#gridVoxel[c]!));
       at("shadowOrigin", [...gt.shadowLayout.origins[c]!, 0]);
-      for (let k = 0; k < 4; k++) {
-        const slot = U.fields.get("transmittanceOrigin")!;
-        const base = (slot.offset + (4 * c + k) * slot.stride) / 4;
-        const o = gt.transmittanceLayout.origins[4 * c + k]!;
-        fw.f32[base] = o[0];
-        fw.f32[base + 1] = o[1];
-        fw.f32[base + 2] = o[2];
+      if (!spectral) {
+        for (let k = 0; k < 4; k++) {
+          const slot = U.fields.get("transmittanceOrigin")!;
+          const base = (slot.offset + (4 * c + k) * slot.stride) / 4;
+          const o = gt.transmittanceLayout.origins[4 * c + k]!;
+          fw.f32[base] = o[0];
+          fw.f32[base + 1] = o[1];
+          fw.f32[base + 2] = o[2];
+        }
       }
     }
+    // K6.4 spectral: target k of slot group g of cascade c at [3 (g count + c) + k]
+    if (spectral && count > 0) {
+      const slot = U.fields.get("transmittanceOrigin")!;
+      for (let g = 0; g < groups; g++)
+        for (let c = 0; c < count; c++)
+          for (let k = 0; k < 3; k++) {
+            const i = 3 * (g * count + c) + k;
+            const o = gt.transmittanceLayout.origins[i]!;
+            const base = (slot.offset + i * slot.stride) / 4;
+            fw.f32[base] = o[0];
+            fw.f32[base + 1] = o[1];
+            fw.f32[base + 2] = o[2];
+          }
+    }
+    fw.set(U, 0, "spectral", [spectral ? 1 : 0, spectral ? groups : 0, 0, 0]);
     fw.set(U, 0, "gridLayout", [count, resolution, vdbFrameAtlasLayout(resolution, resolution, resolution * cascades).columns, shadowSlots]);
     fw.set(U, 0, "lighting", [ms, twoSided ? 1 : 0, count > 0 ? 1 : 0, diffusion ? 1 : 0]);
     fw.set(U, 0, "framePhase", phase);
@@ -878,9 +923,9 @@ class FrameRenderer implements VDBFrameRendererGpu {
       this.#gridDrawn = this.#gridState.gridVersion;
     }
     // K6.5: the volume shadow maps alone ('volume' lighting, or no volume in view) need only the grid
-    if (!transmittance) return { count, drawGrid, drawTransmittance: false, drawEnvironmentGrid: false, scattering: "none" };
+    if (!transmittance) return { count, drawGrid, drawTransmittance: false, drawEnvironmentGrid: false, scattering: "none", groups };
     // K6.3: the scattered-light term of the slots ('mlp', 'multi-scale' as a pipeline key; two-sided, octaves uniforms)
-    const scattering = count > 0 ? this.#scattering.kind(s, this.mlp) : "none";
+    const scattering = count > 0 && !spectral ? this.#scattering.kind(s, this.mlp) : "none";
     const last = Math.max(0, count - 1);
     const plan =
       count > 0
@@ -898,7 +943,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
           )
         : { kind: scattering, signature: [] };
     // K6.Q1: the shadowed ambient's pairs and directions
-    const signature: unknown[] = [this.#gridDraws, gt.shadow, gt.transmittance, shadowSlots, ms, ...lights.sky, envSlot, envSlot ? env.version : -1, twoSided, ...octaves, ...plan.signature, ...lights.ambient];
+    const signature: unknown[] = [this.#gridDraws, gt.shadow, gt.transmittance, shadowSlots, ms, ...lights.sky, envSlot, envSlot ? env.version : -1, twoSided, ...octaves, ...plan.signature, ...lights.ambient, spectral, groups];
     for (let i = 0; i < shadowSlots; i++) signature.push(...lights.sorted[i]!.slice(0, 4));
     // K6.5b: the slot lights' occluder maps (view, matrices, bias, flags, revision); a map without a revision changes
     // every update
@@ -918,23 +963,27 @@ class FrameRenderer implements VDBFrameRendererGpu {
       else this.redrawStats.transmittance.skipped++;
     }
     // his renderEnvironmentGrid signature: the grid (its version covers the cascades and casters), ms, the lights
-    const envSignature: unknown[] = [this.#gridDraws, gt.shadow, gt.environment, count, ms, envSlot, env.version, ...octaves];
+    const envSignature: unknown[] = [this.#gridDraws, gt.shadow, gt.environment, count, ms, envSlot, env.version, ...octaves, spectral];
     const drawEnvironmentGrid = envGrid && !vdbSameValues(envSignature, this.#envGridSignature);
     if (envGrid) {
       if (drawEnvironmentGrid) this.redrawStats.environmentGrid.drawn++;
       else this.redrawStats.environmentGrid.skipped++;
       this.#envGridSignature = envSignature;
     }
-    return { count, drawGrid, drawTransmittance, drawEnvironmentGrid, scattering: plan.kind };
+    return { count, drawGrid, drawTransmittance, drawEnvironmentGrid, scattering: plan.kind, groups };
   }
 
   /** The grid textures for this resolution and cascade count (a change retires the old ones and redraws). */
-  #ensureGrid(resolution: number, cascades: number, multi: boolean): GridTextures {
+  #ensureGrid(resolution: number, cascades: number, multi: boolean, spectral = false, groups = 0): GridTextures {
     const g = this.#grid;
-    if (g && g.resolution === resolution && g.cascades === cascades && (!multi || g.partials)) return g;
+    // K6.4: spectral grids keep the absorption stack and as many slot groups as were ever used (a growth reallocates)
+    const sameKind = !!g && g.resolution === resolution && g.cascades === cascades && !!g.absorption === spectral && (!spectral || g.groups >= groups);
+    // spectral multi-group partials: 3 words per voxel (the stack depth × 3)
+    const partialSize = (layout: VDBFrameStackLayout): [number, number, number] => [layout.size[0], layout.size[1], layout.size[2] * (spectral ? VDB_FRAME_SPECTRAL_GRID_WORDS : 1)];
+    if (g && sameKind && (!multi || g.partials)) return g;
     const maxDim = this.device.limits?.maxTextureDimension3D ?? 2048;
-    if (g && g.resolution === resolution && g.cascades === cascades) {
-      g.partials = createFroxelTexture(this.device, `${this.#label} grid partials`, g.shadowLayout.size, "r32uint", false);
+    if (g && sameKind) {
+      g.partials = createFroxelTexture(this.device, `${this.#label} grid partials`, partialSize(g.shadowLayout), "r32uint", false);
       return g;
     }
     if (g) {
@@ -942,9 +991,11 @@ class FrameRenderer implements VDBFrameRendererGpu {
       this.#retire.retire(g.transmittance);
       this.#retire.retire(g.partials);
       this.#retire.retire(g.environment);
+      this.#retire.retire(g.absorption);
     }
     const shadowLayout = vdbFrameStackLayout(resolution, cascades, maxDim);
-    const transmittanceLayout = vdbFrameStackLayout(resolution, 4 * cascades, maxDim);
+    const keptGroups = spectral ? Math.min(VDB_FRAME_SPECTRAL_GROUPS, Math.max(groups, g?.groups ?? 0, 1)) : 0;
+    const transmittanceLayout = vdbFrameStackLayout(resolution, spectral ? 3 * keptGroups * cascades : 4 * cascades, maxDim);
     const next: GridTextures = {
       resolution,
       cascades,
@@ -952,8 +1003,10 @@ class FrameRenderer implements VDBFrameRendererGpu {
       transmittanceLayout,
       shadow: createFroxelTexture(this.device, `${this.#label} shadow grid`, shadowLayout.size, "rgba16float"),
       transmittance: createFroxelTexture(this.device, `${this.#label} transmittance`, transmittanceLayout.size, "rgba16float"),
-      partials: multi ? createFroxelTexture(this.device, `${this.#label} grid partials`, shadowLayout.size, "r32uint", false) : null,
+      partials: multi ? createFroxelTexture(this.device, `${this.#label} grid partials`, partialSize(shadowLayout), "r32uint", false) : null,
       environment: createFroxelTexture(this.device, `${this.#label} environment grid`, [resolution, resolution, resolution], "rgba16float"),
+      absorption: spectral ? createFroxelTexture(this.device, `${this.#label} shadow grid absorption`, shadowLayout.size, "rgba16float") : null,
+      groups: keptGroups,
     };
     this.#grid = next;
     // A new texture is empty: draw the grid and the transmittance again
@@ -963,9 +1016,10 @@ class FrameRenderer implements VDBFrameRendererGpu {
     return next;
   }
 
-  #ensureTextures(W: number, H: number, D: number, temporal: boolean, multi: boolean, layers: number): Textures {
+  #ensureTextures(W: number, H: number, D: number, temporal: boolean, multi: boolean, layers: number, spectral = false): Textures {
     const t = this.#textures;
-    const sameSize = !!t && t.size[0] === W && t.size[1] === H && t.size[2] === D;
+    // K6.4: grey and spectral froxel textures differ (the alpha textures, a history twice as deep)
+    const sameSize = !!t && t.size[0] === W && t.size[1] === H && t.size[2] === D && !!t.spectral === spectral;
     if (t && sameSize && (!temporal || t.history) && (!multi || (t.partials && t.partialLayers === layers))) {
       return t;
     }
@@ -976,9 +1030,12 @@ class FrameRenderer implements VDBFrameRendererGpu {
         this.#retire.retire(t.integrated);
         t.history?.forEach((h) => this.#retire.retire(h));
         this.#retire.retire(t.partials);
+        this.#retire.retire(t.spectral?.scatterAlpha);
+        this.#retire.retire(t.spectral?.integratedAlpha);
       }
       changed = true;
       this.#historyValid = false;
+      const alphaFormat = this.#tier1 ? "rg16float" : "rgba16float";
       return {
         size: [W, H, D],
         scatter: createFroxelTexture(this.device, `${this.#label} scatter`, [W, H, D], "rgba16float"),
@@ -986,10 +1043,19 @@ class FrameRenderer implements VDBFrameRendererGpu {
         history: null,
         partials: null,
         partialLayers: 0,
+        spectral: spectral
+          ? {
+              scatterAlpha: createFroxelTexture(this.device, `${this.#label} scatter alpha`, [W, H, D], "rgba16float"),
+              integratedAlpha: createFroxelTexture(this.device, `${this.#label} integrated alpha`, [W, H, D + 1], alphaFormat),
+              alphaFormat,
+            }
+          : null,
       } as Textures;
     })();
     if (temporal && !next.history) {
-      next.history = [createFroxelTexture(this.device, `${this.#label} history 0`, [W, H, D], "rgba16float"), createFroxelTexture(this.device, `${this.#label} history 1`, [W, H, D], "rgba16float")];
+      // K6.4 spectral: the scatter history at z < D, the alpha history at z >= D
+      const depth = spectral ? 2 * D : D;
+      next.history = [createFroxelTexture(this.device, `${this.#label} history 0`, [W, H, depth], "rgba16float"), createFroxelTexture(this.device, `${this.#label} history 1`, [W, H, depth], "rgba16float")];
       this.#historyValid = false;
       this.#historyIndex = 0;
     }
@@ -1001,6 +1067,11 @@ class FrameRenderer implements VDBFrameRendererGpu {
     this.#textures = next;
     if (changed) this.outputs.version++;
     return next;
+  }
+
+  /** The resolve kernel's key: temporal, K6.4 spectral and the alpha prefix format. */
+  #resolveKey(): { temporal: boolean; spectral: boolean; alphaFormat: "rg16float" | "rgba16float" } {
+    return { temporal: this.settings.temporal, spectral: !!this.settings.spectral, alphaFormat: this.#tier1 ? "rg16float" : "rgba16float" };
   }
 
   #group0Bind(): GPUBindGroup {
@@ -1051,9 +1122,10 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const b = frameLighting ? FRAME_GATHER_BINDINGS : GATHER_BINDINGS;
     const transmittance = frameLighting ? this.#grid!.transmittance : null;
     const environment = frameLighting ? this.#grid!.environment : null;
-    const name = `gather${frameLighting ? "-frame" : ""}${multi ? "-multi" : ""}${lut ? "-lut" : ""}`;
+    const alpha = tex.spectral?.scatterAlpha ?? null;
+    const name = `gather${frameLighting ? "-frame" : ""}${multi ? "-multi" : ""}${lut ? "-lut" : ""}${alpha ? "-spectral" : ""}`;
     const occluders = this.#occluderSlots();
-    return this.#cached(name, [layout, tex.scatter, ...(multi ? [tex.partials!] : []), ...(transmittance ? [transmittance, environment!] : []), ...(lut ? [lut] : []), this.#groupsBuffer, ...occluders], () =>
+    return this.#cached(name, [layout, tex.scatter, ...(multi ? [tex.partials!] : []), ...(transmittance ? [transmittance, environment!] : []), ...(lut ? [lut] : []), ...(alpha ? [alpha] : []), this.#groupsBuffer, ...occluders], () =>
       this.device.createBindGroup({
         label: `${this.#label} gather group 1`,
         layout,
@@ -1069,6 +1141,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
               ]
             : []),
           ...(lut ? [{ binding: b.emissionLut, resource: lut.createView() }] : []),
+          ...(alpha ? [{ binding: b.scatterAlpha, resource: alpha.createView({ dimension: "3d" }) }] : []),
           ...this.#occluderEntries(occluders),
         ],
       }),
@@ -1077,7 +1150,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
 
   #gridDensityBind(layout: GPUBindGroupLayout, gt: GridTextures, multi: boolean): GPUBindGroup {
     const b = GRID_DENSITY_BINDINGS;
-    return this.#cached(`grid-density${multi ? "-multi" : ""}`, [layout, gt.shadow, ...(multi ? [gt.partials!] : []), this.#groupsBuffer], () =>
+    const absorption = gt.absorption;
+    return this.#cached(`grid-density${multi ? "-multi" : ""}${absorption ? "-spectral" : ""}`, [layout, gt.shadow, ...(multi ? [gt.partials!] : []), ...(absorption ? [absorption] : []), this.#groupsBuffer], () =>
       this.device.createBindGroup({
         label: `${this.#label} grid density group 1`,
         layout,
@@ -1086,6 +1160,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
           { binding: b.group, resource: { buffer: this.#groupsBuffer, size: VDB_FRAME_GROUP.size } },
           { binding: b.grid, resource: gt.shadow.createView({ dimension: "3d" }) },
           ...(multi ? [{ binding: b.partials, resource: gt.partials!.createView({ dimension: "3d" }) }] : []),
+          ...(absorption ? [{ binding: b.absorption, resource: absorption.createView({ dimension: "3d" }) }] : []),
         ],
       }),
     );
@@ -1094,13 +1169,15 @@ class FrameRenderer implements VDBFrameRendererGpu {
   #transmittanceBind(layout: GPUBindGroupLayout, gt: GridTextures): GPUBindGroup {
     const b = TRANSMITTANCE_BINDINGS;
     const occluders = this.#occluderSlots();
-    return this.#cached("transmittance", [layout, gt.shadow, gt.transmittance, ...occluders], () =>
+    const absorption = gt.absorption;
+    return this.#cached(`transmittance${absorption ? "-spectral" : ""}`, [layout, gt.shadow, gt.transmittance, ...(absorption ? [absorption] : []), ...occluders], () =>
       this.device.createBindGroup({
         label: `${this.#label} transmittance group 1`,
         layout,
         entries: [
           { binding: b.grid, resource: gt.shadow.createView({ dimension: "3d" }) },
           { binding: b.transmittance, resource: gt.transmittance.createView({ dimension: "3d" }) },
+          ...(absorption ? [{ binding: b.absorption, resource: absorption.createView({ dimension: "3d" }) }] : []),
           ...this.#occluderEntries(occluders),
         ],
       }),
@@ -1109,13 +1186,15 @@ class FrameRenderer implements VDBFrameRendererGpu {
 
   #environmentGridBind(layout: GPUBindGroupLayout, gt: GridTextures): GPUBindGroup {
     const b = ENV_GRID_BINDINGS;
-    return this.#cached("environment-grid", [layout, gt.shadow, gt.environment], () =>
+    const absorption = gt.absorption;
+    return this.#cached(`environment-grid${absorption ? "-spectral" : ""}`, [layout, gt.shadow, gt.environment, ...(absorption ? [absorption] : [])], () =>
       this.device.createBindGroup({
         label: `${this.#label} environment grid group 1`,
         layout,
         entries: [
           { binding: b.grid, resource: gt.shadow.createView({ dimension: "3d" }) },
           { binding: b.out, resource: gt.environment.createView({ dimension: "3d" }) },
+          ...(absorption ? [{ binding: b.absorption, resource: absorption.createView({ dimension: "3d" }) }] : []),
         ],
       }),
     );
@@ -1125,7 +1204,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const b = RESOLVE_BINDINGS;
     const historyIn = tex.history ? tex.history[this.#historyIndex]! : null;
     const historyOut = tex.history ? tex.history[1 - this.#historyIndex]! : null;
-    return this.#cached(`resolve${temporal ? `-${this.#historyIndex}` : ""}`, [layout, tex.scatter, tex.integrated, ...(temporal ? [historyIn!, historyOut!] : [])], () =>
+    const sp = tex.spectral;
+    return this.#cached(`resolve${temporal ? `-${this.#historyIndex}` : ""}${sp ? "-spectral" : ""}`, [layout, tex.scatter, tex.integrated, ...(temporal ? [historyIn!, historyOut!] : []), ...(sp ? [sp.scatterAlpha, sp.integratedAlpha] : [])], () =>
       this.device.createBindGroup({
         label: `${this.#label} resolve group 1`,
         layout,
@@ -1136,6 +1216,12 @@ class FrameRenderer implements VDBFrameRendererGpu {
             ? [
                 { binding: b.historyIn, resource: historyIn!.createView({ dimension: "3d" }) },
                 { binding: b.historyOut, resource: historyOut!.createView({ dimension: "3d" }) },
+              ]
+            : []),
+          ...(sp
+            ? [
+                { binding: b.scatterAlpha, resource: sp.scatterAlpha.createView({ dimension: "3d" }) },
+                { binding: b.integratedAlpha, resource: sp.integratedAlpha.createView({ dimension: "3d" }) },
               ]
             : []),
         ],
@@ -1307,7 +1393,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     return p.normalizeDensity && mean > 0 ? p.densityScale / mean : p.densityScale;
   }
 
-  #packVolumes(records: readonly VolumeRecord[], codes: readonly number[]): void {
+  #packVolumes(records: readonly VolumeRecord[], codes: readonly number[], spectral = false): void {
     const w = this.#volumesWriter;
     const V = VDB_FRAME_VOLUME;
     records.forEach((r, i) => {
@@ -1332,7 +1418,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
       w.set(V, base, "density", [this.#densityScaleOf(p, slot), p.densityCutoff, vdbMat4MaxScale(p.matrixWorld), p.absorbance]);
       w.set(V, base, "emission", [p.emissiveIntensity, p.temperatureRange[0], p.temperatureRange[1], levels]);
       w.set(V, base, "march", [Math.max(0, Math.round(p.shadowSteps)), p.mipmaps && levels > 0 ? 1 : 0, p.hdda ? 1 : 0, codes[i] ?? 0]);
-      w.set(V, base, "extinctionSpectrum", [1, 1, 1, 0]);
+      // K6.4: each channel's extinction scale (his getFrameExtinctionSpectrum); grey kernels do not read it
+      w.set(V, base, "extinctionSpectrum", spectral ? [...vdbFrameExtinctionSpectrum([...p.extinctionScale], p.angstromExponent), 0] : [1, 1, 1, 0]);
     });
     this.device.queue.writeBuffer(this.#volumesBuffer, 0, w.buffer, 0, Math.max(1, records.length) * VDB_FRAME_VOLUME_BYTES);
   }
@@ -1367,9 +1454,14 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const froxels = this.outputs.froxels;
     if (!this.#recorded || !froxels) return;
     const srgb = key.srgb && (targets.outputColorSpace ?? "srgb") === "srgb";
-    const finalKey: VDBFrameCompositeKey = { ...key, srgb };
+    // K6.4: the spectral composite reads the alpha prefix of this update's textures
+    const spectral = !!froxels.integratedAlpha;
+    const finalKey: VDBFrameCompositeKey = { ...key, srgb, spectral };
     if (srgb && !targets.sceneColor) {
       throw new VDBError("VDB_BAD_OPTION", "VDBFrameRendererGpu.render: sRGB blending reads the scene colour: pass targets.sceneColor (a copy of the colour target), or set settings.srgbBlending = false.");
+    }
+    if (spectral && !targets.sceneColor) {
+      throw new VDBError("VDB_BAD_OPTION", "VDBFrameRendererGpu.render: spectral media composite over the scene colour themselves (three transmittances): pass targets.sceneColor (a copy of the colour target).");
     }
     const [sw, sh] = targets.size;
     // Only the screen-size fields move here; the rest is the update's.
@@ -1392,7 +1484,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
         { binding: 0, resource: froxels.integrated.createView({ dimension: "3d" }) },
         { binding: 1, resource: this.#linear },
         { binding: 2, resource: targets.depth },
-        ...(srgb ? [{ binding: 3, resource: targets.sceneColor! }] : []),
+        ...(srgb || spectral ? [{ binding: 3, resource: targets.sceneColor! }] : []),
+        ...(spectral ? [{ binding: VDB_FRAME_COMPOSITE_ALPHA_BINDING, resource: froxels.integratedAlpha!.createView({ dimension: "3d" }) }] : []),
       ],
     });
     const pass = encoder.beginRenderPass({ label: `${this.#label} composite`, colorAttachments: [{ view: targets.color, loadOp: "load", storeOp: "store" }] });
@@ -1425,6 +1518,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
       t.integrated.destroy();
       t.history?.forEach((h) => h.destroy());
       t.partials?.destroy();
+      t.spectral?.scatterAlpha.destroy();
+      t.spectral?.integratedAlpha.destroy();
     }
     this.#textures = null;
     const g = this.#grid;
@@ -1433,6 +1528,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
       g.transmittance.destroy();
       g.partials?.destroy();
       g.environment.destroy();
+      g.absorption?.destroy();
     }
     this.#grid = null;
     this.#shadows.dispose();
@@ -1501,7 +1597,14 @@ export function vdbCreateFrameRenderer(device: GPUDevice, options: VDBFrameRende
 }
 
 /** @internal The froxel textures of a renderer from {@link vdbCreateFrameRenderer} (harness probes). */
-export function vdbFrameRendererTextures(r: VDBFrameRendererGpu): { scatter: GPUTexture; integrated: GPUTexture; history: readonly GPUTexture[] | null; partials: GPUTexture | null; size: readonly number[] } | null {
+export function vdbFrameRendererTextures(r: VDBFrameRendererGpu): {
+  scatter: GPUTexture;
+  integrated: GPUTexture;
+  history: readonly GPUTexture[] | null;
+  partials: GPUTexture | null;
+  size: readonly number[];
+  spectral: { scatterAlpha: GPUTexture; integratedAlpha: GPUTexture; alphaFormat: "rg16float" | "rgba16float" } | null;
+} | null {
   return (r as unknown as { debugTextures: Textures | null }).debugTextures;
 }
 
@@ -1512,7 +1615,7 @@ export function vdbFrameRendererEmission(r: VDBFrameRendererGpu): { directions: 
 
 /** @internal The 'frame' lighting grid of a renderer (harness probes): stacks, their layouts and the live cascades. */
 export function vdbFrameRendererGrid(r: VDBFrameRendererGpu): {
-  textures: { resolution: number; cascades: number; shadow: GPUTexture; shadowLayout: VDBFrameStackLayout; transmittance: GPUTexture; transmittanceLayout: VDBFrameStackLayout; partials: GPUTexture | null; environment: GPUTexture };
+  textures: { resolution: number; cascades: number; shadow: GPUTexture; shadowLayout: VDBFrameStackLayout; transmittance: GPUTexture; transmittanceLayout: VDBFrameStackLayout; partials: GPUTexture | null; environment: GPUTexture; absorption: GPUTexture | null; groups: number };
   count: number;
   gridMin: number[][];
   gridSize: number[][];

@@ -36,10 +36,15 @@ export interface VDBFrameGatherOptions {
   readonly channels: VDBVolumeChannels;
   /** K6.5: a validated user emission colour hook (WGSL), or none. */
   readonly hook?: string | null;
+  /** K6.4: spectral media (per-channel extinction, albedo, multiple scattering; the second scatter texture). */
+  readonly spectral?: boolean;
 }
 
-/** Group-1 bindings of the gather kernel. */
-export const GATHER_BINDINGS = { volumes: 0, group: 1, scatter: 2, partials: 3, emissionLut: 4 } as const;
+/** Group-1 bindings of the gather kernel (K6.4: `scatterAlpha` with spectral). */
+export const GATHER_BINDINGS = { volumes: 0, group: 1, scatter: 2, partials: 3, emissionLut: 4, scatterAlpha: 5 } as const;
+
+/** K6.4: words per froxel of the 'volume' gather's multi-group partials (grey 2: Σ τL rgb, Σ τ; spectral 3: rgb each). */
+export const VDB_FRAME_GATHER_WORDS = { grey: 2, spectral: 3 } as const;
 
 /**
  * The volume-record functions every source kernel shares (gather 'volume' and 'frame', gridDensity): his gridUv,
@@ -93,9 +98,12 @@ ${emission}
 /**
  * The slice pre-integration of one volume in one froxel (his inject / density passes, L142–200): the box segment,
  * the sub-steps at the froxel lod and the visibility-weighted mean position. Shared by the 'volume' and 'frame'
- * gathers (one density call site).
+ * gathers (one density call site). K6.4 `spectral`: the transmittance of each channel (the volume's extinction
+ * spectrum); the visible position weighs the channel mean (his frameMeanComponent); `alpha3` holds each channel's alpha
+ * and `alpha` the largest.
  */
-export const VDB_FRAME_SLICE_WGSL = `// One volume's slice: (alpha, visible t, extinction sum / steps * segment, read lod); alpha 0: nothing.
+export function vdbFrameSliceWgsl(spectral = false): string {
+  return `// One volume's slice: (alpha, visible t, extinction sum / steps * segment, read lod); alpha 0: nothing.
 struct VdbFrameSlice {
   alpha: f32,
   visibleT: f32,
@@ -104,7 +112,7 @@ struct VdbFrameSlice {
   lod: f32,
   maxTexels: f32,
   localNear: vec3f,
-  localFar: vec3f,
+  localFar: vec3f,${spectral ? "\n  alpha3: vec3f," : ""}
 };
 fn vdbFrameSliceOf(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSlice {
   var s: VdbFrameSlice;
@@ -135,10 +143,10 @@ fn vdbFrameSliceOf(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSlice {
   let subStepLength = length(f.viewFar - f.viewNear) * segment / subStepCount;
   s.lod = max(widthLod, vdbFrameLod(subStepLength / worldScale, s.maxTexels));
   s.readLod = select(0.0, s.lod, mipmaps);
-  let opacity = vdbFrameVolumes.v[vi].scatterOpacity.w;
+  let opacity = vdbFrameVolumes.v[vi].scatterOpacity.w;${spectral ? "\n  let spectrum = vdbFrameVolumes.v[vi].extinctionSpectrum.xyz;" : ""}
 
   // Pre-integrate the slice along the view ray; light the visibility-weighted mean position.
-  var transmittance = 1.0;
+  var transmittance = ${spectral ? "vec3f(1.0)" : "1.0"};
   var visibleWeight = 0.0;
   var visibleTSum = 0.0;
   var extinctionSum = 0.0;
@@ -146,22 +154,347 @@ fn vdbFrameSliceOf(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSlice {
   for (var i = 0u; i < steps; i++) {
     let t = boxSegment.x + segment * ((f32(i) + jitter) / subStepCount);
     let extinction = vdbFrameExtinction(vi, mix(s.localNear, s.localFar, vec3f(t)), s.readLod) * opacity * vdbFrameDistanceFade(mix(f.viewNear, f.viewFar, vec3f(t)));
-    let stepTransmittance = exp(-extinction * subStepLength);
-    let weight = transmittance * (1.0 - stepTransmittance);
+    let stepTransmittance = exp(-${spectral ? "spectrum * " : ""}extinction * subStepLength);
+    let weight = ${spectral ? "vdbFrameMeanComponent(transmittance * (vec3f(1.0) - stepTransmittance))" : "transmittance * (1.0 - stepTransmittance)"};
     visibleWeight += weight;
     visibleTSum += weight * t;
     extinctionSum += extinction;
     transmittance *= stepTransmittance;
   }
-  s.alpha = 1.0 - transmittance;
+${spectral ? "  s.alpha3 = vec3f(1.0) - transmittance;\n  s.alpha = vdbFrameMaxComponent(s.alpha3);" : "  s.alpha = 1.0 - transmittance;"}
   s.extinction = extinctionSum / subStepCount * segment;
   s.visibleT = select(-1.0, visibleTSum / visibleWeight, visibleWeight > 0.0);
   return s;
 }
 `;
+}
+
+/** The grey slice pre-integration ({@link vdbFrameSliceWgsl}). */
+export const VDB_FRAME_SLICE_WGSL = vdbFrameSliceWgsl(false);
+
+/**
+ * K6.4: the inject pass's shadow march in one volume, spectral (his FrameInjectMaterial L393–439): one volume has one
+ * spectrum, so the march sums one optical depth and the depths of each channel are linear in it (`unit`); it stops when
+ * every channel's march depth is past 8. The same sample lattice and HDDA skip as the grey march.
+ */
+const SPECTRAL_MARCH_WGSL = `fn vdbFrameSpectralShadowMarch(vi: u32, origin: vec3f, localDirection: vec3f, maxLocalDistance: f32, lod: f32, maxTexels: f32, unit: VdbFrameSpectralDepths, noise: f32) -> VdbFrameSpectralMarch {
+  let steps = vdbFrameVolumes.v[vi].march.x;
+  let absorbance = vdbFrameVolumes.v[vi].density.w;
+  if (absorbance <= 0.0 || steps == 0u) {
+    return vdbFrameSpectralUnmarched();
+  }
+  let direction = normalize(localDirection);
+  let marchDistance = min(vdbFrameBoxExit(origin, direction), maxLocalDistance);
+  if (marchDistance <= 0.0) {
+    return vdbFrameSpectralUnmarched();
+  }
+  let multipleScattering = vdbFrameVolumes.v[vi].phaseSpectrumMs.w;
+  let mipmaps = vdbFrameVolumes.v[vi].march.y != 0u;
+  let localStep = marchDistance / f32(steps);
+  let stepLod = select(0.0, max(lod, vdbFrameLod(localStep, maxTexels)), mipmaps);
+  let worldStep = localStep * length(vdbFrameMat3(vdbFrameVolumes.v[vi].localToView) * direction);
+  let stepScale = worldStep * absorbance;
+  let offsetWrap = vdbFrameVolumes.v[vi].offsetWrap;
+  let skip = vdbFrameVolumes.v[vi].march.z != 0u && offsetWrap.w < 0.5 && all(offsetWrap.xyz == vec3f(0.0));
+  let cutoff = max(vdbFrameVolumes.v[vi].density.y, 0.0);
+  let tEnd = marchDistance + localStep;
+  var opticalDepth = 0.0;
+  var cellEnd = -1.0;
+  var lastZero = true;
+  var k = 0u;
+  loop {
+    if (k >= steps) {
+      break;
+    }
+    let t = localStep * (f32(k) + noise);
+    if (skip && lastZero && t >= cellEnd) {
+      let span = vdbSrcSkipSpan(vdbFrameVolumes.v[vi].slices.z, origin + 0.5, direction, t, tEnd, stepLod, cutoff);
+      cellEnd = span.y;
+      if (span.x > t) {
+        k = max(k + 1u, u32(max(ceil(span.x / localStep - noise), 0.0)));
+        continue;
+      }
+    }
+    let extinction = vdbFrameExtinction(vi, origin + direction * t, stepLod) * stepScale;
+    lastZero = extinction <= 0.0;
+    opticalDepth += extinction;
+    let d = VdbFrameSpectralDepths(unit.x * opticalDepth, unit.y * opticalDepth, unit.z * opticalDepth);
+    if (vdbFrameMinComponent(vdbFrameSpectralShadowMarchDepth(d, multipleScattering, vdbFrame.octaves)) > 8.0) {
+      break;
+    }
+    k++;
+  }
+  let depths = VdbFrameSpectralDepths(unit.x * opticalDepth, unit.y * opticalDepth, unit.z * opticalDepth);
+  let shadow = vdbFrameSpectralShadowTransmittance(depths, multipleScattering, vdbFrame.octaves);
+  return VdbFrameSpectralMarch(shadow.x, shadow.y, depths.z, depths.y);
+}
+`;
+
+/**
+ * K6.4: one volume in one froxel, spectral (his inject pass with `spectral`): per-channel alpha, march, totals and
+ * radiance. The same light loop (one march call site) as the grey `vdbFrameVolumeFroxel`.
+ */
+const SPECTRAL_VOLUME_FROXEL_WGSL = `struct VdbFrameSpectralFroxel {
+  radiance: vec3f,
+  alpha: vec3f,
+};
+fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSpectralFroxel {
+  var none: VdbFrameSpectralFroxel;
+  let s = vdbFrameSliceOf(vi, cell, f);
+  if (s.visibleT < 0.0 || s.alpha <= 1e-5) {
+    return none;
+  }
+  let slices = vdbFrameVolumes.v[vi].slices;
+  let lod = s.lod;
+  let readLod = s.readLod;
+  let maxTexels = s.maxTexels;
+  let localPosition = mix(s.localNear, s.localFar, vec3f(s.visibleT));
+  let localToView = vdbFrameVolumes.v[vi].localToView;
+  let worldToLocal = vdbFrameVolumes.v[vi].worldToLocal;
+  let viewPosition = (localToView * vec4f(localPosition, 1.0)).xyz;
+  let worldPosition = (vdbFrame.cameraWorld * vec4f(viewPosition, 1.0)).xyz;
+  let worldToLocalDirection = vdbFrameMat3(worldToLocal);
+  let rayDirection = normalize(vdbFrameMat3(vdbFrame.cameraWorld) * (f.viewFar - f.viewNear));
+  let shadowNoise = vdbFrameNoise(vdbFrame.jitterFade.x, f.fragCoord + vec2f(17.0, 31.0));
+  let albedo = vdbFrameAlbedo(vi, localPosition, readLod);
+  let phase = vdbFrameVolumes.v[vi].phase;
+  let phaseSpectrumMs = vdbFrameVolumes.v[vi].phaseSpectrumMs;
+  let diffusion = phaseSpectrumMs.w > 0.0;
+  let octaves = vdbFrame.octaves;
+  let twoSided = vdbFrame.lighting.y > 0.5;
+  let lightMask = slices.w;
+  // his frameSpectralShadowUnit: the depths of one unit of optical depth for this volume's spectrum and lit albedo
+  let unit = vdbFrameSpectralShadowUnit(vdbFrameVolumes.v[vi].extinctionSpectrum.xyz, albedo, phaseSpectrumMs.w);
+
+  var outwardNormal = vec3f(0.0, 1.0, 0.0);
+  if (length(localPosition) > 1e-4) {
+    outwardNormal = normalize(vdbFrameMat3(vdbFrame.cameraWorld) * (vdbFrameMat3(localToView) * localPosition));
+  }
+
+  var irradiance = vec3f(0.0);
+  if ((lightMask & VDB_FRAME_LIGHT_AMBIENT) != 0u) {
+    irradiance += vdbFrameLights.ambient.xyz;
+    irradiance += vdbFrameShIrradiance(outwardNormal);
+  }
+
+  let hemiCount = select(0u, u32(vdbFrameLights.ambient.w), (lightMask & VDB_FRAME_LIGHT_HEMISPHERE) != 0u);
+  let sceneCount = vdbFrameLights.counts.x;
+  let envOn = (lightMask & VDB_FRAME_LIGHT_ENVIRONMENT) != 0u && vdbFrameEnv.info.z != 0u;
+  let envLights = select(0u, vdbFrameEnv.info.x, envOn);
+  let items = hemiCount + sceneCount + select(0u, max(envLights, 1u), envOn);
+  var environment = vec3f(0.0);
+  for (var item = 0u; item < items; item++) {
+    var direction = vec3f(0.0, 1.0, 0.0);
+    var maxDistance = 1e6;
+    var marches = 2u;
+    var lightColor = vec3f(0.0);
+    var lightDirection = vec3f(0.0, 1.0, 0.0);
+    var spotAttenuation = 1.0;
+    let li = item - hemiCount;
+    if (item < hemiCount) {
+      direction = worldToLocalDirection * vdbFrameLights.hemiUp[item].xyz;
+    } else if (li >= sceneCount) {
+      direction = worldToLocalDirection * select(outwardNormal, vdbFrameEnv.direction[min(li - sceneCount, 11u)].xyz, envLights > 0u);
+      marches = select(1u, 2u, diffusion);
+    } else {
+      let position = vdbFrameLights.position[li];
+      let color = vdbFrameLights.color[li];
+      let spot = vdbFrameLights.spot[li];
+      let isDirectional = position.w < 1.5;
+      let isSpot = position.w > 2.5;
+      let bit = select(select(VDB_FRAME_LIGHT_POINT, VDB_FRAME_LIGHT_SPOT, isSpot), VDB_FRAME_LIGHT_DIRECTIONAL, isDirectional);
+      if (isSpot) {
+        spotAttenuation = smoothstep(spot.w, color.w, dot(normalize(position.xyz - worldPosition), spot.xyz));
+      }
+      if ((lightMask & bit) == 0u || spotAttenuation <= 0.0) {
+        continue;
+      }
+      spotAttenuation *= vdbFrameOccluderVisibility(worldPosition, li);
+      if (spotAttenuation <= 0.0) {
+        continue;
+      }
+      let toLight = (worldToLocal * vec4f(position.xyz, 1.0)).xyz - localPosition;
+      direction = select(toLight, worldToLocalDirection * position.xyz, isDirectional);
+      maxDistance = select(length(toLight), 1e6, isDirectional);
+      lightDirection = select(normalize(position.xyz - worldPosition), position.xyz, isDirectional);
+      lightColor = color.rgb;
+      marches = select(1u, 2u, twoSided);
+    }
+    var front = vdbFrameSpectralUnmarched();
+    var back = vdbFrameSpectralUnmarched();
+    for (var k = 0u; k < marches; k++) {
+      let shadow = vdbFrameSpectralShadowMarch(vi, localPosition, select(direction, -direction, k == 1u), select(maxDistance, 1e6, k == 1u), lod, maxTexels, unit, shadowNoise);
+      if (k == 0u) {
+        front = shadow;
+      } else {
+        back = shadow;
+      }
+    }
+    if (item < hemiCount) {
+      var sky = vdbFrameSpectralShadowTotal(front.y, octaves, albedo);
+      var ground = vdbFrameSpectralShadowTotal(back.y, octaves, albedo);
+      if (diffusion) {
+        sky = vdbFrameIsotropicDiffusion3(front.z, back.z, front.w);
+        ground = vdbFrameIsotropicDiffusion3(back.z, front.z, back.w);
+      }
+      irradiance += vdbFrameLights.hemiSky[item].xyz * 0.5 * sky;
+      irradiance += vdbFrameLights.hemiGround[item].xyz * 0.5 * ground;
+    } else if (li < sceneCount) {
+      var shadow = VdbFrameSpectralShadow(front.x, front.y);
+      if (twoSided) {
+        shadow.y = vdbFrameTwoSidedDiffusion3(front.x, front.z, front.w, back.z);
+      }
+      let light = vdbFrameSpectralShadowedLight(phase, phaseSpectrumMs.xyz, octaves, dot(rayDirection, lightDirection), shadow, albedo);
+      irradiance += lightColor * light * spotAttenuation;
+    } else if (envLights > 0u) {
+      environment += vdbFrameEnv.color[min(li - sceneCount, 11u)].xyz * select(vdbFrameSpectralShadowTotal(front.y, octaves, albedo), vdbFrameIsotropicDiffusion3(front.z, back.z, front.w), diffusion);
+    } else if (diffusion) {
+      irradiance += vdbFrameEnvIrradiance(outwardNormal) * (vdbFrameIsotropicDiffusion3(front.z, back.z, front.w) * 0.5);
+      irradiance += vdbFrameEnvIrradiance(-outwardNormal) * (vdbFrameIsotropicDiffusion3(back.z, front.z, back.w) * 0.5);
+    } else {
+      irradiance += vdbFrameEnvIrradiance(outwardNormal) * vdbFrameSpectralShadowTotal(front.y, octaves, albedo);
+    }
+  }
+  irradiance += max(environment, vec3f(0.0));
+
+  let scatter = vdbFrameVolumes.v[vi].scatterOpacity.xyz;
+  let radiance = max(scatter, albedo * irradiance * (1.0 / VDB_FRAME_PI)) + vdbFrameEmission(vi, localPosition, readLod);
+  return VdbFrameSpectralFroxel(radiance, s.alpha3);
+}
+`;
+
+/** K6.4: the spectral 'volume' gather (after the source module and the frame uniforms). */
+function vdbFrameSpectralGatherWgsl(o: VDBFrameGatherOptions): string {
+  const b = GATHER_BINDINGS;
+  const bindings = [
+    `@group(1) @binding(${b.volumes}) var<uniform> vdbFrameVolumes: VdbFrameVolumes;`,
+    `@group(1) @binding(${b.group}) var<uniform> vdbFrameGroup: VdbFrameGroup;`,
+    `@group(1) @binding(${b.scatter}) var vdbFrameScatter: texture_storage_3d<rgba16float, write>;`,
+    `@group(1) @binding(${b.scatterAlpha}) var vdbFrameScatterAlpha: texture_storage_3d<rgba16float, write>;`,
+    ...(o.multi ? [`@group(1) @binding(${b.partials}) var vdbFramePartials: texture_storage_3d<r32uint, read_write>;`] : []),
+    vdbFrameOccluderWgsl(),
+  ].join("\n");
+  const over = o.mix === "over";
+  // (light rgb, alpha rgb): 'over' premultiplied colour and alpha; 'mixture' Σ τL and Σ τ of each channel
+  const accumulate = over
+    ? `      sumL = r.radiance * r.alpha + sumL * (vec3f(1.0) - r.alpha);
+      sumA = r.alpha + sumA * (vec3f(1.0) - r.alpha);`
+    : `      let tau = -log(max(vec3f(1.0) - r.alpha, vec3f(VDB_FRAME_MIN_TRANSMITTANCE)));
+      sumL += r.radiance * tau;
+      sumA += tau;
+      singleL = r.radiance * r.alpha;
+      singleA = r.alpha;`;
+  const finish = over
+    ? `fn vdbFrameFinish(sumL: vec3f, sumA: vec3f, count: u32, singleL: vec3f, singleA: vec3f) {
+  vdbFrameStoreOut.l = sumL;
+  vdbFrameStoreOut.a = sumA;
+}`
+    : `fn vdbFrameFinish(sumL: vec3f, sumA: vec3f, count: u32, singleL: vec3f, singleA: vec3f) {
+  if (count == 1u) {
+    vdbFrameStoreOut.l = singleL;
+    vdbFrameStoreOut.a = singleA;
+    return;
+  }
+  let alpha = vec3f(1.0) - exp(-sumA);
+  vdbFrameStoreOut.l = select(vec3f(0.0), sumL / max(sumA, vec3f(1e-30)) * alpha, sumA > vec3f(0.0));
+  vdbFrameStoreOut.a = alpha;
+}`;
+  const combine = over
+    ? `  let lL = sumL;
+  let lA = sumA;
+  sumL = lL + earlierL * (vec3f(1.0) - lA);
+  sumA = lA + earlierA * (vec3f(1.0) - lA);`
+    : `  sumL += earlierL;
+  sumA += earlierA;`;
+  const write = `  textureStore(vdbFrameScatter, cell, vec4f(vdbFrameStoreOut.l, vdbFrameStoreOut.a.y));
+  textureStore(vdbFrameScatterAlpha, cell, vec4f(vdbFrameStoreOut.a.x, vdbFrameStoreOut.a.z, 0.0, vdbFrameStoreOut.a.y));`;
+  const store = o.multi
+    ? `  let role = vdbFrameGroup.range.z;
+  let isFirst = (role & 1u) != 0u;
+  let isLast = (role & 2u) != 0u;
+  let depth = u32(vdbFrame.grid.z);
+  if (!inside) {
+    if (isLast) {
+      textureStore(vdbFrameScatter, cell, vec4f(0.0));
+      textureStore(vdbFrameScatterAlpha, cell, vec4f(0.0));
+    }
+    return;
+  }
+  if (!isFirst) {
+    let w0 = unpack2x16float(textureLoad(vdbFramePartials, cell).x);
+    let w1 = unpack2x16float(textureLoad(vdbFramePartials, vec3u(cell.xy, cell.z + depth)).x);
+    let w2 = unpack2x16float(textureLoad(vdbFramePartials, vec3u(cell.xy, cell.z + 2u * depth)).x);
+    let earlierL = vec3f(w0, w1.x);
+    let earlierA = vec3f(w1.y, w2);
+${combine}
+  }
+  if (isLast) {
+    vdbFrameFinish(sumL, sumA, 2u, singleL, singleA);
+${write}
+  } else {
+    textureStore(vdbFramePartials, cell, vec4u(pack2x16float(sumL.xy), 0u, 0u, 0u));
+    textureStore(vdbFramePartials, vec3u(cell.xy, cell.z + depth), vec4u(pack2x16float(vec2f(sumL.z, sumA.x)), 0u, 0u, 0u));
+    textureStore(vdbFramePartials, vec3u(cell.xy, cell.z + 2u * depth), vec4u(pack2x16float(sumA.yz), 0u, 0u, 0u));
+  }`
+    : `  if (inside) {
+    vdbFrameFinish(sumL, sumA, count, singleL, singleA);
+  }
+${write}`;
+
+  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "octaves", "spectral", "sh", "envSh"])}
+${bindings}
+
+const VDB_FRAME_MIN_TRANSMITTANCE: f32 = 1.2664165549e-14; // exp(-32): tau is at most 32
+
+${vdbFrameSourceFunctionsWgsl(o.channels, { lutBinding: b.emissionLut, hook: o.hook ?? null })}
+${vdbFrameSliceWgsl(true)}
+${SPECTRAL_MARCH_WGSL}
+${SPECTRAL_VOLUME_FROXEL_WGSL}
+struct VdbFrameStoreOut {
+  l: vec3f,
+  a: vec3f,
+};
+var<private> vdbFrameStoreOut: VdbFrameStoreOut;
+${finish}
+
+@compute @workgroup_size(8, 8, 1)
+fn vdbFrameGatherCs(@builtin(global_invocation_id) gid: vec3u) {
+  let box = vdbFrame.dispatchBox;
+  if (gid.x >= box.z || gid.y >= box.w || f32(gid.z) >= vdbFrame.grid.z) {
+    return;
+  }
+  let cell = vec3u(box.x + gid.x, box.y + gid.y, gid.z);
+  let area = vdbFrame.areaRect;
+  let areaSlices = vdbFrame.areaSlices;
+  let p = vec2f(cell.xy);
+  let z = f32(cell.z);
+  let inside = p.x >= area.x && p.y >= area.y && p.x < area.z && p.y < area.w && z >= areaSlices.x && z < areaSlices.y;
+  var sumL = vec3f(0.0);
+  var sumA = vec3f(0.0);
+  var singleL = vec3f(0.0);
+  var singleA = vec3f(0.0);
+  var count = 0u;
+  vdbFrameStoreOut = VdbFrameStoreOut(vec3f(0.0), vec3f(0.0));
+  if (inside) {
+    let f = vdbFrameFroxelAt(cell);
+    let group = vdbFrameGroup.range;
+    for (var i = 0u; i < group.y; i++) {
+      let r = vdbFrameVolumeFroxel(group.x + i, cell, f);
+      if (vdbFrameMaxComponent(r.alpha) <= 0.0) {
+        continue;
+      }
+${accumulate}
+      count += 1u;
+    }
+  }
+${store}
+}
+`;
+}
 
 /** The kernel's WGSL after the source module and `vdbFrameUniformsWgsl()` (group 1 + functions + entry). */
 export function vdbFrameGatherWgsl(o: VDBFrameGatherOptions): string {
+  if (o.spectral) return vdbFrameSpectralGatherWgsl(o);
   const b = GATHER_BINDINGS;
   const bindings = [
     `@group(1) @binding(${b.volumes}) var<uniform> vdbFrameVolumes: VdbFrameVolumes;`,

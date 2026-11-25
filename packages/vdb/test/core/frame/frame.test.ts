@@ -98,6 +98,11 @@ function allSpecs(): { compute: VDBComputeSpec[]; render: VDBRenderSpec[] } {
     for (const mix of ["mixture", "over"] as const) for (const multi of [false, true]) compute.push(vdbFrameGatherSpec(s, { mix, multi }));
     // K6.2 'frame' lighting: the fused gather and the shadow grid density per source layout
     for (const multi of [false, true]) compute.push(vdbFrameGatherSpec(s, { mix: "mixture", multi, lighting: "frame" }), vdbFrameGridDensitySpec(s, { multi }));
+    // K6.4 spectral: both gathers and the spectral shadow grid
+    for (const multi of [false, true]) {
+      for (const mix of ["mixture", "over"] as const) compute.push(vdbFrameGatherSpec(s, { mix, multi, spectral: true }));
+      compute.push(vdbFrameGatherSpec(s, { mix: "mixture", multi, lighting: "frame", spectral: true }), vdbFrameGridDensitySpec(s, { multi, spectral: true }));
+    }
     // K6.5: the emission direction pass (sources with emission), with and without a user colour hook
     if (s.channels.emission) {
       compute.push(vdbFrameEmissionDirectionSpec(s, {}), vdbFrameEmissionDirectionSpec(s, { hook: TEST_HOOK }));
@@ -110,8 +115,11 @@ function allSpecs(): { compute: VDBComputeSpec[]; render: VDBRenderSpec[] } {
   // K6.2b: the environment kernels (source-free)
   compute.push(vdbFrameEnvPrefilterSpec("equirect"), vdbFrameEnvPrefilterSpec("cube"), vdbFrameEnvBlurSpec(), vdbFrameEnvReduceSpec(), vdbFrameEnvironmentGridSpec());
   compute.push(vdbFrameVolumeShadowSpec(), vdbFrameEmissionReduceSpec(), vdbFrameEmissionProbeSpec());
+  // K6.4: the spectral transmittance, environment grid, shadow map and resolve (both alpha prefix formats)
+  compute.push(vdbFrameTransmittanceSpec({ spectral: true }), vdbFrameEnvironmentGridSpec({ spectral: true }), vdbFrameVolumeShadowSpec({ spectral: true }));
+  for (const temporal of [false, true]) for (const alphaFormat of ["rgba16float", "rg16float"] as const) compute.push(vdbFrameResolveSpec({ temporal, spectral: true, alphaFormat }));
   const render: VDBRenderSpec[] = [];
-  for (const depth of ["depth", "r32float"] as const) for (const srgb of [false, true]) render.push(vdbFrameCompositeSpec({ colorFormat: "rgba16float", depth, srgb }));
+  for (const depth of ["depth", "r32float"] as const) for (const srgb of [false, true]) for (const spectral of [false, true]) render.push(vdbFrameCompositeSpec({ colorFormat: "rgba16float", depth, srgb, spectral }));
   return { compute, render };
 }
 
@@ -159,7 +167,7 @@ describe("K6.1 uniform structs", () => {
 describe("K6.1 composed WGSL", () => {
   const { compute, render } = allSpecs();
   const texts = [...compute, ...render, vdbFrameChunkProbeSpec()].map((s) => [s.label, s.code] as const);
-  texts.push(["vdbFrameIntegrateWgsl", vdbFrameIntegrateWgsl()], ["vdbVolumeShadowWgsl", vdbVolumeShadowWgsl()], ["vdbEmissionProbeWgsl", vdbEmissionProbeWgsl()]);
+  texts.push(["vdbFrameIntegrateWgsl", vdbFrameIntegrateWgsl()], ["vdbFrameIntegrateWgsl spectral", vdbFrameIntegrateWgsl({ spectral: true })], ["vdbVolumeShadowWgsl", vdbVolumeShadowWgsl()], ["vdbEmissionProbeWgsl", vdbEmissionProbeWgsl()]);
 
   it.each(texts)("%s: no reserved words, no function/variable clashes, no back-ticks, no duplicate declarations", (_, code) => {
     expect(wgslNameProblems(code)).toEqual([]);
@@ -182,7 +190,9 @@ describe("K6.1 device limits (design §1)", () => {
   it.each([...compute, ...render].map((s) => [s.label, s] as const))("%s fits the core limits", (_, spec) => {
     expect(spec.groups.length).toBeLessThanOrEqual(3);
     const all = spec.groups.flatMap((g) => [...g.entries]);
-    expect(all.filter((e) => e.storageTexture).length).toBeLessThanOrEqual(2);
+    // storage textures (default limit 4): grey kernels write at most 2; K6.4's spectral ones 3 (the gather's scatter,
+    // scatterAlpha and partials; the spectral grid's two stacks and partials; the resolve's prefixes and stacked history)
+    expect(all.filter((e) => e.storageTexture).length).toBeLessThanOrEqual(/spectral/.test(spec.label) ? 3 : 2);
     // Sampled textures: WebGPU's default (and compat's) maxSampledTexturesPerShaderStage is 16. K6.5b's 4 occluder
     // slots raise the worst kernel (the 'frame' gather of a dense source with mask, albedo and emission and their mips:
     // 8 source + transmittance + environment grid + emission LUT + 4 occluders) to 15; the design's own cap was 12

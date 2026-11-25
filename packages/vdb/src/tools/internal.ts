@@ -397,6 +397,7 @@ export {
   vdbFrameShadowViewCamera,
   vdbFrameShadowFitCascades,
   vdbFrameVolumeShadowLookup,
+  vdbFrameVolumeShadowLookupRgb,
 } from "./frame/shadows.js";
 export type { VDBFrameShadowRay, VDBFrameShadowFitInputs, VDBFrameShadowCascadeCamera, VDBFrameVolumeShadowViewCpu } from "./frame/shadows.js";
 export {
@@ -467,5 +468,19 @@ export {
   vdbFrameSliceCoord,
 } from "./frame/froxel.js";
 export type { VDBFrameVolumeFroxel, VDBFrameFroxelMix, VDBFrameIntegrated } from "./frame/froxel.js";
+// K6.4: CPU twins of the core's spectral kernels (internal only)
+export {
+  vdbFrameSpectralGridDensityVoxel,
+  vdbFrameSpectralTransmittanceVoxel3d,
+  vdbFrameSpectralEnvironmentGridVoxel3d,
+  vdbFrameSpectralStackGroups,
+  vdbFrameSpectralDensitySums,
+  vdbFrameSpectralEnvironmentDensityTerm,
+  vdbFrameGatherFroxelSpectral,
+  vdbFrameScanColumnSpectral,
+  vdbFrameIntegratePrefixSpectral,
+  vdbFrameCompositeSpectral,
+} from "./frame/spectral-stack.js";
+export type { VDBFrameSpectralGridCaster, VDBFrameSpectralGridAt, VDBFrameSpectralSums, VDBFrameSpectralDensityInputs3d, VDBFrameSpectralVolumeFroxel } from "./frame/spectral-stack.js";
 // K6.R: the reference renderer's scene, random stream, CPU twin and analytic cases (internal only).
 export * from "./reference/index.js";

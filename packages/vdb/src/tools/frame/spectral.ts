@@ -454,6 +454,11 @@ export interface VDBFrameSpectralLightingInputs {
   environmentShadowSlot: number;
   /** The 3 targets of each slot group in use, sampled at a world position (sampleShadows), or null without shadows. */
   groupsAt: ((world: Vec3) => number[][][]) | null;
+  /**
+   * K6.4 (the core's K6.5b host occluder maps): the visibility of light `index` at the lit position; a slot's direct part
+   * (its scattered part is occluded in the transmittance; octaves: the whole light), a light without a slot whole.
+   */
+  occluderAt?: ((index: number, world: Vec3) => number) | null;
 }
 
 /** three's `getShIrradianceAt` (L2 SH irradiance of a light probe at a unit normal). */
@@ -524,8 +529,13 @@ export function vdbFrameSpectralLightingFroxel(
     const dist = p[3] > 1.5 ? distanceAttenuation(Math.hypot(...toLight), light.falloff?.[0] ?? 0, light.falloff?.[1] ?? 0) : 1;
     const useSlot = i < 6 && i < inputs.shadowLightCount;
     const entry = useSlot ? slotEntry(i) : null;
+    const v = inputs.occluderAt ? inputs.occluderAt(i, world) : 1;
     const shadow: VDBFrameSpectralShadow = entry ? { x: entry.y, y: entry.x } : { x: [1, 1, 1], y: [1, 1, 1] };
-    const l = vdbFrameSpectralShadowedLight(inputs.phase, spectrum, octaves, ray, dir, shadow, albedo);
+    // K6.5b in the core: direct × v (passed as (direct·v, total − direct·(1 − v))), else the whole light × v
+    const occludedSlot = !!entry && !(octaves[0] > 0);
+    const s2: VDBFrameSpectralShadow = occludedSlot ? { x: map3((c) => shadow.x[c]! * v), y: map3((c) => shadow.y[c]! - shadow.x[c]! * (1 - v)) } : shadow;
+    const l0 = vdbFrameSpectralShadowedLight(inputs.phase, spectrum, octaves, ray, dir, s2, albedo);
+    const l = occludedSlot ? l0 : map3((c) => l0[c]! * v);
     for (let c = 0; c < 3; c++) irradiance[c] = irradiance[c]! + light.color[c]! * l[c]! * spot * dist;
   });
   inputs.environmentColors.forEach((color, i) => {

@@ -26,7 +26,7 @@ import {
   vdbFrameTransmittanceWgsl,
   type VDBFrameScatteringKernel,
 } from "./wgsl/lighting.js";
-import { RESOLVE_BINDINGS, vdbFrameResolveWgsl } from "./wgsl/resolve.js";
+import { RESOLVE_BINDINGS, vdbFrameResolveWgsl, type VDBFrameResolveOptions } from "./wgsl/resolve.js";
 import {
   ENV_BLUR_BINDINGS,
   ENV_GRID_BINDINGS,
@@ -38,7 +38,7 @@ import {
   vdbFrameEnvironmentGridWgsl,
   vdbFrameEnvReduceWgsl,
 } from "./wgsl/environment.js";
-import { VDB_FRAME_COMPOSITE_COLOR_WGSL, VDB_FRAME_INTEGRATE_TAPS_WGSL, VDB_FRAME_SLICE_COORD_WGSL, vdbFrameCompositeWgsl } from "./wgsl/integrate.js";
+import { VDB_FRAME_COMPOSITE_ALPHA_BINDING, VDB_FRAME_COMPOSITE_COLOR_WGSL, VDB_FRAME_INTEGRATE_TAPS_WGSL, VDB_FRAME_SLICE_COORD_WGSL, vdbFrameCompositeWgsl } from "./wgsl/integrate.js";
 import { VDB_FRAME_MAX_VOLUMES, vdbFrameUniformsWgsl } from "./uniforms.js";
 import { vdbHashText, type VDBComputeSpec, type VDBRenderSpec } from "./pipelines.js";
 import { VOLUME_SHADOW_BINDINGS, vdbFrameVolumeShadowWgsl } from "./wgsl/shadows.js";
@@ -86,6 +86,8 @@ export interface VDBFrameGatherKey {
   readonly lighting?: "volume" | "frame";
   /** K6.5: a validated user emission colour hook compiled into the group's kernels (sources with emission). */
   readonly hook?: string | null;
+  /** K6.4: spectral media (a second scatter texture; per-channel extinction, albedo and multiple scattering). */
+  readonly spectral?: boolean;
 }
 
 /** The source's VDB module (sparse, K6.7) and its `vdbSrc*` WGSL at group 2, then the frame uniforms. */
@@ -107,8 +109,8 @@ export function vdbFrameGatherKernelWgsl(source: VDBVolumeSource, key: VDBFrameG
   const hook = source.channels.emission ? (key.hook ?? null) : null;
   const body =
     key.lighting === "frame"
-      ? vdbFrameLightingGatherWgsl({ multi: key.multi, channels: source.channels, hook })
-      : vdbFrameGatherWgsl({ mix: key.mix, multi: key.multi, channels: source.channels, hook });
+      ? vdbFrameLightingGatherWgsl({ multi: key.multi, channels: source.channels, hook, spectral: !!key.spectral })
+      : vdbFrameGatherWgsl({ mix: key.mix, multi: key.multi, channels: source.channels, hook, spectral: !!key.spectral });
   return `${sourcePrelude(source, key.maxVolumes, true)}\n${body}`;
 }
 
@@ -126,6 +128,8 @@ export function vdbFrameGatherSpec(source: VDBVolumeSource, key: VDBFrameGatherK
     { binding: b.scatter, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } },
   ];
   if (key.multi) group1.push({ binding: b.partials, visibility: STAGE.COMPUTE, storageTexture: { access: "read-write", format: "r32uint", viewDimension: "3d" } });
+  // K6.4: the second scatter texture (red alpha, blue alpha, 0, green alpha)
+  if (key.spectral) group1.push({ binding: b.scatterAlpha, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } });
   if (frame) {
     group1.push({ binding: FRAME_GATHER_BINDINGS.transmittance, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } });
     group1.push({ binding: FRAME_GATHER_BINDINGS.environmentGrid, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } });
@@ -135,7 +139,7 @@ export function vdbFrameGatherSpec(source: VDBVolumeSource, key: VDBFrameGatherK
   group1.push(...vdbFrameOccluderLayoutEntries(STAGE.COMPUTE));
   const hooked = source.channels.emission && key.hook ? `, hook ${vdbHashText(key.hook)}` : "";
   return {
-    label: `vdb frame gather (${frame ? "frame lighting" : key.mix}${key.multi ? ", multi-group" : ""}; ${sourceChannels(source)}${hooked})`,
+    label: `vdb frame gather (${frame ? "frame lighting" : key.mix}${key.multi ? ", multi-group" : ""}${key.spectral ? ", spectral" : ""}; ${sourceChannels(source)}${hooked})`,
     code: vdbFrameGatherKernelWgsl(source, key),
     entryPoint: "vdbFrameGatherCs",
     groups: [GROUP0_LAYOUT, { entries: group1 }, { entries: source.layoutEntries(SOURCE_SLOT, STAGE.COMPUTE) }],
@@ -147,6 +151,8 @@ export interface VDBFrameGridDensityKey {
   /** More than one caster source group: accumulate in the packed r32uint partials. */
   readonly multi: boolean;
   readonly maxVolumes?: number;
+  /** K6.4: the extinction and absorption of each channel (two stacks). */
+  readonly spectral?: boolean;
 }
 
 /** The shadow grid density kernel's spec (K6.2; one dispatch per caster source group). */
@@ -158,9 +164,10 @@ export function vdbFrameGridDensitySpec(source: VDBVolumeSource, key: VDBFrameGr
     { binding: b.grid, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } },
   ];
   if (key.multi) group1.push({ binding: b.partials, visibility: STAGE.COMPUTE, storageTexture: { access: "read-write", format: "r32uint", viewDimension: "3d" } });
+  if (key.spectral) group1.push({ binding: b.absorption, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } });
   return {
-    label: `vdb frame grid density${key.multi ? " (multi-group)" : ""}; ${sourceChannels(source)}`,
-    code: `${sourcePrelude(source, key.maxVolumes)}\n${vdbFrameGridDensityWgsl({ multi: key.multi, channels: source.channels })}`,
+    label: `vdb frame grid density${key.multi ? " (multi-group)" : ""}${key.spectral ? " (spectral)" : ""}; ${sourceChannels(source)}`,
+    code: `${sourcePrelude(source, key.maxVolumes)}\n${vdbFrameGridDensityWgsl({ multi: key.multi, channels: source.channels, spectral: !!key.spectral })}`,
     entryPoint: "vdbFrameGridDensityCs",
     groups: [GROUP0_LAYOUT, { entries: group1 }, { entries: source.layoutEntries(SOURCE_SLOT, STAGE.COMPUTE) }],
   };
@@ -171,9 +178,11 @@ export function vdbFrameGridDensitySpec(source: VDBVolumeSource, key: VDBFrameGr
  * weights (the kernel's one storage buffer, D10), the shape uniform and the feature mips; `'multi-scale'` K7.3's
  * parameters and mips.
  */
-export function vdbFrameTransmittanceSpec(o: { scattering?: VDBFrameScatteringKernel } = {}): VDBComputeSpec {
+export function vdbFrameTransmittanceSpec(o: { scattering?: VDBFrameScatteringKernel; spectral?: boolean } = {}): VDBComputeSpec {
   const b = TRANSMITTANCE_BINDINGS;
-  const scattering = o.scattering ?? "none";
+  // K6.4: spectral runs 'mlp' and 'multi-scale' as 1D diffusion (his isNeural; K7.3 is grey)
+  const spectral = !!o.spectral;
+  const scattering = spectral ? "none" : (o.scattering ?? "none");
   const groups: GPUBindGroupLayoutDescriptor[] = [
     GROUP0_LAYOUT,
     {
@@ -182,6 +191,7 @@ export function vdbFrameTransmittanceSpec(o: { scattering?: VDBFrameScatteringKe
         { binding: b.transmittance, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } },
         // K6.5b: the host occluder maps (4 fixed slots)
         ...vdbFrameOccluderLayoutEntries(STAGE.COMPUTE),
+        ...(spectral ? [{ binding: b.absorption, visibility: STAGE.COMPUTE, texture: { sampleType: "float" as const, viewDimension: "3d" as const } }] : []),
       ],
     },
   ];
@@ -204,8 +214,8 @@ export function vdbFrameTransmittanceSpec(o: { scattering?: VDBFrameScatteringKe
     });
   }
   return {
-    label: `vdb frame transmittance${scattering === "none" ? "" : ` (${scattering})`}`,
-    code: `${vdbFrameUniformsWgsl(VDB_FRAME_MAX_VOLUMES, { environment: true })}\n${vdbFrameTransmittanceWgsl({ scattering })}`,
+    label: `vdb frame transmittance${scattering === "none" ? "" : ` (${scattering})`}${spectral ? " (spectral)" : ""}`,
+    code: `${vdbFrameUniformsWgsl(VDB_FRAME_MAX_VOLUMES, { environment: true })}\n${vdbFrameTransmittanceWgsl({ scattering, spectral })}`,
     entryPoint: "vdbFrameTransmittanceCs",
     groups,
   };
@@ -293,11 +303,12 @@ export function vdbFrameEnvReduceSpec(): VDBComputeSpec {
 }
 
 /** The environment grid kernel's spec (K6.2b; source-free, the last cascade). */
-export function vdbFrameEnvironmentGridSpec(): VDBComputeSpec {
+export function vdbFrameEnvironmentGridSpec(o: { spectral?: boolean } = {}): VDBComputeSpec {
   const b = ENV_GRID_BINDINGS;
+  const spectral = !!o.spectral;
   return {
-    label: "vdb frame environment grid",
-    code: `${vdbFrameUniformsWgsl(VDB_FRAME_MAX_VOLUMES, { environment: true })}\n${vdbFrameEnvironmentGridWgsl()}`,
+    label: `vdb frame environment grid${spectral ? " (spectral)" : ""}`,
+    code: `${vdbFrameUniformsWgsl(VDB_FRAME_MAX_VOLUMES, { environment: true })}\n${vdbFrameEnvironmentGridWgsl({ spectral })}`,
     entryPoint: "vdbFrameEnvironmentGridCs",
     groups: [
       GROUP0_LAYOUT,
@@ -305,6 +316,7 @@ export function vdbFrameEnvironmentGridSpec(): VDBComputeSpec {
         entries: [
           { binding: b.grid, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } },
           { binding: b.out, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } },
+          ...(spectral ? [{ binding: b.absorption, visibility: STAGE.COMPUTE, texture: { sampleType: "float" as const, viewDimension: "3d" as const } }] : []),
         ],
       },
     ],
@@ -312,11 +324,12 @@ export function vdbFrameEnvironmentGridSpec(): VDBComputeSpec {
 }
 
 /** K6.5: the volume shadow map kernel's spec (source-free: the shadow grid stack; one dispatch per map piece). */
-export function vdbFrameVolumeShadowSpec(): VDBComputeSpec {
+export function vdbFrameVolumeShadowSpec(o: { spectral?: boolean } = {}): VDBComputeSpec {
   const b = VOLUME_SHADOW_BINDINGS;
+  const spectral = !!o.spectral;
   return {
-    label: "vdb frame volume shadow map",
-    code: `${vdbFrameUniformsWgsl()}\n${frameChunksWgsl(["grid"])}\n${vdbFrameVolumeShadowWgsl()}`,
+    label: `vdb frame volume shadow map${spectral ? " (spectral)" : ""}`,
+    code: `${vdbFrameUniformsWgsl()}\n${frameChunksWgsl(["grid"])}\n${vdbFrameVolumeShadowWgsl({ spectral })}`,
     entryPoint: "vdbFrameVolumeShadowCs",
     groups: [
       GROUP0_LAYOUT,
@@ -325,6 +338,8 @@ export function vdbFrameVolumeShadowSpec(): VDBComputeSpec {
           { binding: b.piece, visibility: STAGE.COMPUTE, buffer: { type: "uniform", hasDynamicOffset: true } },
           { binding: b.grid, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } },
           { binding: b.map, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "2d-array" } },
+          // K6.4: the optical depth rgb twin
+          ...(spectral ? [{ binding: b.rgb, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only" as const, format: "rgba16float" as const, viewDimension: "2d-array" as const } }] : []),
         ],
       },
     ],
@@ -401,17 +416,23 @@ export function vdbFrameEmissionProbeSpec(): VDBComputeSpec {
 }
 
 /** The resolve kernel's WGSL. */
-export function vdbFrameResolveKernelWgsl(o: { temporal: boolean }): string {
+export function vdbFrameResolveKernelWgsl(o: VDBFrameResolveOptions): string {
   return `${vdbFrameUniformsWgsl()}\n${vdbFrameResolveWgsl(o)}`;
 }
 
-/** The resolve kernel's spec. */
-export function vdbFrameResolveSpec(o: { temporal: boolean }): VDBComputeSpec {
+/** The resolve kernel's spec (K6.4 `spectral`: the alpha scatter and the alpha prefix in `alphaFormat`). */
+export function vdbFrameResolveSpec(o: VDBFrameResolveOptions): VDBComputeSpec {
   const b = RESOLVE_BINDINGS;
   const group1: GPUBindGroupLayoutEntry[] = [
     { binding: b.scatter, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } },
     { binding: b.integrated, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "3d" } },
   ];
+  if (o.spectral) {
+    group1.push(
+      { binding: b.scatterAlpha, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } },
+      { binding: b.integratedAlpha, visibility: STAGE.COMPUTE, storageTexture: { access: "write-only", format: o.alphaFormat ?? "rgba16float", viewDimension: "3d" } },
+    );
+  }
   if (o.temporal) {
     group1.push(
       { binding: b.historyIn, visibility: STAGE.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } },
@@ -419,7 +440,7 @@ export function vdbFrameResolveSpec(o: { temporal: boolean }): VDBComputeSpec {
     );
   }
   return {
-    label: `vdb frame resolve${o.temporal ? " (temporal)" : ""}`,
+    label: `vdb frame resolve${o.temporal ? " (temporal)" : ""}${o.spectral ? ` (spectral, ${o.alphaFormat ?? "rgba16float"})` : ""}`,
     code: vdbFrameResolveKernelWgsl(o),
     entryPoint: "vdbFrameResolveCs",
     groups: [GROUP0_LAYOUT, { entries: group1 }],
@@ -432,10 +453,12 @@ export interface VDBFrameCompositeKey {
   /** `'depth'`: a depth texture (`texture_depth_2d`); `'r32float'`: a colour texture of view-independent depth. */
   readonly depth: "depth" | "r32float";
   readonly srgb: boolean;
+  /** K6.4: the alpha prefix; the pass composites over the scene colour itself (no hardware blending). */
+  readonly spectral?: boolean;
 }
 
 /** The composite pass's WGSL. */
-export function vdbFrameCompositeKernelWgsl(key: Pick<VDBFrameCompositeKey, "depth" | "srgb">): string {
+export function vdbFrameCompositeKernelWgsl(key: Pick<VDBFrameCompositeKey, "depth" | "srgb" | "spectral">): string {
   return `${vdbFrameUniformsWgsl()}\n${vdbFrameCompositeWgsl(key)}`;
 }
 
@@ -446,18 +469,19 @@ export function vdbFrameCompositeSpec(key: VDBFrameCompositeKey): VDBRenderSpec 
     { binding: 1, visibility: STAGE.FRAGMENT, sampler: { type: "filtering" } },
     { binding: 2, visibility: STAGE.FRAGMENT, texture: { sampleType: key.depth === "depth" ? "depth" : "unfilterable-float", viewDimension: "2d" } },
   ];
-  if (key.srgb) group1.push({ binding: 3, visibility: STAGE.FRAGMENT, texture: { sampleType: "unfilterable-float", viewDimension: "2d" } });
+  if (key.srgb || key.spectral) group1.push({ binding: 3, visibility: STAGE.FRAGMENT, texture: { sampleType: "unfilterable-float", viewDimension: "2d" } });
+  if (key.spectral) group1.push({ binding: VDB_FRAME_COMPOSITE_ALPHA_BINDING, visibility: STAGE.FRAGMENT, texture: { sampleType: "float", viewDimension: "3d" } });
   const premultiplied: GPUBlendState = {
     color: { operation: "add", srcFactor: "one", dstFactor: "one-minus-src-alpha" },
     alpha: { operation: "add", srcFactor: "one", dstFactor: "one-minus-src-alpha" },
   };
   return {
-    label: `vdb frame composite (${key.srgb ? "sRGB blend" : "premultiplied"}, ${key.depth})`,
+    label: `vdb frame composite (${key.srgb ? "sRGB blend" : "premultiplied"}, ${key.depth}${key.spectral ? ", spectral" : ""})`,
     code: vdbFrameCompositeKernelWgsl(key),
     vertexEntryPoint: "vdbFrameCompositeVs",
     fragmentEntryPoint: "vdbFrameCompositeFs",
     groups: [GROUP0_LAYOUT, { entries: group1 }],
-    targets: [{ format: key.colorFormat, ...(key.srgb ? {} : { blend: premultiplied }) }],
+    targets: [{ format: key.colorFormat, ...(key.srgb || key.spectral ? {} : { blend: premultiplied }) }],
   };
 }
 
