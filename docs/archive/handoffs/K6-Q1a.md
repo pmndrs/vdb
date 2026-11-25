@@ -119,13 +119,13 @@ After merging main (K6.8a, 29d5095), SwiftShader, port 5321:
   environment reduce 19679 / 24576 (unchanged).
 - Defaults unchanged: `ambientOcclusion` false, `multipleScattering` 'neural', `ambientProbe` 'irradiance'.
 
-## DIVERGES rows (proposed, from V155)
+## DIVERGES rows (proposed, from V148)
 
 | ID | Date | Source | What we do differently | Kind | Revisit when |
 |---|---|---|---|---|---|
-| V155 | 2026-11-26 | our V125 (K6.Q1 grey) and his spectral sky slots (`buildSpectralNodes` group 0) | K6.Q1a: spectral media get the shadowed ambient per channel. 'frame': with `ambientOcclusion` on, the spectral group 0's sky entry holds the hemispherical visibilities of each channel instead of his sky totals (no extra target; nothing else reads the totals then); octave totals at the voxel's grid albedo. 'volume': per-channel pair items in the march loop. A grey medium equals the grey kernels (12 digits). | quality vs the reference | the default (owner) |
-| V156 | 2026-11-26 | three's `getShIrradianceAt` along ± the sky (his 'frame' probe term) | K6.Q1a: internal A/B `ambientProbe: 'radiance'` (π × the hemisphere's mean radiance, band 1 × ½, band 2 dropped). Reference (WDAS + probe): ≤ 2 points on every row; default stays his irradiance. The 'frame' gap (+58 % vs 'volume' +28 %) is the 64³ grid (128³: +27 %). | A/B experiment | delete with the A/B settings |
-| V157 | 2026-11-26 | (none: K6.Q1's fixed ring) | K6.Q1a: with `jitter` and `temporal`, the ambient ring turns by the frame's jitter × its azimuth step (pair 0 fixed); static frames unchanged. | temporal sampling | — |
+| V148 | 2026-11-26 | our V125 (K6.Q1 grey) and his spectral sky slots (`buildSpectralNodes` group 0) | K6.Q1a: spectral media get the shadowed ambient per channel. 'frame': with `ambientOcclusion` on, the spectral group 0's sky entry holds the hemispherical visibilities of each channel instead of his sky totals (no extra target; nothing else reads the totals then); octave totals at the voxel's grid albedo. 'volume': per-channel pair items in the march loop. A grey medium equals the grey kernels (12 digits). | quality vs the reference | the default (owner) |
+| V149 | 2026-11-26 | three's `getShIrradianceAt` along ± the sky (his 'frame' probe term) | K6.Q1a: internal A/B `ambientProbe: 'radiance'` (π × the hemisphere's mean radiance, band 1 × ½, band 2 dropped). Reference (WDAS + probe): ≤ 2 points on every row; default stays his irradiance. The 'frame' gap (+58 % vs 'volume' +28 %) is the 64³ grid (128³: +27 %). | A/B experiment | delete with the A/B settings |
+| V150 | 2026-11-26 | (none: K6.Q1's fixed ring) | K6.Q1a: with `jitter` and `temporal`, the ambient ring turns by the frame's jitter × its azimuth step (pair 0 fixed); static frames unchanged. | temporal sampling | — |
 
 ## Follow-ups
 
