@@ -110,6 +110,7 @@ import {
   vdbFrameStackSample,
   vdbFrameStackShadows,
   vdbFrameTransmittanceVoxel3d,
+  vdbFrameAmbientDirections,
   vdbFrameMieLutWords,
   vdbFrameMieTexelsHalf,
   vdbFrameMieTexel,
@@ -289,6 +290,12 @@ const OCCLUDERS = params.get("occluders") === "1";
 const SPECTRAL = params.get("spectral") === "1";
 const SPECTRAL_A: Partial<VDBFrameVolumeParams> = SPECTRAL ? { angstromExponent: 1.8, baseColor: [0.85, 0.7, 0.55] } : {};
 const SPECTRAL_B: Partial<VDBFrameVolumeParams> = SPECTRAL ? { extinctionScale: [1.3, 1, 0.6], angstromExponent: 0.3 } : {};
+/** K6.Q1 `?ao=<pairs>` (`&aoSteps=`): the shadowed ambient in the frame and gather probes (0: off). */
+const AO_PAIRS = Number(params.get("ao") ?? 0);
+const AO_STEPS = Number(params.get("aoSteps") ?? 0);
+const AO_SETTINGS = { ambientOcclusion: AO_PAIRS > 0, ambientOcclusionPairs: Math.max(1, AO_PAIRS), ambientOcclusionSteps: AO_STEPS };
+/** The pairs' upper directions the probes' twins use (the probe lights' sky is the hemisphere light's +y). */
+const AO_DIRECTIONS = AO_PAIRS > 0 ? vdbFrameAmbientDirections([0, 1, 0], AO_PAIRS) : [];
 const root = document.getElementById("demo-root")!;
 const result: Result = { done: false, warnings: [], uncaptured: [], probe: PROBE, mutate: MUTATE };
 window.__VDB_K6_CORE__ = result;
@@ -793,6 +800,7 @@ async function probeGather(device: GPUDevice): Promise<void> {
     jitter: false,
     ...MS_SETTINGS,
     froxelMix: mix,
+    ...AO_SETTINGS,
     phase: PHASE_NAME,
     fadeRadius: 9,
     srgbBlending: false,
@@ -886,6 +894,7 @@ async function probeGather(device: GPUDevice): Promise<void> {
     ...(env ? { environment: env } : {}),
     octaves: MS_OCTAVES,
     twoSided: MS_MODE === "two-sided",
+    ambientOcclusion: AO_PAIRS > 0 ? { directions: AO_DIRECTIONS, steps: AO_STEPS } : null,
   };
   const gatherCount = { n: 0 };
   if (occ && MUTATE !== "occluder") twinFrame.occluder = occluderTwin(occ, gatherCount);
@@ -987,6 +996,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
     temporal: false,
     jitter: false,
     ...MS_SETTINGS,
+    ...AO_SETTINGS,
     phase: PHASE_NAME,
     phaseG: g,
     phaseBackG: backG,
@@ -1192,6 +1202,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
             octaves: MUTATE === "octaves" ? [0, 0, 0, 0] : MS_OCTAVES,
             twoSided: MS_MODE === "two-sided" && MUTATE !== "two-sided",
             slotTotal,
+            ambientDirections: MUTATE === "ao-pairs" ? AO_DIRECTIONS.slice(0, -1) : AO_DIRECTIONS,
           });
           for (let k = 0; k < 4; k++) {
             const o = gt.transmittanceLayout.origins[4 * cc + k]!;
@@ -1269,6 +1280,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
             phaseSpectrum,
             octaves,
             occluderAt: densityOccluder,
+            ambientOcclusion: AO_PAIRS > 0,
             environmentAt: environment
               ? (world, local, skyTotals) => {
                   const outward = MUTATE !== "env-outward" && local && Math.hypot(...local) > 1e-4 ? normalizeV(mat3Of(eyeWorld, mat3Of(r.localToView, local))) : ([0, 1, 0] as VDBFrameVec3);
@@ -1302,6 +1314,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
           environmentColors: envFlags.useShadows && envSlotUsed && MUTATE !== "env-slot" ? [env.colors[0]!] : [],
           environmentShadowSlot: sceneSlots,
           occluderAt: lightingOccluder,
+          ambientOcclusion: AO_PAIRS > 0 && MUTATE !== "ao",
           ...(MUTATE === "sky" ? {} : { probe: PROBE_SH, sky: [0, 1, 0] as VDBFrameVec3 }),
         });
         const i = ((z * GH + y) * GW + x) * 4;

@@ -7,6 +7,8 @@
  * the transmittance origins of 3 targets per slot group (the array grew from 16 to 48 entries, at the end of its block).
  */
 
+import { VDB_FRAME_AMBIENT_MAX_PAIRS } from "../../tools/frame/ambient.js";
+
 /** Field types the generator supports. Arrays take only 16-byte-aligned element types (uniform rule). */
 export type VDBUniformType = "f32" | "u32" | "i32" | "vec2f" | "vec2u" | "vec3f" | "vec3u" | "vec4f" | "vec4u" | "mat4x4f";
 
@@ -187,7 +189,8 @@ export const VDB_FRAME_UNIFORMS = vdbUniformStruct("VdbFrameUniforms", [
 export const VDB_FRAME_LIGHTS = vdbUniformStruct("VdbFrameLights", [
   // ambient rgb, hemisphere count
   { name: "ambient", type: "vec4f" },
-  // scene light count, K6.5b occluder maps bound (0: occlusion off), spare
+  // scene light count, K6.5b occluder maps bound (0: occlusion off), K6.Q1 shadowed-ambient direction pairs (0: off),
+  // K6.Q1 'volume' march steps of each ambient direction (0: the volume's shadow steps)
   { name: "counts", type: "vec4u" },
   // light probe SH9 (rgb in xyz)
   { name: "probe", type: "vec4f", count: 9 },
@@ -209,6 +212,9 @@ export const VDB_FRAME_LIGHTS = vdbUniformStruct("VdbFrameLights", [
   { name: "occluderInfo", type: "vec4f", count: VDB_FRAME_MAX_OCCLUDERS },
   // the view-projection of layer l of slot k at [6k + l] (column-major, WebGPU depth)
   { name: "occluderMatrix", type: "mat4x4f", count: VDB_FRAME_MAX_OCCLUDERS * VDB_FRAME_OCCLUDER_LAYERS },
+  // K6.Q1: the upper direction of each shadowed-ambient pair (world, unit; [0] the sky direction; tools/frame
+  // vdbFrameAmbientDirections)
+  { name: "ambientDirections", type: "vec4f", count: VDB_FRAME_AMBIENT_MAX_PAIRS },
 ]);
 
 /** One volume record (512 B) in the `VdbFrameVolumes` array (group 1). */
