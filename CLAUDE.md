@@ -434,3 +434,6 @@ From v1; details in docs/archive/handoffs/.
   with the setting on, not constant 1.
 - The report's `his` groups render through `k3-frame`, the scene groups through `k6-scene`: a `--query` core setting
   must be parsed by both pages (K6.Q1 added `?ao=` to each).
+- Push with `git push` (main tracks the `pmndrs` remote, `pmndrs/vdb`), never `git push origin`: `origin` is the old
+  `DennisSmolek/WebVDB`, which has no Pages site, so its Pages run fails and `pmndrs/vdb` never gets the commit.
+  Watch runs with `--repo pmndrs/vdb` (`gh` has no default repo here).
