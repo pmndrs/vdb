@@ -459,12 +459,22 @@ export interface VDBFrameSpectralLightingInputs {
    * (its scattered part is occluded in the transmittance; octaves: the whole light), a light without a slot whole.
    */
   occluderAt?: ((index: number, world: Vec3) => number) | null;
+  /** K6.Q1a shadowed ambient: group 0's sky entry holds the hemispherical visibilities (no totals); ambient × their mean. */
+  ambientOcclusion?: boolean;
+  /** K6.Q1a `ambientProbe`: the probe along ± the sky as three's irradiance (default, his) or the hemisphere's mean radiance. */
+  probeMode?: "irradiance" | "radiance";
 }
 
 /** three's `getShIrradianceAt` (L2 SH irradiance of a light probe at a unit normal). */
 export function vdbShIrradianceAt(normal: Vec3, sh: readonly Vec3[]): Vec3 {
   const [x, y, z] = normal;
   const k = [0.886227, 2 * 0.511664 * y, 2 * 0.511664 * z, 2 * 0.511664 * x, 2 * 0.429043 * x * y, 2 * 0.429043 * y * z, z * z * 0.743125 - 0.247708, 2 * 0.429043 * x * z, 0.429043 * (x * x - y * y)];
+  return map3((c) => k.reduce((sum, w, i) => sum + (sh[i]?.[c] ?? 0) * w, 0));
+}
+
+/** K6.Q1a: π × a light probe's mean radiance over the hemisphere around unit `n` (bands 0 and 1; band 2 averages to 0). */
+export function vdbShHemisphereRadianceAt(n: Vec3, sh: readonly Vec3[]): Vec3 {
+  const k = [Math.PI * 0.282095, Math.PI * 0.488603 * 0.5 * n[1], Math.PI * 0.488603 * 0.5 * n[2], Math.PI * 0.488603 * 0.5 * n[0]];
   return map3((c) => k.reduce((sum, w, i) => sum + (sh[i]?.[c] ?? 0) * w, 0));
 }
 
@@ -513,12 +523,15 @@ export function vdbFrameSpectralLightingFroxel(
     return vdbFrameUnpackSpectralGroup(maps[0]!, maps[1]!, maps[2]!);
   });
   const slotEntry = (slot: number) => (slot === 0 ? groups[0]!.b : slot % 2 === 1 ? groups[(slot + 1) / 2]!.a : groups[slot / 2]!.b);
-  const skyUp = vdbFrameSpectralShadowTotal(groups[0]!.a.x, octaves, albedo).map((v) => v * 0.5) as Vec3;
-  const skyDown = vdbFrameSpectralShadowTotal(groups[0]!.a.y, octaves, albedo).map((v) => v * 0.5) as Vec3;
+  // K6.Q1a: with the shadowed ambient the sky entry holds the visibilities (totals already)
+  const ao = !!inputs.ambientOcclusion;
+  const skyUp = (ao ? groups[0]!.a.x : vdbFrameSpectralShadowTotal(groups[0]!.a.x, octaves, albedo)).map((v) => v * 0.5) as Vec3;
+  const skyDown = (ao ? groups[0]!.a.y : vdbFrameSpectralShadowTotal(groups[0]!.a.y, octaves, albedo)).map((v) => v * 0.5) as Vec3;
   const sky = normalize3(inputs.skyDirection ?? [0, 1, 0]);
-  const probeUp = inputs.lightProbe ? vdbShIrradianceAt(sky, inputs.lightProbe) : [0, 0, 0];
-  const probeDown = inputs.lightProbe ? vdbShIrradianceAt([-sky[0], -sky[1], -sky[2]], inputs.lightProbe) : [0, 0, 0];
-  const irradiance: Vec3 = map3((c) => inputs.ambient[c]! + probeUp[c]! * skyUp[c]! + probeDown[c]! * skyDown[c]! + inputs.hemiSky[c]! * skyUp[c]! + inputs.hemiGround[c]! * skyDown[c]!);
+  const probe = (n: Vec3): Vec3 => (!inputs.lightProbe ? [0, 0, 0] : inputs.probeMode === "radiance" ? vdbShHemisphereRadianceAt(n, inputs.lightProbe) : vdbShIrradianceAt(n, inputs.lightProbe));
+  const probeUp = probe(sky);
+  const probeDown = probe([-sky[0], -sky[1], -sky[2]]);
+  const irradiance: Vec3 = map3((c) => inputs.ambient[c]! * (ao ? skyUp[c]! + skyDown[c]! : 1) + probeUp[c]! * skyUp[c]! + probeDown[c]! * skyDown[c]! + inputs.hemiSky[c]! * skyUp[c]! + inputs.hemiGround[c]! * skyDown[c]!);
   const spectrum = inputs.phaseSpectrum ?? [1, 1, 0];
   inputs.lights.forEach((light, i) => {
     const p = light.position;

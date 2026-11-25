@@ -34,6 +34,7 @@ import {
   type VDBFrameSpectralShadow,
 } from "./spectral.js";
 import { vdbFrameOccludedTotal } from "./occluders.js";
+import { vdbFrameSpectralAmbientPairTotals, vdbFrameSpectralAmbientVisibility } from "./ambient.js";
 import { vdbFrameEnvironmentIrradiance, type VDBFrameEnvironmentFlags, type VDBFrameEnvironmentGpuResult } from "./environment-gpu.js";
 
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
@@ -100,7 +101,17 @@ export function vdbFrameSpectralTransmittanceVoxel3d(
   multipleScattering: number,
   jitter: number,
   group: number,
-  o: { octaves?: Vec4; twoSided?: boolean; visibility?: ((slot: number, world: Vec3) => number) | null; sceneSlots?: number } = {},
+  o: {
+    octaves?: Vec4;
+    twoSided?: boolean;
+    visibility?: ((slot: number, world: Vec3) => number) | null;
+    sceneSlots?: number;
+    /**
+     * K6.Q1a shadowed ambient: the pairs' upper directions (`vdbFrameAmbientDirections`; [0] the sky direction): group
+     * 0's sky entry becomes the hemispherical visibilities of each channel (V up, V down). Default none (the sky totals).
+     */
+    ambientDirections?: readonly Vec3[] | null;
+  } = {},
 ): [Vec4, Vec4, Vec4] {
   const ones: [Vec4, Vec4, Vec4] = [
     [1, 1, 1, 1],
@@ -147,6 +158,20 @@ export function vdbFrameSpectralTransmittanceVoxel3d(
     const up = march(sky, 1e20);
     const down = march([-sky[0], -sky[1], -sky[2]], 1e20);
     const total = (f: VDBFrameSpectralMarch, b: VDBFrameSpectralMarch) => (multipleScattering > 0 ? map3((c) => vdbFrameIsotropicDiffusion(f.z[c]!, b.z[c]!, f.w[c]!)) : f.y);
+    const dirs = o.ambientDirections;
+    if (dirs && dirs.length > 0) {
+      // K6.Q1a: each pair's isotropic-light totals of each channel (pair 0: the sky marches), averaged per side; octaves
+      // at the voxel's grid albedo (its own cascade's texel)
+      const centre = gridAt(cascade, vdbFrameGridUvw(grid, cascade, world));
+      const albedo = vdbFrameSpectralGridAlbedo(centre.extinction, centre.absorption);
+      const totals = dirs.map((d, k) => {
+        const front = k === 0 ? up : march(d, 1e20);
+        const back = k === 0 ? down : march([-d[0], -d[1], -d[2]], 1e20);
+        return vdbFrameSpectralAmbientPairTotals(front, back, multipleScattering > 0, octaves, albedo);
+      });
+      const v = vdbFrameSpectralAmbientVisibility(totals);
+      return vdbFramePackSpectralGroup({ x: v[0], y: v[1] }, entry(slot(0)));
+    }
     return vdbFramePackSpectralGroup({ x: total(up, down), y: total(down, up) }, entry(slot(0)));
   }
   return vdbFramePackSpectralGroup(entry(slot(2 * group - 1)), entry(slot(2 * group)));
@@ -307,7 +332,8 @@ export function vdbFrameSpectralDensitySums(fragCoord: Vec2, p: VDBFrameSpectral
  * The core's spectral environment term of the density pass (`vdbFrameEnvironmentDensityTerm` of each channel): the
  * environment grid at the visible position (outside: the unshadowed light × the spectral octave total of 1), nothing
  * with the environment slot, else 'outward' SH irradiance shadowed between the sky down and up totals of each channel
- * (`sky` (up, down) are group 0's entry a at the visible position, before the totals).
+ * (`sky` (up, down) are group 0's entry a at the visible position, before the totals; K6.Q1a `ambientOcclusion`: the
+ * hemispherical visibilities, read as they are).
  */
 export function vdbFrameSpectralEnvironmentDensityTerm(
   env: VDBFrameEnvironmentGpuResult,
@@ -318,6 +344,7 @@ export function vdbFrameSpectralEnvironmentDensityTerm(
   albedo: Vec3,
   gridAt: () => Vec3 | null,
   octaves: Vec4 = vdbFrameOctavesOff,
+  ambientOcclusion = false,
 ): Vec3 {
   if (!env.valid) return [0, 0, 0];
   const first = flags.slot ? 1 : 0;
@@ -331,8 +358,9 @@ export function vdbFrameSpectralEnvironmentDensityTerm(
   }
   if (flags.useShadows && flags.slot && env.count > 0) return [0, 0, 0];
   const blend = (outward[0] * skyDirection[0] + outward[1] * skyDirection[1] + outward[2] * skyDirection[2]) * 0.5 + 0.5;
-  const up = vdbFrameSpectralShadowTotal(sky.x, octaves, albedo);
-  const down = vdbFrameSpectralShadowTotal(sky.y, octaves, albedo);
+  // K6.Q1a: with the shadowed ambient the entry holds the hemispherical visibilities (totals already)
+  const up = ambientOcclusion ? sky.x : vdbFrameSpectralShadowTotal(sky.x, octaves, albedo);
+  const down = ambientOcclusion ? sky.y : vdbFrameSpectralShadowTotal(sky.y, octaves, albedo);
   const shadow = map3((c) => down[c]! + (up[c]! - down[c]!) * blend);
   const e = vdbFrameEnvironmentIrradiance(env.sh, outward);
   if (!flags.diffusion) return map3((c) => e[c]! * shadow[c]!);

@@ -249,6 +249,10 @@ export {
   vdbFrameAmbientIrradiance,
   vdbFrameAmbientPairTotals,
   vdbFrameAmbientVisibility,
+  vdbFrameSpectralAmbientPairTotals,
+  vdbFrameSpectralAmbientVisibility,
+  vdbFrameSkyProbe,
+  type VDBFrameAmbientProbe,
   type VDBFrameDistantLight,
 } from "./frame/ambient.js";
 // K6.5b: mesh → volume shadows (host occluder maps)
@@ -365,6 +369,7 @@ export {
   vdbFrameSpectralLightingFroxel,
   vdbFrameSpectralGroupsAt,
   vdbShIrradianceAt,
+  vdbShHemisphereRadianceAt,
   vdbFrameInjectIsotropicIrradiance,
   vdbFrameSpectralShadowMarch,
   vdbFrameSpectralInjectSlice,

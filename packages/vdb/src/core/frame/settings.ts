@@ -174,6 +174,13 @@ export interface VDBFrameInternalSettings extends VDBFrameSettings {
    * §4.2: the Gaussian width equals the level's stencil spacing); the chain holds one more mip. An A/B setting.
    */
   multiScaleSigma: "his" | "paper";
+  /**
+   * K6.Q1a: how 'frame' lighting (and 'volume' lighting with `ambientOcclusion`) reads the light probe along ± the sky
+   * direction, the probe's share of the sky up / down terms. `'irradiance'` (default; his): three's cosine-weighted
+   * irradiance there. `'radiance'`: π × the probe's mean radiance over that hemisphere (band 0 × 1, band 1 × ½, band 2 ×
+   * 0), the weight isotropic in-scattering gives each hemisphere. An A/B setting (K6.Q1a handoff).
+   */
+  ambientProbe: "irradiance" | "radiance";
 }
 
 /** His v0.26 defaults (`FrameRenderer.js` L191–246, as `VDBFrameRenderer.settings`), plus `froxelMix: 'mixture'`, `occlusion: true` and the K6.Q1 ambient occlusion (off). */
@@ -225,6 +232,7 @@ export function vdbFrameDefaultInternalSettings(): VDBFrameInternalSettings {
     multiScaleLevels: 6,
     multiScaleEdge: "zero",
     multiScaleSigma: "his",
+    ambientProbe: "irradiance",
     occlusion: true,
     ambientOcclusion: false,
     ambientOcclusionPairs: 4,

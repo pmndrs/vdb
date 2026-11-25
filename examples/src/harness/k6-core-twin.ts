@@ -36,6 +36,8 @@ import {
   vdbFrameAmbientIrradiance,
   vdbFrameAmbientPairTotals,
   vdbFrameAmbientVisibility,
+  vdbFrameSpectralAmbientPairTotals,
+  vdbFrameSpectralAmbientVisibility,
   type VDBFrameEnvironmentGpuResult,
   type VDBFrameFroxelMix,
   type VDBFrameVec2,
@@ -90,6 +92,10 @@ export type TwinMutation =
   // K6.Q1 shadowed ambient: one pair fewer; no occlusion (V = 1)
   | "ao-pairs"
   | "ao"
+  // K6.Q1a: spectral ambient pairs read as grey (the green channel's totals); the probe term back to irradiance
+  | "ao-grey"
+  | "probe-term"
+  | "ao-ring"
   // K6.3 phase and multiple scattering
   | "mie"
   | "octaves"
@@ -199,6 +205,8 @@ export interface TwinFrame {
   occluder?: ((index: number, world: V3) => number) | null;
   /** K6.Q1 shadowed ambient: the pairs' upper directions (world; [0] the sky) and each march's steps (0: the volume's). */
   ambientOcclusion?: { directions: V3[]; steps: number } | null;
+  /** K6.Q1a `ambientProbe`: the probe along ± the sky as three's irradiance (default) or the hemisphere's mean radiance. */
+  probeMode?: "irradiance" | "radiance";
 }
 
 const sub = (a: readonly number[], b: readonly number[]): V3 => [a[0]! - b[0]!, a[1]! - b[1]!, a[2]! - b[2]!];
@@ -383,7 +391,7 @@ export function volumeFroxelTwin(frame: TwinFrame, r: TwinVolume, cell: V3, muta
     const hemiSky = frame.hemi.reduce<V3>((a, h) => add(a, h.sky), [0, 0, 0]);
     const hemiGround = frame.hemi.reduce<V3>((a, h) => add(a, h.ground), [0, 0, 0]);
     const sky = norm(frame.hemi[0]?.up ?? [0, 1, 0]);
-    if (r.lights & 32) irradiance = add(irradiance, vdbFrameAmbientIrradiance({ ambient: frame.ambient, hemiSky: [0, 0, 0], hemiGround: [0, 0, 0], probe: frame.probe, sky }, v));
+    if (r.lights & 32) irradiance = add(irradiance, vdbFrameAmbientIrradiance({ ambient: frame.ambient, hemiSky: [0, 0, 0], hemiGround: [0, 0, 0], probe: frame.probe, sky, probeMode: mutate === "probe-term" ? "irradiance" : (frame.probeMode ?? "irradiance") }, v));
     if (r.lights & 2) irradiance = add(irradiance, vdbFrameAmbientIrradiance({ ambient: [0, 0, 0], hemiSky, hemiGround, sky }, v));
   }
   for (const [index, l] of frame.lights.entries()) {
@@ -450,22 +458,27 @@ export function volumeFroxelSpectralTwin(frame: TwinFrame, r: TwinVolume, cell: 
   const iso = (fz: V3, bz: V3, fw: V3): V3 => [0, 1, 2].map((c) => vdbFrameIsotropicDiffusion(fz[c]!, bz[c]!, fw[c]!)) as V3;
   const total = (y: V3) => vdbFrameSpectralShadowTotal(y, octaves, albedo);
   const none = () => ({ x: [1, 1, 1] as V3, y: [1, 1, 1] as V3, z: [0, 0, 0] as V3, w: [0, 0, 0] as V3 });
-  const march = (origin: V3, localDirection: V3, maxDistance: number) => {
+  const march = (origin: V3, localDirection: V3, maxDistance: number, stepCount = 0) => {
     if (r.absorbance <= 0 || r.shadowSteps === 0) return none();
     const d = norm(localDirection);
     const distance = Math.min(boxExit(origin, d), maxDistance);
     if (distance <= 0) return none();
-    const step = distance / r.shadowSteps;
+    // K6.Q1a: the ambient marches may take fewer steps
+    const steps = stepCount > 0 ? stepCount : r.shadowSteps;
+    const step = distance / steps;
     const stepLod = r.mipmaps ? Math.max(lod, lodOf(step, maxTexels)) : 0;
     const stepScale = step * len(mat3(r.localToView, d)) * r.absorbance;
     const samples: number[] = [];
-    for (let k = 0; k < r.shadowSteps; k++) samples.push(extinctionAt(r, add(origin, scale(d, step * shadowNoise + step * k)), stepLod, mutate) * stepScale);
+    for (let k = 0; k < steps; k++) samples.push(extinctionAt(r, add(origin, scale(d, step * shadowNoise + step * k)), stepLod, mutate) * stepScale);
     return vdbFrameSpectralShadowMarch(samples, spectrum, albedo, r.multipleScattering, octaves);
   };
   const outward = len(local) > 1e-4 ? norm(mat3(frame.cameraWorld, mat3(r.localToView, local))) : ([0, 1, 0] as V3);
   let irradiance: V3 = [0, 0, 0];
-  if (r.lights & 32) irradiance = add(add(irradiance, frame.ambient), vdbShIrradianceAt(outward, frame.probe));
-  if (r.lights & 2) {
+  // K6.Q1a shadowed ambient (ambient or hemisphere bit), per channel: the pairs replace the unshadowed ambient / probe
+  // and the hemisphere lights' own marches
+  const ao = frame.ambientOcclusion && r.lights & (32 | 2) ? frame.ambientOcclusion : null;
+  if (r.lights & 32 && !ao) irradiance = add(add(irradiance, frame.ambient), vdbShIrradianceAt(outward, frame.probe));
+  if (r.lights & 2 && !ao) {
     for (const h of frame.hemi) {
       const up = mat3(r.worldToLocal, h.up);
       const front = march(local, up, 1e6);
@@ -495,6 +508,23 @@ export function volumeFroxelSpectralTwin(frame: TwinFrame, r: TwinVolume, cell: 
         irradiance = add(irradiance, mul3(vdbFrameEnvironmentIrradiance(env.sh, scale(outward, -1)), scale(iso(back.z, front.z, back.w), 0.5)));
       } else irradiance = add(irradiance, mul3(vdbFrameEnvironmentIrradiance(env.sh, outward), total(front.y)));
     }
+  }
+  if (ao) {
+    const dirs = mutate === "ao-pairs" ? ao.directions.slice(0, -1) : ao.directions;
+    const totals = dirs.map((w) => {
+      const d = mat3(r.worldToLocal, w);
+      // ?mutate=ao-grey: the grey pair totals (the green channel) in every channel
+      const front = march(local, d, 1e6, ao.steps);
+      const back = march(local, scale(d, -1), 1e6, ao.steps);
+      const t = vdbFrameSpectralAmbientPairTotals(front, back, diffusion, octaves, albedo);
+      return mutate === "ao-grey" ? ([[t[0][1], t[0][1], t[0][1]], [t[1][1], t[1][1], t[1][1]]] as [V3, V3]) : t;
+    });
+    const v: [V3, V3] = mutate === "ao" ? [[1, 1, 1], [1, 1, 1]] : vdbFrameSpectralAmbientVisibility(totals);
+    const hemiSky = frame.hemi.reduce<V3>((a, h) => add(a, h.sky), [0, 0, 0]);
+    const hemiGround = frame.hemi.reduce<V3>((a, h) => add(a, h.ground), [0, 0, 0]);
+    const sky = norm(frame.hemi[0]?.up ?? [0, 1, 0]);
+    if (r.lights & 32) irradiance = add(irradiance, vdbFrameAmbientIrradiance({ ambient: frame.ambient, hemiSky: [0, 0, 0], hemiGround: [0, 0, 0], probe: frame.probe, sky, probeMode: mutate === "probe-term" ? "irradiance" : (frame.probeMode ?? "irradiance") }, v));
+    if (r.lights & 2) irradiance = add(irradiance, vdbFrameAmbientIrradiance({ ambient: [0, 0, 0], hemiSky, hemiGround, sky }, v));
   }
   for (const [index, l] of frame.lights.entries()) {
     const isDirectional = l.position[3] < 1.5;

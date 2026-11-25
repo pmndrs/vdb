@@ -14,6 +14,7 @@
 
 import { vdbFrameIsotropicDiffusion } from "./grid.js";
 import { vdbFrameOctavesOff, vdbFrameShadowTotal, type Vec3, type Vec4 } from "./index.js";
+import { vdbFrameSpectralShadowTotal, vdbShHemisphereRadianceAt, type VDBFrameSpectralMarch } from "./spectral.js";
 
 /** Most direction pairs (the uniform table's length). */
 export const VDB_FRAME_AMBIENT_MAX_PAIRS = 8;
@@ -27,9 +28,10 @@ const cross = (a: readonly number[], b: readonly number[]): Vec3 => [a[1]! * b[2
 /**
  * The upper direction of each pair (world, unit): [0] the sky direction, then `pairs − 1` at cos θ = (1 − 1/pairs) / 2
  * from it (the ring's area centroid when the sky direction's cap holds 1/pairs of the hemisphere), evenly in azimuth
- * from a tangent of the sky direction. The lower directions are their negatives.
+ * from a tangent of the sky direction. The lower directions are their negatives. K6.Q1a `phase` (0–1) turns the ring by
+ * that fraction of its azimuth step (the renderer passes the frame's jitter with `jitter` and `temporal`).
  */
-export function vdbFrameAmbientDirections(sky: readonly number[], pairs: number): Vec3[] {
+export function vdbFrameAmbientDirections(sky: readonly number[], pairs: number, phase = 0): Vec3[] {
   const n = Math.min(VDB_FRAME_AMBIENT_MAX_PAIRS, Math.max(1, Math.round(pairs)));
   const s = normalize(sky);
   const out: Vec3[] = [s];
@@ -40,7 +42,7 @@ export function vdbFrameAmbientDirections(sky: readonly number[], pairs: number)
   const cosTheta = (1 - 1 / n) / 2;
   const sinTheta = Math.sqrt(1 - cosTheta * cosTheta);
   for (let k = 0; k < n - 1; k++) {
-    const phi = (2 * Math.PI * k) / (n - 1);
+    const phi = (2 * Math.PI * (k + phase)) / (n - 1);
     const c = Math.cos(phi) * sinTheta;
     const d = Math.sin(phi) * sinTheta;
     out.push(normalize([s[0] * cosTheta + t[0] * c + b[0] * d, s[1] * cosTheta + t[1] * c + b[1] * d, s[2] * cosTheta + t[2] * c + b[2] * d]));
@@ -59,6 +61,33 @@ export function vdbFrameAmbientPairTotals(front: Vec4, back: Vec4, diffusion: bo
   // octaves: normalised by the octave total of no medium (1 + Σ bⁿ), so an open direction is 1 as without octaves
   const open = vdbFrameShadowTotal(1, octaves);
   return [vdbFrameShadowTotal(front[1], octaves) / open, vdbFrameShadowTotal(back[1], octaves) / open];
+}
+
+/**
+ * K6.Q1a: one pair's isotropic-light totals of each channel (up, down) from its two spectral marches (direct, total,
+ * reduced depth, effective depth of each channel): the two-sided isotropic diffusion of each channel with `diffusion`,
+ * else each march's spectral total (octaves: at `albedo`, the spectral octave light) over an open direction's. A grey
+ * medium (equal channels; octaves: albedo 1) gives {@link vdbFrameAmbientPairTotals} in every channel.
+ */
+export function vdbFrameSpectralAmbientPairTotals(front: VDBFrameSpectralMarch, back: VDBFrameSpectralMarch, diffusion: boolean, octaves: Vec4 = vdbFrameOctavesOff, albedo: Vec3 = [1, 1, 1]): [Vec3, Vec3] {
+  const map3 = (f: (c: number) => number): Vec3 => [f(0), f(1), f(2)];
+  if (diffusion) return [map3((c) => vdbFrameIsotropicDiffusion(front.z[c]!, back.z[c]!, front.w[c]!)), map3((c) => vdbFrameIsotropicDiffusion(back.z[c]!, front.z[c]!, back.w[c]!))];
+  const open = vdbFrameSpectralShadowTotal([1, 1, 1], octaves, albedo);
+  const up = vdbFrameSpectralShadowTotal(front.y, octaves, albedo);
+  const down = vdbFrameSpectralShadowTotal(back.y, octaves, albedo);
+  return [map3((c) => up[c]! / open[c]!), map3((c) => down[c]! / open[c]!)];
+}
+
+/** K6.Q1a: the hemispherical visibilities of each channel (V_up, V_down): the mean of each side's pair totals. */
+export function vdbFrameSpectralAmbientVisibility(totals: readonly (readonly [Vec3, Vec3])[]): [Vec3, Vec3] {
+  if (totals.length === 0) return [[1, 1, 1], [1, 1, 1]];
+  const up: Vec3 = [0, 0, 0];
+  const down: Vec3 = [0, 0, 0];
+  for (const t of totals) for (let c = 0; c < 3; c++) {
+    up[c] = up[c]! + t[0][c]! / totals.length;
+    down[c] = down[c]! + t[1][c]! / totals.length;
+  }
+  return [up, down];
 }
 
 /** The hemispherical visibilities (V_up, V_down): the mean of each side's pair totals. */
@@ -83,7 +112,12 @@ export interface VDBFrameDistantLight {
   probe?: readonly Vec3[] | null;
   /** Unit sky direction (the first hemisphere light's up, else +y). */
   sky: Vec3;
+  /** K6.Q1a `ambientProbe`: the probe along ± the sky as three's irradiance (default, his) or the hemisphere's mean radiance. */
+  probeMode?: VDBFrameAmbientProbe;
 }
+
+/** K6.Q1a `ambientProbe`: how the light probe's sky up / down terms read it. */
+export type VDBFrameAmbientProbe = "irradiance" | "radiance";
 
 /** three's getShIrradianceAt. */
 function shIrradiance(n: Vec3, sh: readonly Vec3[]): Vec3 {
@@ -94,19 +128,24 @@ function shIrradiance(n: Vec3, sh: readonly Vec3[]): Vec3 {
   return out;
 }
 
+/** K6.Q1a: the probe's light from the hemisphere around unit `n` (the WGSL `vdbFrameSkyProbe`). */
+export function vdbFrameSkyProbe(n: Vec3, sh: readonly Vec3[], mode: VDBFrameAmbientProbe = "irradiance"): Vec3 {
+  return mode === "radiance" ? vdbShHemisphereRadianceAt(n, sh) : shIrradiance(n, sh);
+}
+
 /**
  * The shadowed distant-light irradiance at visibilities (V_up, V_down) (both lightings): ambient × (V_up + V_down) / 2
  * + hemisphere sky × V_up / 2 + ground × V_down / 2 + the probe's irradiance along ± the sky direction × V / 2.
- * Unoccluded (1, 1) gives the ambient and hemisphere light of the unshadowed renderer.
+ * Unoccluded (1, 1) gives the ambient and hemisphere light of the unshadowed renderer. K6.Q1a: a visibility may be per
+ * channel (spectral); `probeMode` picks the probe's term.
  */
-export function vdbFrameAmbientIrradiance(light: VDBFrameDistantLight, visibility: readonly [number, number]): Vec3 {
-  const up = visibility[0] * 0.5;
-  const down = visibility[1] * 0.5;
-  const out: Vec3 = [0, 1, 2].map((c) => light.ambient[c]! * (up + down) + light.hemiSky[c]! * up + light.hemiGround[c]! * down) as Vec3;
+export function vdbFrameAmbientIrradiance(light: VDBFrameDistantLight, visibility: readonly [number | Vec3, number | Vec3]): Vec3 {
+  const ch = (v: number | Vec3, c: number) => (typeof v === "number" ? v : v[c]!) * 0.5;
+  const out: Vec3 = [0, 1, 2].map((c) => light.ambient[c]! * (ch(visibility[0], c) + ch(visibility[1], c)) + light.hemiSky[c]! * ch(visibility[0], c) + light.hemiGround[c]! * ch(visibility[1], c)) as Vec3;
   if (light.probe) {
-    const a = shIrradiance(light.sky, light.probe);
-    const b = shIrradiance([-light.sky[0], -light.sky[1], -light.sky[2]], light.probe);
-    for (let c = 0; c < 3; c++) out[c] = out[c]! + a[c]! * up + b[c]! * down;
+    const a = vdbFrameSkyProbe(light.sky, light.probe, light.probeMode);
+    const b = vdbFrameSkyProbe([-light.sky[0], -light.sky[1], -light.sky[2]], light.probe, light.probeMode);
+    for (let c = 0; c < 3; c++) out[c] = out[c]! + a[c]! * ch(visibility[0], c) + b[c]! * ch(visibility[1], c);
   }
   return out;
 }
