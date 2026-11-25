@@ -479,3 +479,12 @@ From v1; details in docs/archive/handoffs/.
   and stats into the core's own sources (`vdbSparseSourceGpu`, `vdbDenseSource`); their TSL nodes and GPU pyramid run
   only for custom materials (`vdbVolumeNodes`). A harness that checks the TSL pyramid must sample through the nodes
   (k3-pyramid `?three=1`), not through a `VDBFrameVolume`.
+- Dawn zero-fills a new texture through ONE staging buffer of its size (rows padded to 256 bytes): a texture over the
+  device's `maxBufferSize` (256 MiB by default) fails the whole submit ("Buffer size … exceeds the max buffer size
+  limit", an uncaptured error) and the frame silently loses its volumes. The core clamps `shadowResolution` for that
+  (K6.8: R = 256 with one cascade is a 512 MiB transmittance stack); size any new core texture the same way.
+- `./three` copies a sparse source's stats into its core slot when the three source's `stats` object changes
+  (`refreshStats()`); without that call the core slot re-reads the mean itself, one or two updates after the image
+  changed (its own readback). A first frame that must have the new mean awaits `source.refreshStats()` (demo 16).
+- `e2e/demo-0*.spec.ts-snapshots/*-chromium-linux.png` are Linux goldens: on macOS demo 06's panel text differs (3 % of
+  pixels, text only). Check such a failure against the pre-change tree WITH the fixture before suspecting a change.
