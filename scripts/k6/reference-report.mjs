@@ -10,6 +10,10 @@
 //            --port=5461 --base=http://127.0.0.1:5173 (reuse a server) --headless (installed Chrome without a window;
 //            check the adapter it reports) --swiftshader (bundled Chromium + SwiftShader: script debugging, never a result)
 //
+// K6.3a: groups v80-phase-g-low, v80-octave-extinction-high, v80-octaves-1 (his Step 4 strict-bar failures through the
+// core at 640 × 360, with columns for the pixels where core and TSL differ) and a 'multi-scale' σ = 2^k row
+// (`msSigma=paper`) in every scene group.
+//
 // Needs (local, git-ignored): fixtures/k3/bunny_cloud.wvdb, fixtures/k3-reference/75e7345/ (his captures + manifest),
 // fixtures/wdas/wdas_cloud_quarter_fp8.nvdb, fixtures/vdb-samples/smoke.vdb. Groups whose fixtures are missing are skipped.
 // Writes artifacts/k6-reference/<group>/*.png (reference, frames, his captures, heat maps) and report.{json,md}.
@@ -86,6 +90,8 @@ const coreMsRows = (make, base) => [
   make("core ms neural (generic MLP, his weights)", `${base}&ms=neural&backend=core`, { lighting: "frame" }),
   make("core ms multi-scale (edge zero)", `${base}&ms=multi-scale&msEdge=zero&backend=core`, { lighting: "frame" }),
   make("core ms multi-scale (edge clamp, his)", `${base}&ms=multi-scale&msEdge=clamp&backend=core`, { lighting: "frame" }),
+  // K6.3a: the paper's wider levels (σ ≈ 2^k voxels: level k reads mip k + 1), edge zero (V75 item 5)
+  make("core ms multi-scale (σ = 2^k, paper)", `${base}&ms=multi-scale&msEdge=zero&msSigma=paper&backend=core`, { lighting: "frame" }),
 ];
 const k3 = (label, query, extra = {}) => ({ label, page: "k3-frame", query, ...extra });
 const k6 = (label, query, extra = {}) => ({ label, page: "k6-scene", query, ...extra });
@@ -211,6 +217,28 @@ const GROUP_DEFS = {
       k3("core directional, ms diffusion", "scene=step3-environment-sky-midday-env-isolated&envMode=directional&ms=1&backend=core", { lighting: "frame" }),
     ],
   },
+  // K6.3a: the three Step 4 scenes the core fails his strict bar on, at 640 × 360 (frames 2× down) so the 2.5 × 1.4 px
+  // froxel footprint is resolved. `v80`: the pixels where core and TSL differ (> 4/255) get their own columns.
+  ...Object.fromEntries(
+    [
+      ["v80-phase-g-low", "step4-lighting-volume-phase-g-low-dir-isolated", "volume", [-0.5, -0.3, 0.2]],
+      ["v80-octave-extinction-high", "step4-octave-extinction-high-dir-isolated", "frame"],
+      ["v80-octaves-1", "step4-octaves-1-dir-isolated", "frame"],
+    ].map(([key, scenario, lighting, phase]) => [
+      key,
+      {
+        kind: "his",
+        title: `K6.3a / V80: ${scenario} (his strict-bar failure through the core), 640 × 360`,
+        scenario,
+        lighting,
+        ...(phase ? { phase } : {}),
+        size: [640, 360],
+        scale: 2,
+        v80: true,
+        rows: [k3("TSL (per-slice)", `scene=${scenario}`, { lighting, capture: scenario }), k3("core (prefix)", `scene=${scenario}&backend=core`, { lighting })],
+      },
+    ]),
+  ),
   ...Object.fromEntries(
     [
       ["wdas", "WDAS cloud (sparse, Fp8), sun", "wdas"],
@@ -354,7 +382,40 @@ function regionStats(a, ref, inMask) {
   };
 }
 
-function compare(a, ref) {
+/**
+ * K6.3a: luminance error of `a` over the pixels of `mask` (and reference alpha > 0.02): Σ|Y_A − Y_R| / Σ Y_R as is and
+ * with Y_A scaled by `scale` (the volume's energy matched to the reference: an image's global MS bias would otherwise
+ * decide which of two images is closer on a small region), and the bias Σ Y_A / Σ Y_R − 1 there.
+ */
+function maskStats(a, ref, mask, scale) {
+  let n = 0;
+  let err = 0;
+  let matched = 0;
+  let yA = 0;
+  let yR = 0;
+  for (let i = 0; i < ref.width * ref.height; i++) {
+    if (!mask[i] || !(ref.alpha[i] > 0.02)) continue;
+    const ya = lum(...unblend(a.rgb, i, ref.alpha[i]));
+    const yr = lum(...unblend(ref.rgb, i, ref.alpha[i]));
+    n++;
+    err += Math.abs(ya - yr);
+    matched += Math.abs(ya * scale - yr);
+    yA += ya;
+    yR += yr;
+  }
+  return { pixels: n, relError: yR > 0 ? err / yR : null, relErrorMatched: yR > 0 ? matched / yR : null, lumBias: yR > 0 ? yA / yR - 1 : null };
+}
+
+/** K6.3a: pixels where two frames (linear RGB) differ by more than `t`/255 in sRGB 8-bit. */
+function diffMask(a, b, t = 4) {
+  const A = toRgba8(a);
+  const B = toRgba8(b);
+  const m = new Uint8Array(a.width * a.height);
+  for (let i = 0; i < m.length; i++) for (let c = 0; c < 3; c++) if (Math.abs(A.data[i * 4 + c] - B.data[i * 4 + c]) > t) m[i] = 1;
+  return m;
+}
+
+function compare(a, ref, v80Mask = null) {
   if (a.width !== ref.width || a.height !== ref.height) throw new Error(`size ${a.width}x${a.height} vs ${ref.width}x${ref.height}`);
   const n = ref.width * ref.height;
   const A8 = toRgba8(a);
@@ -386,6 +447,7 @@ function compare(a, ref) {
     lumBias: vol.lumBias,
     silhouette: { pixels: sil.pixels, relError: sil.relError, rmseLinear: sil.rmseLinear, lumBias: sil.lumBias },
     overlap: ovl && { pixels: ovl.pixels, lumBias: ovl.lumBias, medianRelLum: ovl.medianRelLum, rmseLinear: ovl.rmseLinear },
+    v80: v80Mask && vol.lumBias !== null ? maskStats(a, ref, v80Mask, 1 / (1 + vol.lumBias)) : null,
   };
 }
 
@@ -474,7 +536,7 @@ try {
       let query;
       if (g.kind === "his") {
         const s = frames.find((t) => t.settings && t.lighting === "frame")?.settings;
-        const phase = g.lighting === "volume" ? VOLUME_PHASE : s?.phase === "dual-lobe" ? [s.phaseG, s.phaseBackG, s.phaseBackWeight] : [s?.phaseG ?? 0.8, 0, 0];
+        const phase = g.phase ?? (g.lighting === "volume" ? VOLUME_PHASE : s?.phase === "dual-lobe" ? [s.phaseG, s.phaseBackG, s.phaseBackWeight] : [s?.phaseG ?? 0.8, 0, 0]);
         if (g.lighting === "frame" && s && !["henyey-greenstein", "dual-lobe", "isotropic", "lorenz-mie", "lorenz-mie-rgb"].includes(s.phase)) console.warn(`  phase ${s.phase}: the reference uses HG g = ${phase[0]}`);
         query = `case=report&scenario=${g.scenario}&lighting=${lighting}&phase=${phase.join(",")}${g.mie ? `&mie=${g.mie}` : ""}${g.env ? `&env=${g.env}` : ""}`;
       } else query = `case=scene&scene=${g.scene}&lighting=${lighting}`;
@@ -495,12 +557,23 @@ try {
       refs[lighting] = entry;
     }
     const rows = [];
+    // K6.3a: the V80 pixels (core vs TSL > 4/255) of a `v80` group
+    const coreFrame = frames.find((t) => t.img && t.backend === "core");
+    const tslFrame = frames.find((t) => t.img && t.backend !== "core");
+    const v80Mask = g.v80 && coreFrame && tslFrame ? diffMask(coreFrame.img, tslFrame.img) : null;
+    if (v80Mask) {
+      const count = v80Mask.reduce((s, v) => s + v, 0);
+      console.log(`  V80 pixels (core vs TSL > 4/255): ${count}`);
+      const vis = toRgba8(tslFrame.img);
+      for (let i = 0; i < v80Mask.length; i++) if (v80Mask[i]) vis.data.set([255, 0, 0, 255], i * 4);
+      writeFileSync(path.join(dir, "v80-mask.png"), encodePng(vis));
+    }
     const add = (label, img, kind, lighting, extra = {}) => {
       const ref = refs[lightings.includes(lighting) ? lighting : lightings[0]];
       const file = label.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
       writeFileSync(path.join(dir, `${file}.png`), encodePng(toRgba8(img)));
-      const vsFull = ref.full ? compare(img, ref.full.img) : null;
-      const vsSingle = compare(img, ref.single.img);
+      const vsFull = ref.full ? compare(img, ref.full.img, v80Mask) : null;
+      const vsSingle = compare(img, ref.single.img, v80Mask);
       writeFileSync(path.join(dir, `${file}.err.png`), encodePng(diffHeatmap(toRgba8(img), toRgba8((ref.full ?? ref.single).img))));
       rows.push({ label, kind, lighting, vsFull, vsSingle, ...extra });
     };
@@ -560,6 +633,19 @@ function markdown(g) {
     md.push(`| ${r.label} | ${a ? pct(a.lumBias) : "—"} | ${a ? pct(a.medianRelLum) : "—"} | ${a ? f(a.ssimRect, 3) : "—"} | ${a ? f(a.psnr) : "—"} | ${a ? pct(a.silhouette.relError) : "—"} | ${pct(s.lumBias)} | ${pct(s.medianRelLum)} | ${pct(s.silhouette.relError)} |${ovl}`);
   }
   md.push("");
+  // K6.3a: the V80 pixels' own table
+  if (g.rows.some((r) => r.vsSingle?.v80)) {
+    const n = g.rows.find((r) => r.vsSingle?.v80)?.vsSingle.v80.pixels;
+    md.push(`V80 pixels (core vs TSL > 4/255, reference alpha > 0.02): ${n}. Σ|Y − Y_ref| / Σ Y_ref there, as rendered and with the image's volume energy matched to the reference (Y × Σ Y_ref / Σ Y over the volume), and the bias there.`, "");
+    md.push("| Image | vs MS: rel. err | energy-matched | bias | vs SS: rel. err | energy-matched | bias |", "|---|---|---|---|---|---|---|");
+    for (const r of g.rows) {
+      if (!r.vsSingle?.v80) continue;
+      const a = r.vsFull?.v80;
+      const s = r.vsSingle.v80;
+      md.push(`| ${r.label} | ${a ? pct(a.relError) : "—"} | ${a ? pct(a.relErrorMatched) : "—"} | ${a ? pct(a.lumBias) : "—"} | ${pct(s.relError)} | ${pct(s.relErrorMatched)} | ${pct(s.lumBias)} |`);
+    }
+    md.push("");
+  }
   return md;
 }
 

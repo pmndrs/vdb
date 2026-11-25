@@ -53,6 +53,19 @@ export const VDB_FRAME_MULTI_SCALE_DEFAULT_LEVELS = 6;
 /** Edge rule of the mip build: zero outside the grid (default), or his clamp-to-edge. */
 export type VDBFrameMultiScaleEdge = "zero" | "clamp";
 
+/**
+ * K6.3a: the blur of each lookup level (V75 item 5). `'his'` (default): level k reads mip k, the binomial chain's
+ * σ ≈ 2^(k−1) voxels (σ_k² = (4^k − 1) / 4; his 4e2d46f). `'paper'`: level k reads mip k + 1, σ ≈ 2^k voxels, the
+ * Gaussian width of Disney "Deep Scattering" §4.2 (its stencil spacing at level k is 2^k voxels); the chain holds one
+ * more mip (at most {@link VDB_FRAME_MULTI_SCALE_MAX_LEVELS} levels: past it the last level reads the last mip).
+ */
+export type VDBFrameMultiScaleSigma = "his" | "paper";
+
+/** The mip a lookup level reads past its own index (0 for `'his'`, 1 for `'paper'`). */
+export function vdbFrameMultiScaleLevelOffset(sigma: VDBFrameMultiScaleSigma | undefined): number {
+  return sigma === "paper" ? 1 : 0;
+}
+
 /** One mip level (1 to levels − 1). */
 export interface VDBFrameMultiScaleMipLevel {
   /** The level k (1 = first mip). */
@@ -258,6 +271,13 @@ export interface VDBFrameMultiScaleGrid {
   levels: number;
   /** 1 − g of the phase function (his `frameMultipleScattering`); 0 is single scattering (no scattered light). */
   multipleScattering: number;
+  /**
+   * K6.3a: level k reads mip level min(k + levelOffset, mipLevels) (default 0; 1 is `multiScaleSigma: 'paper'`,
+   * {@link vdbFrameMultiScaleLevelOffset}).
+   */
+  levelOffset?: number;
+  /** K6.3a: the chain's mip count (levels − 1 of its layout): the highest level a lookup reads (default: no clamp). */
+  mipLevels?: number;
 }
 
 /** The textures the lookup reads: the base region and the mip levels. */
@@ -307,13 +327,15 @@ export function vdbFrameMultiScaleSample(textures: VDBFrameMultiScaleTextures, g
  */
 export function vdbFrameMultiScaleLight(
   sampleLevel: (level: number, world: Vec3) => Vec2,
-  grid: Pick<VDBFrameMultiScaleGrid, "unit" | "levels" | "multipleScattering">,
+  grid: Pick<VDBFrameMultiScaleGrid, "unit" | "levels" | "multipleScattering" | "levelOffset" | "mipLevels">,
   world: Vec3,
   direction: Vec3,
   maxDistance: number,
 ): number {
   const h = grid.unit;
   const g = grid.multipleScattering;
+  const offset = grid.levelOffset ?? 0;
+  const top = grid.mipLevels ?? Infinity;
   const [dx, dy, dz] = direction;
   // Two unit vectors at right angles to the direction (Frisvad 2012), pole at −y (lights below are rare).
   const pole = dy < -0.9999;
@@ -329,8 +351,10 @@ export function vdbFrameMultiScaleLight(
     if (!(segment > 0)) continue;
     const t = start + segment * 0.5;
     const center: Vec3 = [world[0] + dx * t, world[1] + dy * t, world[2] + dz * t];
-    const at = (axis: Vec3, sign: number): Vec2 => sampleLevel(k, [center[0] + axis[0] * scale * sign, center[1] + axis[1] * scale * sign, center[2] + axis[2] * scale * sign]);
-    const p = [sampleLevel(k, center), at(u, 1), at(u, -1), at(v, 1), at(v, -1)];
+    // K6.3a: the level's blur (mip k, or k + 1 for the paper's σ = 2^k), the taps stay at the level's own spacing
+    const read = Math.min(k + offset, top);
+    const at = (axis: Vec3, sign: number): Vec2 => sampleLevel(read, [center[0] + axis[0] * scale * sign, center[1] + axis[1] * scale * sign, center[2] + axis[2] * scale * sign]);
+    const p = [sampleLevel(read, center), at(u, 1), at(u, -1), at(v, 1), at(v, -1)];
     const extinction = (p[0]![0] + p[1]![0] + p[2]![0] + p[3]![0] + p[4]![0]) * 0.2;
     const absorption = (p[0]![1] + p[1]![1] + p[2]![1] + p[3]![1] + p[4]![1]) * 0.2;
     // frameShadowStep of the bulk.

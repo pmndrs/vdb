@@ -7,7 +7,9 @@ import { expect, test, type Page } from "@playwright/test";
 // rg32float source). The WGSL lookup (vdbFrameMultiScaleLight / Sample) = its twin over the same f16 texels on
 // 2 × 1024 seeded queries. Tolerance: SwiftShader filters in f32 (Traps), so the gate is 1e-4 absolute on the
 // scattered light and 1e-4 relative on samples; hardware that quantizes filter weights to 8 bits needs ~1e-2.
-// A resize between frames keeps the old view valid for the frame in flight (the retire rule).
+// A resize between frames keeps the old view valid for the frame in flight (the retire rule). K6.3a: a third lookup
+// with the σ = 2^k levels (`levelOffset` 1) on the zero chain, plus its fail-before (`mutated`: the max difference from
+// the twin run with offset 0, which must be large).
 const PAGE_URL = "/src/harness/k7-multi-scale.html";
 
 interface Compare {
@@ -22,7 +24,7 @@ interface Result {
   done: boolean;
   error?: string;
   builds: { name: string; format: string; dimensions: number[][]; compare: Compare; peak: number }[];
-  lookups: { name: string; queries: number; light: { maxAbs: number; maxRel: number; nonZero: number }; sample: { maxRel: number; outside: number } }[];
+  lookups: { name: string; queries: number; light: { maxAbs: number; maxRel: number; nonZero: number }; sample: { maxRel: number; outside: number }; mutated?: number }[];
   retire?: { version: number; errors: string[] };
   uncaptured: string[];
 }
@@ -59,7 +61,8 @@ test("K7.3 multi-scale: GPU mips = CPU twin (≤ 1 f16 ulp), GPU lookup = CPU tw
   }
   // Odd, non-cubic sizes halve exactly: 37x24x50 at 6 levels → level 1 32x16x32.
   expect(r.builds[0]!.dimensions[0], detail).toEqual([32, 16, 32]);
-  expect(r.lookups.map((l) => l.name), detail).toEqual(["lookup rg-zero", "lookup stacked"]);
+  // K6.3a: "paper" = the σ = 2^k levels (level k reads mip k + 1; the last level clamps to the chain's last mip)
+  expect(r.lookups.map((l) => l.name), detail).toEqual(["lookup rg-zero", "lookup stacked", "lookup rg-zero paper"]);
   for (const l of r.lookups) {
     expect(l.queries, detail).toBe(1024);
     expect(l.light.maxAbs, `${l.name}\n${detail}`).toBeLessThan(1e-4);
@@ -68,5 +71,8 @@ test("K7.3 multi-scale: GPU mips = CPU twin (≤ 1 f16 ulp), GPU lookup = CPU tw
     expect(l.light.nonZero, `${l.name}\n${detail}`).toBeGreaterThan(l.queries / 4);
     expect(l.sample.outside, `${l.name}\n${detail}`).toBeGreaterThan(0);
   }
+  // The paper lookup reads other levels than the plain one (its twin with the plain offset is far off).
+  expect(r.lookups[2]!.mutated, detail).toBeGreaterThan(1e-3);
+  console.log(`[k7] ${r.lookups.map((l) => `${l.name}: max |gpu − twin| ${l.light.maxAbs.toExponential(2)}, ${l.light.nonZero} lit${l.mutated !== undefined ? `, vs the offset-0 twin ${l.mutated.toFixed(4)}` : ""}`).join("; ")}`);
   expect(r.retire, detail).toEqual({ version: 1, errors: [] });
 });

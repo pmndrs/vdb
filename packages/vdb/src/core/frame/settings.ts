@@ -72,6 +72,12 @@ export interface VDBFrameSettings {
    */
   multiScaleEdge: "zero" | "clamp";
   /**
+   * K6.3a `'multi-scale'`: the blur of each level (V75 item 5). `'his'` (default; his 4e2d46f): level k reads the
+   * binomial mip k, σ ≈ 2^(k−1) voxels. `'paper'`: level k reads mip k + 1, σ ≈ 2^k voxels (Disney "Deep Scattering"
+   * §4.2: the Gaussian width equals the level's stencil spacing); the chain holds one more mip. An A/B setting.
+   */
+  multiScaleSigma: "his" | "paper";
+  /**
    * K6.5b: the host's depth shadow maps (`VDBFrameInput.occluders`) shadow the volumes (mesh → volume shadows: the
    * 'frame' transmittance and gather, the 'volume' march). Default true; it does nothing without maps.
    */
@@ -134,6 +140,7 @@ export function vdbFrameDefaultSettings(): VDBFrameSettings {
     froxelMix: "mixture",
     multiScaleLevels: 6,
     multiScaleEdge: "zero",
+    multiScaleSigma: "his",
     occlusion: true,
     ambientOcclusion: false,
     ambientOcclusionPairs: 4,

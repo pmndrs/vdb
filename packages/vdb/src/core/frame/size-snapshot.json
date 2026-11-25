@@ -202,9 +202,9 @@
       "gz": 4741
     },
     "vdb frame transmittance (multi-scale)": {
-      "raw": 23919,
-      "min": 15286,
-      "gz": 4694
+      "raw": 24137,
+      "min": 15355,
+      "gz": 4717
     },
     "vdb frame grid mip (from the shadow grid)": {
       "raw": 2824,

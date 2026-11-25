@@ -249,11 +249,11 @@ describe("K6.1 retire queue", () => {
 });
 
 describe("K6.1 settings", () => {
-  it("the core defaults equal ./three's VDBFrameRenderer settings, field by field, plus froxelMix, occlusion, the K6.3 multi-scale and the K6.Q1 ambient-occlusion fields", () => {
+  it("the core defaults equal ./three's VDBFrameRenderer settings, field by field, plus froxelMix, occlusion, the K6.3 / K6.3a multi-scale and the K6.Q1 ambient-occlusion fields", () => {
     const core = vdbFrameDefaultSettings();
     const three = new VDBFrameRenderer().settings as unknown as Record<string, unknown>;
-    const { froxelMix, occlusion, multiScaleLevels, multiScaleEdge, ambientOcclusion, ambientOcclusionPairs, ambientOcclusionSteps, ...shared } = core;
-    expect([multiScaleLevels, multiScaleEdge]).toEqual([6, "zero"]);
+    const { froxelMix, occlusion, multiScaleLevels, multiScaleEdge, multiScaleSigma, ambientOcclusion, ambientOcclusionPairs, ambientOcclusionSteps, ...shared } = core;
+    expect([multiScaleLevels, multiScaleEdge, multiScaleSigma]).toEqual([6, "zero", "his"]);
     // K6.Q1: the shadowed ambient is off by default (his unshadowed ambient), 4 pairs, the volume's shadow steps
     expect([ambientOcclusion, ambientOcclusionPairs, ambientOcclusionSteps]).toEqual([false, 4, 0]);
     expect(froxelMix).toBe("mixture");
