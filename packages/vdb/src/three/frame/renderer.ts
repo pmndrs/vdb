@@ -92,6 +92,8 @@ export class VDBFrameRenderer {
   #denseSources = new WeakMap<object, VDBDenseSource>();
   #sparseSources = new Map<object, Map<string, VDBSparseSourceGpu>>();
   #sparseSlots = new WeakMap<object, VDBSparseVolumeGpu>();
+  /** The three source's stats object each core slot last took (a new object: `refreshStats()` ran). */
+  #slotStats = new WeakMap<object, object>();
   #volumes = new Map<VDBFrameVolume, VDBFrameVolumeGpu>();
   #frameId = 0;
   #frameKey: { renderId: number; camera: THREE.Camera; scene: object; result: VDBFrameUpdate } | null = null;
@@ -316,6 +318,12 @@ export class VDBFrameRenderer {
       const auxIndexBoxes = Object.fromEntries(Object.entries(aux).filter(([, b]) => b)) as Partial<Record<"mask" | "albedo" | "emission", VDBIndexBox>>;
       slot = source.volume(three.ids, three.followImage ? { stats: three.stats } : { indexBox: three.indexBox, auxIndexBoxes, stats: three.stats });
       this.#sparseSlots.set(three, slot);
+      this.#slotStats.set(slot, three.stats);
+    } else if (this.#slotStats.get(slot) !== three.stats) {
+      // the three source re-read its stats (`refreshStats()` after a replace): the core slot takes them now, instead of
+      // a frame or two later from its own readback of the same image (a coarse-first swap's first full frame, G16a)
+      (slot as { stats: VDBSparseVolumeGpu["stats"] }).stats = { ...three.stats };
+      this.#slotStats.set(slot, three.stats);
     }
     if (handle && handle.slot !== slot) {
       handle.remove();

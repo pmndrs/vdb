@@ -11,7 +11,8 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 - `@pmndrs/vdb/three`: `VDBFrameRenderer` draws every frame with the core frame renderer (compute kernels on three's
   device; D34). The TSL pass materials, their shader chunks and the internal `backend` switch are deleted.
   - `settings` is the core's `VDBFrameSettings` (his names and defaults, plus `froxelMix`, `occlusion`,
-    `multiScaleLevels`, `multiScaleEdge`, `ambientOcclusion`, `ambientOcclusionPairs`, `ambientOcclusionSteps`).
+    `multiScaleLevels`, `ambientOcclusion`, `ambientOcclusionPairs`, `ambientOcclusionSteps`; the multi-scale A/B
+    settings `multiScaleEdge` and `multiScaleSigma` stay internal).
     `VDBFrameRendererSettings` is removed; `VDBFramePhase` → `VDBFramePhaseName`, `VDBFrameMultipleScattering` →
     `VDBFrameMultipleScatteringMode` (the core's declarations, re-exported).
   - `neuralNetwork` → `mlp` (EXPERIMENTAL: the generic small-MLP data, `VDBFrameMlp`; default his trained weights; null

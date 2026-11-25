@@ -845,9 +845,9 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const s = this.settings;
     const fw = this.#frameWriter;
     const U = VDB_FRAME_UNIFORMS;
-    const resolution = Math.max(2, Math.round(s.shadowResolution));
     const cascades = Math.min(VDB_FRAME_MAX_CASCADES, Math.max(1, Math.round(s.shadowCascades)));
     const spectral = !!s.spectral;
+    const resolution = this.#gridResolution(Math.max(2, Math.round(s.shadowResolution)), cascades, spectral);
     // K6.4: the slot groups in use (his getFrameSpectralGroups over the scene slots and the environment slot, set below)
     const sceneSlotCount = Math.min(lights.sorted.length, VDB_FRAME_SHADOW_SLOTS);
     const envSlotWanted = this.#env.present && this.#env.mode === "directional" && sceneSlotCount < VDB_FRAME_SHADOW_SLOTS && !(!!s.multipleScattering && s.multipleScattering !== "octaves");
@@ -986,6 +986,27 @@ class FrameRenderer implements VDBFrameRendererGpu {
       this.#envGridSignature = envSignature;
     }
     return { count, drawGrid, drawTransmittance, drawEnvironmentGrid, scattering: plan.kind, groups };
+  }
+
+  /**
+   * K6.8: the shadow grid resolution the device can hold. The transmittance stack (4 rgba16float targets per cascade, 3
+   * per slot group and cascade when spectral) is one texture; Dawn zero-fills a new texture through one staging buffer of
+   * its size, so a stack larger than the device's `maxBufferSize` (256 MiB by default: R = 256 with one cascade is
+   * 512 MiB) fails the host's submit and the frame is lost. Clamp R so the stack fits (warned once).
+   */
+  #gridResolution(resolution: number, cascades: number, spectral: boolean): number {
+    const maxBytes = this.device.limits?.maxBufferSize ?? 268435456;
+    const targets = spectral ? 3 * VDB_FRAME_SPECTRAL_GROUPS * cascades : 4 * cascades;
+    const maxDim = this.device.limits?.maxTextureDimension3D ?? 2048;
+    // the staging buffer's rows are padded to 256 bytes (Dawn's copy alignment)
+    const bytes = (side: number): number => {
+      const size = vdbFrameStackLayout(side, targets, maxDim).size;
+      return Math.ceil((size[0] * 8) / 256) * 256 * size[1] * size[2];
+    };
+    let r = resolution;
+    while (r > 2 && bytes(r) > maxBytes) r--;
+    if (r !== resolution) this.#warnOnce(`grid-resolution-${resolution}-${cascades}-${spectral}`, `settings.shadowResolution ${resolution} makes a transmittance stack of ${Math.round((resolution ** 3 * targets * 8) / 1048576)} MiB, more than the device's maxBufferSize (${Math.round(maxBytes / 1048576)} MiB); clamped to ${r}.`);
+    return r;
   }
 
   /** The grid textures for this resolution and cascade count (a change retires the old ones and redraws). */

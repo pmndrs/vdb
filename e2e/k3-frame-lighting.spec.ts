@@ -183,7 +183,8 @@ test("K3.3 cascades: a camera inside the casters gets finer cascades; the image 
   const near = "?w=240&h=135&froxels=128x96x24&lighting=frame&lights=dir-hemi&dist=0.3";
   const c4 = await run(page, `${near}&cascades=4`);
   const c1 = await run(page, `${near}&cascades=1`);
-  const fine = await run(page, `${near}&cascades=1&shadowRes=256`);
+  // K6.8: 192³ (the core clamps a grid whose transmittance stack passes the device's maxBufferSize: 256³ is 512 MiB)
+  const fine = await run(page, `${near}&cascades=1&shadowRes=192`);
   const detail = detailOf(c4);
   expectClean(c4);
   for (const r of [c1, fine]) expect(r.error, detailOf(r)).toBeUndefined();
@@ -194,10 +195,10 @@ test("K3.3 cascades: a camera inside the casters gets finer cascades; the image 
   expect(diff.mse, JSON.stringify(diff)).toBeGreaterThan(0);
   const toFine4 = compareImages(image(c4), image(fine));
   const toFine1 = compareImages(image(c1), image(fine));
-  expect(toFine4.psnr, `4 cascades ${toFine4.psnr} dB vs 1 cascade ${toFine1.psnr} dB to the 256³ grid`).toBeGreaterThan(toFine1.psnr);
+  expect(toFine4.psnr, `4 cascades ${toFine4.psnr} dB vs 1 cascade ${toFine1.psnr} dB to the 192³ grid`).toBeGreaterThan(toFine1.psnr);
   save("k3-frame-lighting-cascades-4", c4);
   save("k3-frame-lighting-cascades-1", c1);
-  console.log(`[k3-frame-lighting] cascades: ${c4.grid!.count} in use; vs a 256³ single grid: 4 cascades ${toFine4.psnr.toFixed(2)} dB, 1 cascade ${toFine1.psnr.toFixed(2)} dB`);
+  console.log(`[k3-frame-lighting] cascades: ${c4.grid!.count} in use; vs a 192³ single grid: 4 cascades ${toFine4.psnr.toFixed(2)} dB, 1 cascade ${toFine1.psnr.toFixed(2)} dB`);
 });
 
 test("K3.3 sparse source: 'frame' lighting on identical voxels is >= 35 dB from dense", async ({ page }) => {
