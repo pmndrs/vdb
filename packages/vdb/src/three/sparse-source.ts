@@ -1,6 +1,6 @@
 // The source half of mjurczyk/openvdb's createVolumeUniforms / createVolumeNodes (MIT, commit 75e7345) is ported in
 // ./sparse-nodes.ts (K6.8a: the TSL half of this source); this file is the handle.
-// Divergences: DIVERGES.md (K3.2 rows), V23–V25, V150.
+// Divergences: DIVERGES.md (K3.2 rows), V23–V25, V145.
 
 /**
  * The sparse volume source (K3.2, R1 §4.2–4.3): a `VDBGridPool` grid behind the same seam as the
