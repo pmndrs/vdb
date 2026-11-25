@@ -450,3 +450,6 @@ From v1; details in docs/archive/handoffs/.
 - The report's `his` groups render through `k3-frame`, the scene groups through `k6-scene`: a `--query` core setting
   must be parsed by both pages (K6.Q1 added `?ao=` to each).
 >>>>>>> main
+- K6.Q1's shadowed ambient lives only in the grey kernels (the 4th grey transmittance target's z, w; the grey 'volume'
+  pairs). The spectral kernels (K6.4) have their own copies of the ambient / probe / hemisphere terms and ignore
+  `ambientOcclusion` (warned): a change to one lighting term must be made in both the grey and the spectral WGSL.
