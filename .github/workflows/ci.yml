@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   test:
-    name: typecheck · unit · build · e2e
+    name: typecheck · unit · build
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -87,19 +87,63 @@ jobs:
       # native picovdb tools. Run it locally with
       # `pnpm vitest run --root experiments/picovdb-spike` (see the spike doc).
 
+  # The e2e suite (460 tests on SwiftShader) passed the 60-minute job cap after K6.8, so it runs in 4 shards
+  # beside the check job. Playwright shards by file (the config is not fullyParallel).
+  e2e:
+    name: e2e ${{ matrix.shard }}/4
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      BAKE_MODE: local
+      WEBVDB_REQUIRE_FIXTURES: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Cache fixtures
+        id: fixtures-cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            fixtures/primitives/*.nvdb
+            fixtures/vdb-samples
+            fixtures/downloads/openvdb-sparse
+          key: fixtures-${{ runner.os }}-${{ hashFiles('docker/fixture-bake/bake_primitives.cpp', 'scripts/bake-fixtures.mjs', 'scripts/fetch-vdb-samples.mjs') }}
+
+      - name: Bake primitive fixtures + fetch .vdb samples
+        if: steps.fixtures-cache.outputs.cache-hit != 'true'
+        run: |
+          pnpm fixtures:bake
+          pnpm fixtures:vdb-samples
+
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps chromium
 
       # WebGPU runs on SwiftShader (software Vulkan) via the flags in
       # playwright.config.ts, so the GPU demos and parity harness are real.
       - name: E2E tests
-        run: pnpm test:e2e
+        run: pnpm test:e2e --shard=${{ matrix.shard }}/4
 
       - name: Upload Playwright report
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard }}
           path: |
             playwright-report/
             test-results/
