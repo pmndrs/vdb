@@ -168,8 +168,10 @@ needs the owner's asset release (`examples-assets-v1`, RELEASING §4). K5.3 clou
 
 ## K6 — Renderer in the core (pure WebGPU) 🟨
 
-**Status 2026-11-25:** K6.0 done. The owner chose compute on 3D textures (D34,
-[design/K6-core-renderer.md](design/K6-core-renderer.md)); K6.1 is in progress ([brief](design/K6.1-brief.md)).
+**Status 2026-11-26:** K6.0–K6.8 done (K6.1–K6.7, K6.9, K6.R/R1, K6.Q1, K6.3a, K7.1, K7.3): the core renders 'volume' and
+'frame' lighting, environment, shadows both ways, emission, every multiple-scattering mode, spectral media and shadowed
+ambient; `./three` is a thin adapter (TSL passes deleted) and the 0.2.0 API is in. Open: the owner's defaults
+(multiple scattering, `ambientOcclusion`), K6.10 (gate review), follow-ups K6.4a, K6.Q1a, K6.8a, K6.R2.
 Timing A/Bs are deferred to K6.T (no quiet machine); nothing in K6 gates on speed.
 
 The froxel renderer, level-set tracer and points live in `./three` as TSL today. K6 moves them into the engine-free
