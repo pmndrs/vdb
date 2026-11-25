@@ -99,6 +99,8 @@ export type TwinMutation =
   | "mlp-depth"
   | "ms-edge"
   | "ms-levels"
+  // K6.3a: the twin reads the plain levels (offset 0) where the kernel reads the paper's (offset 1), or the reverse
+  | "ms-sigma"
   // K6.5b host occluder maps: the twin without them, the transmittance's scattered part unoccluded, one texel
   | "occluder"
   | "occluder-scattered"

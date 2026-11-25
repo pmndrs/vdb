@@ -749,6 +749,8 @@ async function main(): Promise<void> {
   // K6.3 `?msEdge=zero|clamp`, `?msLevels=`: the core's 'multi-scale' settings (with `?ms=multi-scale`, backend core)
   if (params.has("msEdge")) frameRenderer.coreSettings.multiScaleEdge = params.get("msEdge") === "clamp" ? "clamp" : "zero";
   if (params.has("msLevels")) frameRenderer.coreSettings.multiScaleLevels = Number(params.get("msLevels"));
+  // K6.3a `?msSigma=paper`: the σ = 2^k levels (a core setting `./three`'s coreSettings type does not list; assigned through)
+  if (params.has("msSigma")) Object.assign(frameRenderer.coreSettings, { multiScaleSigma: params.get("msSigma") === "paper" ? "paper" : "his" });
   // K6.Q1 `?ao=1`, `?aoPairs=`, `?aoSteps=`: the core's shadowed ambient (backend core)
   if (params.has("ao")) frameRenderer.coreSettings.ambientOcclusion = params.get("ao") === "1";
   if (params.has("aoPairs")) frameRenderer.coreSettings.ambientOcclusionPairs = Number(params.get("aoPairs"));

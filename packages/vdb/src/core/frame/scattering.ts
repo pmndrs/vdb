@@ -12,15 +12,15 @@
  *   weight storage buffer, the source-free kernel's one storage buffer, D10) and the box mips of its feature levels
  *   (`gridMips`: one rgba16float 3D texture of side R/2 with ≤ 5 mips, redrawn with the shadow grid).
  * - `'multi-scale'` (K7.3): `vdbCreateMultiScaleMips` on the last shadow grid cascade (rg16float, edge `'zero'` or his
- *   `'clamp'`, `multiScaleLevels`), recorded in its own compute pass after the grid, and the `VdbFrameMultiScale`
- *   uniform.
+ *   `'clamp'`, `multiScaleLevels`; K6.3a `multiScaleSigma: 'paper'` adds one level and the lookup's `levelOffset`),
+ *   recorded in its own compute pass after the grid, and the `VdbFrameMultiScale` uniform.
  *
  * Grey 'frame' lighting only; elsewhere these modes run as 1D diffusion (his `isNeural`), as the TSL path.
  */
 
 import { vdbCreateMultiScaleMips, vdbFrameMultiScaleParams, VDB_FRAME_MULTI_SCALE_PARAMS_BYTES, type VDBMultiScaleMips } from "../compute/multi-scale.js";
 import { vdbFrameMlpCheck, vdbFrameMlpMipSizes, vdbFrameMlpShape, VDB_FRAME_MLP_MAX_LAYERS, type VDBFrameMlp } from "../../tools/frame/mlp.js";
-import type { VDBFrameMultiScaleEdge } from "../../tools/frame/multi-scale.js";
+import { vdbFrameMultiScaleLevelOffset, type VDBFrameMultiScaleEdge } from "../../tools/frame/multi-scale.js";
 import { GRID_MIP_BINDINGS, TRANSMITTANCE_MLP_BINDINGS, TRANSMITTANCE_MULTI_SCALE_BINDINGS, type VDBFrameScatteringKernel } from "./wgsl/lighting.js";
 import { vdbFrameGridMipSpec } from "./kernels.js";
 import { computePipeline } from "./pipelines.js";
@@ -132,10 +132,13 @@ export class VDBFrameScattering {
     if (kind === "multi-scale") {
       const levels = Math.min(8, Math.max(2, Math.round(settings.multiScaleLevels)));
       const edge: VDBFrameMultiScaleEdge = settings.multiScaleEdge === "clamp" ? "clamp" : "zero";
-      const key = `${grid.resolution}:${levels}:${edge}`;
+      // K6.3a: the paper's σ = 2^k reads mip k + 1 for level k, so the chain holds one more level (at most 8)
+      const levelOffset = vdbFrameMultiScaleLevelOffset(settings.multiScaleSigma);
+      const chainLevels = Math.min(8, levels + levelOffset);
+      const key = `${grid.resolution}:${levels}:${edge}:${levelOffset}`;
       if (!this.#ms || this.#msKey !== key) {
         if (this.#ms) this.#retire.retire(this.#ms);
-        this.#ms = vdbCreateMultiScaleMips(this.#device, { size: [grid.resolution, grid.resolution, grid.resolution], levels, edge, channels: [0, 1], label: `${this.#label} multi-scale` });
+        this.#ms = vdbCreateMultiScaleMips(this.#device, { size: [grid.resolution, grid.resolution, grid.resolution], levels: chainLevels, edge, channels: [0, 1], label: `${this.#label} multi-scale` });
         this.#msKey = key;
         this.#msDrawn = -1;
         this.#msVersion++;
@@ -153,6 +156,7 @@ export class VDBFrameScattering {
           multipleScattering,
           baseOrigin: [grid.origin[0]!, grid.origin[1]!, grid.origin[2]!],
           baseSize: [r, r, r],
+          levelOffset,
         }),
       );
       return { kind, signature: ["multi-scale", key, this.#msVersion] };
