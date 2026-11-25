@@ -6,6 +6,7 @@ import {
   vdbFrameAmbientPairTotals,
   vdbFrameAmbientVisibility,
   vdbFrameShadowMarch,
+  vdbFrameSkyProbe,
 } from "../../src/tools/internal.js";
 
 // K6.Q1 shadowed ambient (V85): the direction set, the per-pair totals and the distant-light irradiance the core
@@ -100,5 +101,67 @@ describe("K6.Q1 pair totals and irradiance", () => {
     const probe = Array.from({ length: 9 }, (_, i) => (i === 0 ? ([1, 2, 3] as V3) : ([0, 0, 0] as V3)));
     const p = vdbFrameAmbientIrradiance({ ambient: [0, 0, 0], hemiSky: [0, 0, 0], hemiGround: [0, 0, 0], sky: [0, 1, 0], probe }, [0.6, 0.4]);
     for (let c = 0; c < 3; c++) expect(p[c]).toBeCloseTo(0.886227 * (c + 1) * 0.5, 9);
+  });
+
+  it("K6.Q1a 'radiance': π × the probe's mean radiance over each hemisphere (dense quadrature of three's SH9 radiance)", () => {
+    // three's SH9 radiance basis (SphericalHarmonics3.getAt)
+    const basis = (n: V3) => {
+      const [x, y, z] = n;
+      return [0.282095, 0.488603 * y, 0.488603 * z, 0.488603 * x, 1.092548 * x * y, 1.092548 * y * z, 0.315392 * (3 * z * z - 1), 1.092548 * x * z, 0.546274 * (x * x - y * y)];
+    };
+    let seed = 3;
+    const rand = () => (seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296;
+    const probe = Array.from({ length: 9 }, () => [rand() - 0.3, rand() - 0.3, rand() - 0.3] as V3);
+    const sky: V3 = [0.3, 0.8, -0.52];
+    const s = sky.map((v) => v / Math.hypot(...sky)) as V3;
+    for (const side of [s, s.map((v) => -v) as V3]) {
+      // the hemisphere around `side`: θ, φ midpoints (solid angle weights sin θ)
+      const mean: V3 = [0, 0, 0];
+      let weight = 0;
+      const t = Math.abs(side[1]) < 0.9 ? ([0, 1, 0] as V3) : ([1, 0, 0] as V3);
+      const u = [t[1] * side[2] - t[2] * side[1], t[2] * side[0] - t[0] * side[2], t[0] * side[1] - t[1] * side[0]];
+      const ul = Math.hypot(...u);
+      const e1 = u.map((v) => v / ul) as V3;
+      const e2: V3 = [side[1] * e1[2] - side[2] * e1[1], side[2] * e1[0] - side[0] * e1[2], side[0] * e1[1] - side[1] * e1[0]];
+      const N = 400;
+      for (let i = 0; i < N; i++) {
+        const th = ((i + 0.5) / N) * (Math.PI / 2);
+        for (let j = 0; j < 2 * N; j++) {
+          const ph = ((j + 0.5) / (2 * N)) * 2 * Math.PI;
+          const n = [0, 1, 2].map((k) => side[k]! * Math.cos(th) + Math.sin(th) * (e1[k]! * Math.cos(ph) + e2[k]! * Math.sin(ph))) as V3;
+          const b = basis(n);
+          const w = Math.sin(th);
+          for (let c = 0; c < 3; c++) mean[c] = mean[c]! + w * b.reduce((acc, v, k) => acc + v * probe[k]![c]!, 0);
+          weight += w;
+        }
+      }
+      const got = vdbFrameSkyProbe(side, probe, "radiance");
+      for (let c = 0; c < 3; c++) expect(got[c]).toBeCloseTo((Math.PI * mean[c]!) / weight, 4);
+    }
+    // the two sides average to π × the probe's spherical mean (band 0) in both modes when the band-2 terms cancel
+    const up = vdbFrameSkyProbe(s, probe, "radiance");
+    const down = vdbFrameSkyProbe(s.map((v) => -v) as V3, probe, "radiance");
+    for (let c = 0; c < 3; c++) expect((up[c]! + down[c]!) / 2).toBeCloseTo(0.886227 * probe[0]![c]!, 6);
+    // 'irradiance' (default) is three's getShIrradianceAt (1.023 c₁ on band 1 vs 0.767 c₁)
+    const l1 = Array.from({ length: 9 }, (_, i) => (i === 1 ? ([1, 1, 1] as V3) : ([0, 0, 0] as V3)));
+    expect(vdbFrameSkyProbe([0, 1, 0], l1)[0]).toBeCloseTo(2 * 0.511664, 9);
+    expect(vdbFrameSkyProbe([0, 1, 0], l1, "radiance")[0]).toBeCloseTo((Math.PI * 0.488603) / 2, 9);
+  });
+
+  it("K6.Q1a: a ring phase turns the ring about the sky (same elevation, azimuth step × phase); phase 1 is the next ring", () => {
+    const sky: V3 = [0, 1, 0];
+    const base = vdbFrameAmbientDirections(sky, 5);
+    const turned = vdbFrameAmbientDirections(sky, 5, 0.25);
+    expect(turned[0]).toEqual(base[0]);
+    for (let k = 1; k < 5; k++) {
+      expect(turned[k]![1]).toBeCloseTo(base[k]![1]!, 12);
+      // azimuth step 2π/4, a quarter of it: π/8 about +y
+      const a = Math.atan2(base[k]![2]!, base[k]![0]!);
+      const b = Math.atan2(turned[k]![2]!, turned[k]![0]!);
+      const d = Math.abs(((b - a + 3 * Math.PI) % (2 * Math.PI)) - Math.PI);
+      expect(d).toBeCloseTo(Math.PI / 8, 12);
+    }
+    const next = vdbFrameAmbientDirections(sky, 5, 1);
+    for (let k = 1; k < 4; k++) for (let i = 0; i < 3; i++) expect(next[k]![i]).toBeCloseTo(base[k + 1]![i]!, 12);
   });
 });

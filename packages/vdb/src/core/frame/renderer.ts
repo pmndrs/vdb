@@ -81,7 +81,7 @@ import { vdbFrameScatteringOctaves } from "../../tools/frame/index.js";
 import { VDB_FRAME_AMBIENT_MAX_PAIRS, vdbFrameAmbientDirections } from "../../tools/frame/ambient.js";
 import { vdbFrameMlpFromNeural, type VDBFrameMlp } from "../../tools/frame/mlp.js";
 import { vdbFrameNeuralWeights } from "../../tools/frame/neural-weights.js";
-import { vdbFrameDefaultInternalSettings, type VDBFrameSettings } from "./settings.js";
+import { vdbFrameDefaultInternalSettings, type VDBFrameInternalSettings, type VDBFrameSettings } from "./settings.js";
 import { vdbFrameMultipleScatteringValue, vdbFramePhaseSpectrum, vdbFramePhaseVector, type VDBFramePhaseFields } from "./phase.js";
 import {
   VDB_FRAME_GROUP,
@@ -440,8 +440,6 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const frameLighting = s.lighting === "frame";
     // K6.4: spectral media (a pipeline key of every kernel with a spectral variant)
     const spectral = !!s.spectral;
-    // K6.Q1 × K6.4: the shadowed ambient is grey-only (K6.Q1a); spectral kernels light the ambient unshadowed
-    if (spectral && s.ambientOcclusion) this.#warnOnce("spectral-ambient", "settings.ambientOcclusion is grey-only (K6.Q1a): spectral media light the ambient, probe and hemisphere terms unshadowed.");
 
     if (options.froxels === false && this.#textures) return { outputs: this.outputs, recorded: this.#recorded, volumes: 0 };
     const versions = [this.#shadows.version, this.#probes.version];
@@ -623,7 +621,10 @@ class FrameRenderer implements VDBFrameRendererGpu {
     fw.set(U, 0, "spectral", [spectral ? 1 : 0, spectral ? 1 : 0, 0, 0]);
     // K6.2b: the environment kernels this update runs (reduced on the GPU; no readback)
     this.#env.prepare(frame.environment, s);
-    const lightInfo = this.#packLights(frame.lights, s.occlusion ? (frame.occluders ?? []) : [], frameLighting && this.#env.present && this.#env.mode === "outward");
+    // K6.Q1a: with jitter and temporal accumulation the ambient ring turns by the frame's jitter (its azimuth step x
+    // the jitter value; a static frame keeps the fixed ring)
+    const ringPhase = s.jitter && s.temporal ? jitter : 0;
+    const lightInfo = this.#packLights(frame.lights, s.occlusion ? (frame.occluders ?? []) : [], frameLighting && this.#env.present && this.#env.mode === "outward", ringPhase);
     const grid = usesGrid ? this.#frameGrid(casterGroups, cameraWorld, lightInfo, jitter, frameLighting && froxelWork) : null;
     this.device.queue.writeBuffer(this.#frameBuffer, 0, fw.buffer);
 
@@ -1291,6 +1292,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     lights: readonly VDBFrameLight[],
     occluders: readonly VDBFrameOccluder[],
     outwardEnvironment = false,
+    ringPhase = 0,
   ): { sorted: number[][]; sky: number[]; occluderOf: (VDBFrameOccluder | null)[]; ambient: number[] } {
     const w = this.#lightsWriter;
     const L = VDB_FRAME_LIGHTS;
@@ -1395,7 +1397,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const s = this.settings;
     const distant = ambient.some((v) => v !== 0) || probe.some((v) => v !== 0) || hemi.length > 0 || outwardEnvironment;
     const pairs = s.ambientOcclusion && distant ? Math.min(VDB_FRAME_AMBIENT_MAX_PAIRS, Math.max(1, Math.round(s.ambientOcclusionPairs))) : 0;
-    const directions = pairs > 0 ? vdbFrameAmbientDirections(skyDirection, pairs) : [];
+    const directions = pairs > 0 ? vdbFrameAmbientDirections(skyDirection, pairs, ringPhase) : [];
     const aoSteps = Math.max(0, Math.round(s.ambientOcclusionSteps));
     w.set(L, 0, "ambient", [ambient[0]!, ambient[1]!, ambient[2]!, hemi.length]);
     w.set(L, 0, "counts", [used.length, views.length, pairs, aoSteps]);
@@ -1408,7 +1410,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
     w.set(L, 0, "color", used.flatMap((r) => r.slice(4, 8)));
     w.set(L, 0, "spot", used.flatMap((r) => r.slice(8, 12)));
     w.set(L, 0, "falloff", used.flatMap((r) => r.slice(12, 16)));
-    w.set(L, 0, "sky", [...skyDirection, 0]);
+    // K6.Q1a: w = the probe's sky up / down term (0 irradiance, his; 1 the hemisphere's mean radiance)
+    w.set(L, 0, "sky", [...skyDirection, (s as VDBFrameInternalSettings).ambientProbe === "radiance" ? 1 : 0]);
     w.set(L, 0, "hemiSkySum", [...hemiSkySum, 0]);
     w.set(L, 0, "hemiGroundSum", [...hemiGroundSum, 0]);
     if (views.length > 0) {

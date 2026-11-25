@@ -904,6 +904,8 @@ export interface VDBFrameLightingInputs {
   occluderAt?: ((index: number, world: Vec3) => number) | null;
   /** K6.Q1 shadowed ambient: ambient × the mean of the sky up / down values (the hemispherical visibilities). */
   ambientOcclusion?: boolean;
+  /** K6.Q1a `ambientProbe`: the probe along ± the sky as three's irradiance (default, his) or the hemisphere's mean radiance. */
+  probeMode?: "irradiance" | "radiance";
 }
 
 /** three's `getShIrradianceAt` (the probe's L2 irradiance at a unit normal). */
@@ -959,8 +961,10 @@ export function vdbFrameLightingFroxel(
   const irradiance: Vec3 = [0, 1, 2].map((c) => inputs.ambient[c]! * ambientScale + inputs.hemiSky[c]! * skyUp + inputs.hemiGround[c]! * skyDown) as Vec3;
   if (inputs.probe) {
     const sky = normalize3(inputs.sky ?? [0, 1, 0]);
-    const up = shIrradiance(sky, inputs.probe);
-    const down = shIrradiance([-sky[0], -sky[1], -sky[2]], inputs.probe);
+    // K6.Q1a: 'radiance': π × the probe's mean radiance over each hemisphere (bands 0, 1 × 1, ½)
+    const read = (n: Vec3): Vec3 => (inputs.probeMode === "radiance" ? ([0, 1, 2].map((c) => Math.PI * (0.282095 * inputs.probe![0]![c]! + 0.488603 * 0.5 * (inputs.probe![1]![c]! * n[1] + inputs.probe![2]![c]! * n[2] + inputs.probe![3]![c]! * n[0]))) as Vec3) : shIrradiance(n, inputs.probe!));
+    const up = read(sky);
+    const down = read([-sky[0], -sky[1], -sky[2]]);
     for (let c = 0; c < 3; c++) irradiance[c] = irradiance[c]! + up[c]! * skyUp + down[c]! * skyDown;
   }
   inputs.lights.forEach((light, i) => {

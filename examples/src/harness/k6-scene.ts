@@ -114,6 +114,8 @@ async function main(): Promise<void> {
   if (params.has("ao")) cs.ambientOcclusion = params.get("ao") === "1";
   if (params.has("aoPairs")) cs.ambientOcclusionPairs = Number(params.get("aoPairs"));
   if (params.has("aoSteps")) cs.ambientOcclusionSteps = Number(params.get("aoSteps"));
+  // K6.Q1a `?ambientProbe=radiance`: the probe's sky up / down terms as the hemisphere's mean radiance (internal setting)
+  if (params.has("ambientProbe")) Object.assign(cs, { ambientProbe: params.get("ambientProbe") === "radiance" ? "radiance" : "irradiance" });
   result.backend = "core";
   result.froxelMix = cs.froxelMix;
   Object.assign(frameRenderer.settings, {

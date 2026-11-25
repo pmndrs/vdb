@@ -20,6 +20,13 @@ import {
   vdbFrameTransmittanceVoxel3d,
   vdbFrameUnpackSpectralGroup,
   vdbFrameGridDensityVoxel,
+  vdbFrameAmbientDirections,
+  vdbFrameAmbientIrradiance,
+  vdbFrameAmbientPairTotals,
+  vdbFrameSpectralAmbientPairTotals,
+  vdbFrameShadowMarch,
+  vdbFrameSpectralShadowMarch,
+  vdbFrameOctavesOff,
   type VDBFrameGridLayout,
 } from "../../src/tools/internal.js";
 
@@ -179,5 +186,74 @@ describe("K6.4 spectral stack twins (equal channels = grey)", () => {
     // the direct transmittance toward the sun: red > green > blue (unless nothing is in the way)
     expect(slot0.y[0]).toBeGreaterThanOrEqual(slot0.y[1]);
     expect(slot0.y[1]).toBeGreaterThanOrEqual(slot0.y[2]);
+  });
+});
+
+// K6.Q1a: the spectral shadowed ambient (group 0's sky entry holds the hemispherical visibilities of each channel)
+describe("K6.Q1a spectral ambient visibilities (a grey medium = grey)", () => {
+  const octaves: V4 = [3, 0.6, 0.45, 0.7];
+  const cases: { name: string; ms: number; oct?: V4; absorption: number }[] = [
+    { name: "single scattering, absorbing", ms: 0, absorption: 0.3 },
+    { name: "diffusion, absorbing", ms: 0.6, absorption: 0.3 },
+    { name: "octaves, white (albedo 1)", ms: 0, oct: octaves, absorption: 0 },
+  ];
+  for (const k of cases) {
+    it(`the spectral sky entry equals the grey fourth target's V up, V down in every channel (${k.name}, 4 pairs, turned ring)`, () => {
+      const directions = vdbFrameAmbientDirections([0, 1, 0], 4, 0.37);
+      const greyAt = (_c: number, uvw: V3): [number, number] => {
+        const [e] = blob(uvw);
+        return [e, e * k.absorption];
+      };
+      const spectralAt = (_c: number, uvw: V3) => {
+        const [e] = blob(uvw);
+        return { extinction: [e, e, e] as V3, absorption: [e * k.absorption, e * k.absorption, e * k.absorption] as V3 };
+      };
+      let occluded = 0;
+      for (let i = 0; i < 40; i++) {
+        const cell: V3 = [Math.floor(rand() * 8), Math.floor(rand() * 8), Math.floor(rand() * 8)];
+        const grey = vdbFrameTransmittanceVoxel3d(greyAt, grid, 0, cell, lights, [0, 1, 0], k.ms, -1, null, { ambientDirections: directions, ...(k.oct ? { octaves: k.oct } : {}) });
+        const t = vdbFrameSpectralTransmittanceVoxel3d(spectralAt, grid, 0, cell, lights, [0, 1, 0], k.ms, -1, 0, { ambientDirections: directions, ...(k.oct ? { octaves: k.oct } : {}) });
+        const sky = vdbFrameUnpackSpectralGroup(t[0], t[1], t[2]).a;
+        for (let c = 0; c < 3; c++) {
+          expect(sky.x[c]).toBeCloseTo(grey[3][2], 12);
+          expect(sky.y[c]).toBeCloseTo(grey[3][3], 12);
+        }
+        if (grey[3][2] < 0.99) occluded++;
+      }
+      // the blob shadows some voxels (the comparison is not all ones)
+      expect(occluded).toBeGreaterThan(5);
+    });
+  }
+
+  it("a chromatic medium gives each channel its own visibility (blue-heavy: blue darkest), the white-furnace sum stays 2", () => {
+    const at = (_c: number, uvw: V3) => {
+      const [e] = blob(uvw);
+      return { extinction: [e * 0.6, e, e * 1.6] as V3, absorption: [0, 0, 0] as V3 };
+    };
+    const directions = vdbFrameAmbientDirections([0, 1, 0], 4);
+    const single = vdbFrameUnpackSpectralGroup(...vdbFrameSpectralTransmittanceVoxel3d(at, grid, 0, [4, 3, 4], lights, [0, 1, 0], 0, -1, 0, { ambientDirections: directions })).a;
+    expect(single.x[0]).toBeGreaterThan(single.x[1]);
+    expect(single.x[1]).toBeGreaterThan(single.x[2]);
+    // diffusion at albedo 1: each pair's two sides sum to 2 (white furnace), so V up + V down = 2 in every channel
+    const diffusion = vdbFrameUnpackSpectralGroup(...vdbFrameSpectralTransmittanceVoxel3d(at, grid, 0, [4, 3, 4], lights, [0, 1, 0], 0.6, -1, 0, { ambientDirections: directions })).a;
+    for (let c = 0; c < 3; c++) expect(diffusion.x[c]! + diffusion.y[c]!).toBeCloseTo(2, 12);
+  });
+
+  it("the spectral pair totals and the per-channel irradiance reduce to the grey ones channel by channel", () => {
+    const steps = [0.3, 0.5, 0.2, 0.1];
+    const back = [0.05, 0.4];
+    for (const [ms, oct] of [[0, vdbFrameOctavesOff], [0.6, vdbFrameOctavesOff], [0, octaves]] as const) {
+      const albedo: V3 = oct[0] > 0 ? [1, 1, 1] : [0.7, 0.7, 0.7];
+      const g = vdbFrameAmbientPairTotals(vdbFrameShadowMarch(steps, albedo, ms, oct), vdbFrameShadowMarch(back, albedo, ms, oct), ms > 0, oct);
+      const s = vdbFrameSpectralAmbientPairTotals(vdbFrameSpectralShadowMarch(steps, [1, 1, 1], albedo, ms, oct), vdbFrameSpectralShadowMarch(back, [1, 1, 1], albedo, ms, oct), ms > 0, oct, albedo);
+      for (let c = 0; c < 3; c++) {
+        expect(s[0][c]).toBeCloseTo(g[0], 12);
+        expect(s[1][c]).toBeCloseTo(g[1], 12);
+      }
+    }
+    const light = { ambient: [0.3, 0.2, 0.1] as V3, hemiSky: [0.5, 0.6, 0.7] as V3, hemiGround: [0.1, 0.05, 0.02] as V3, sky: [0, 1, 0] as V3, probe: [[0.4, 0.5, 0.6], [0.1, 0.12, 0.2], [0.02, 0, -0.03], [-0.05, 0.01, 0.04]] as V3[] };
+    const grey = vdbFrameAmbientIrradiance(light, [0.6, 0.3]);
+    const spectral = vdbFrameAmbientIrradiance(light, [[0.6, 0.6, 0.6], [0.3, 0.3, 0.3]]);
+    for (let c = 0; c < 3; c++) expect(spectral[c]).toBeCloseTo(grey[c]!, 12);
   });
 });

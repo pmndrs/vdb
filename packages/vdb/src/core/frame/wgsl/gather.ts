@@ -177,8 +177,9 @@ export const VDB_FRAME_SLICE_WGSL = vdbFrameSliceWgsl(false);
  * spectrum, so the march sums one optical depth and the depths of each channel are linear in it (`unit`); it stops when
  * every channel's march depth is past 8. The same sample lattice and HDDA skip as the grey march.
  */
-const SPECTRAL_MARCH_WGSL = `fn vdbFrameSpectralShadowMarch(vi: u32, origin: vec3f, localDirection: vec3f, maxLocalDistance: f32, lod: f32, maxTexels: f32, unit: VdbFrameSpectralDepths, noise: f32) -> VdbFrameSpectralMarch {
-  let steps = vdbFrameVolumes.v[vi].march.x;
+const SPECTRAL_MARCH_WGSL = `fn vdbFrameSpectralShadowMarch(vi: u32, origin: vec3f, localDirection: vec3f, maxLocalDistance: f32, lod: f32, maxTexels: f32, unit: VdbFrameSpectralDepths, noise: f32, stepCount: u32) -> VdbFrameSpectralMarch {
+  // K6.Q1a: the shadowed ambient's marches may take fewer steps (0: the volume's)
+  let steps = select(vdbFrameVolumes.v[vi].march.x, stepCount, stepCount > 0u && vdbFrameVolumes.v[vi].march.x > 0u);
   let absorbance = vdbFrameVolumes.v[vi].density.w;
   if (absorbance <= 0.0 || steps == 0u) {
     return vdbFrameSpectralUnmarched();
@@ -271,27 +272,39 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSpec
     outwardNormal = normalize(vdbFrameMat3(vdbFrame.cameraWorld) * (vdbFrameMat3(localToView) * localPosition));
   }
 
+  // K6.Q1a shadowed ambient (as the grey kernel, per channel): direction pairs marched below (the hemisphere lights' own
+  // marches go away); off: his unshadowed ambient and 'outward' probe irradiance
+  let ambientPairs = select(0u, min(vdbFrameLights.counts.z, ${VDB_FRAME_AMBIENT_MAX_PAIRS}u), (lightMask & (VDB_FRAME_LIGHT_AMBIENT | VDB_FRAME_LIGHT_HEMISPHERE)) != 0u);
   var irradiance = vec3f(0.0);
-  if ((lightMask & VDB_FRAME_LIGHT_AMBIENT) != 0u) {
+  if ((lightMask & VDB_FRAME_LIGHT_AMBIENT) != 0u && ambientPairs == 0u) {
     irradiance += vdbFrameLights.ambient.xyz;
     irradiance += vdbFrameShIrradiance(outwardNormal);
   }
 
-  let hemiCount = select(0u, u32(vdbFrameLights.ambient.w), (lightMask & VDB_FRAME_LIGHT_HEMISPHERE) != 0u);
+  let hemiCount = select(0u, u32(vdbFrameLights.ambient.w), (lightMask & VDB_FRAME_LIGHT_HEMISPHERE) != 0u && ambientPairs == 0u);
   let sceneCount = vdbFrameLights.counts.x;
   let envOn = (lightMask & VDB_FRAME_LIGHT_ENVIRONMENT) != 0u && vdbFrameEnv.info.z != 0u;
   let envLights = select(0u, vdbFrameEnv.info.x, envOn);
-  let items = hemiCount + sceneCount + select(0u, max(envLights, 1u), envOn);
+  let lightItems = hemiCount + sceneCount + select(0u, max(envLights, 1u), envOn);
+  let items = lightItems + ambientPairs;
   var environment = vec3f(0.0);
+  var ambientUp = vec3f(0.0);
+  var ambientDown = vec3f(0.0);
   for (var item = 0u; item < items; item++) {
     var direction = vec3f(0.0, 1.0, 0.0);
     var maxDistance = 1e6;
     var marches = 2u;
+    var steps = 0u;
     var lightColor = vec3f(0.0);
     var lightDirection = vec3f(0.0, 1.0, 0.0);
     var spotAttenuation = 1.0;
     let li = item - hemiCount;
-    if (item < hemiCount) {
+    let ambientItem = item >= lightItems;
+    if (ambientItem) {
+      // K6.Q1a: an ambient direction pair (world -> local)
+      direction = worldToLocalDirection * vdbFrameLights.ambientDirections[item - lightItems].xyz;
+      steps = vdbFrameLights.counts.w;
+    } else if (item < hemiCount) {
       direction = worldToLocalDirection * vdbFrameLights.hemiUp[item].xyz;
     } else if (li >= sceneCount) {
       direction = worldToLocalDirection * select(outwardNormal, vdbFrameEnv.direction[min(li - sceneCount, 11u)].xyz, envLights > 0u);
@@ -323,14 +336,25 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSpec
     var front = vdbFrameSpectralUnmarched();
     var back = vdbFrameSpectralUnmarched();
     for (var k = 0u; k < marches; k++) {
-      let shadow = vdbFrameSpectralShadowMarch(vi, localPosition, select(direction, -direction, k == 1u), select(maxDistance, 1e6, k == 1u), lod, maxTexels, unit, shadowNoise);
+      let shadow = vdbFrameSpectralShadowMarch(vi, localPosition, select(direction, -direction, k == 1u), select(maxDistance, 1e6, k == 1u), lod, maxTexels, unit, shadowNoise, steps);
       if (k == 0u) {
         front = shadow;
       } else {
         back = shadow;
       }
     }
-    if (item < hemiCount) {
+    if (ambientItem) {
+      // K6.Q1a: the pair's isotropic-light totals of each channel (diffusion: the two-sided pair, white furnace; octaves:
+      // over an open direction's octave total)
+      if (diffusion) {
+        ambientUp += vdbFrameIsotropicDiffusion3(front.z, back.z, front.w);
+        ambientDown += vdbFrameIsotropicDiffusion3(back.z, front.z, back.w);
+      } else {
+        let open = vdbFrameSpectralShadowTotal(vec3f(1.0), octaves, albedo);
+        ambientUp += vdbFrameSpectralShadowTotal(front.y, octaves, albedo) / open;
+        ambientDown += vdbFrameSpectralShadowTotal(back.y, octaves, albedo) / open;
+      }
+    } else if (item < hemiCount) {
       var sky = vdbFrameSpectralShadowTotal(front.y, octaves, albedo);
       var ground = vdbFrameSpectralShadowTotal(back.y, octaves, albedo);
       if (diffusion) {
@@ -356,6 +380,18 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSpec
     }
   }
   irradiance += max(environment, vec3f(0.0));
+  // K6.Q1a: the distant light at the hemispherical visibilities of each channel, as 'frame' lighting's sky up / down
+  if (ambientPairs > 0u) {
+    let up = ambientUp / f32(ambientPairs) * 0.5;
+    let down = ambientDown / f32(ambientPairs) * 0.5;
+    let sky = normalize(vdbFrameLights.sky.xyz);
+    if ((lightMask & VDB_FRAME_LIGHT_AMBIENT) != 0u) {
+      irradiance += vdbFrameLights.ambient.xyz * (up + down) + vdbFrameSkyProbe(sky) * up + vdbFrameSkyProbe(-sky) * down;
+    }
+    if ((lightMask & VDB_FRAME_LIGHT_HEMISPHERE) != 0u) {
+      irradiance += vdbFrameLights.hemiSkySum.xyz * up + vdbFrameLights.hemiGroundSum.xyz * down;
+    }
+  }
 
   let scatter = vdbFrameVolumes.v[vi].scatterOpacity.xyz;
   let radiance = max(scatter, albedo * irradiance * (1.0 / VDB_FRAME_PI)) + vdbFrameEmission(vi, localPosition, readLod);
@@ -783,7 +819,7 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> vec4f {
     let down = ambientDown / f32(ambientPairs) * 0.5;
     let sky = normalize(vdbFrameLights.sky.xyz);
     if ((lightMask & VDB_FRAME_LIGHT_AMBIENT) != 0u) {
-      irradiance += vdbFrameLights.ambient.xyz * (up + down) + vdbFrameShIrradiance(sky) * up + vdbFrameShIrradiance(-sky) * down;
+      irradiance += vdbFrameLights.ambient.xyz * (up + down) + vdbFrameSkyProbe(sky) * up + vdbFrameSkyProbe(-sky) * down;
     }
     if ((lightMask & VDB_FRAME_LIGHT_HEMISPHERE) != 0u) {
       irradiance += vdbFrameLights.hemiSkySum.xyz * up + vdbFrameLights.hemiGroundSum.xyz * down;

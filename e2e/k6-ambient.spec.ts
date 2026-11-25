@@ -6,7 +6,8 @@ import { collectErrors } from "./console-errors";
 // target's hemispherical visibilities, vdbFrameTransmittanceVoxel3d) and fused gather (the sky totals replaced, ambient
 // scaled), and the 'volume' gather (the direction pairs through the volume's shadow march). Every mode family: single
 // scattering, diffusion (white-furnace pairs), octaves (normalised totals), the MLP. Each mutation must fail. With the
-// setting off the frames are the K6.1–K6.5 frames (k6-core.spec.ts covers those unchanged).
+// setting off the frames are the K6.1–K6.5 frames (k6-core.spec.ts covers those unchanged). K6.Q1a: the spectral kernels
+// (per-channel visibilities), the `ambientProbe: 'radiance'` probe term and the ring turned by the frame's jitter.
 const PAGE_URL = "/src/harness/k6-core.html";
 
 interface Stats {
@@ -44,6 +45,22 @@ const PROBES: { name: string; query: string; keys: Key[]; mutations: Record<stri
   { name: "gather, single scattering, 4 pairs", query: "?probe=gather&ms=0&ao=4", keys: ["stats"], mutations: { "ao-pairs": "stats", ao: "stats" } },
   { name: "gather, diffusion, 4 pairs, 6 steps, sparse", query: "?probe=gather&ao=4&aoSteps=6&source=sparse&lod=none", keys: ["stats"], mutations: { "ao-pairs": "stats", ao: "stats" } },
   { name: "gather, 'octaves', 2 pairs", query: "?probe=gather&ms=octaves&ao=2", keys: ["stats"], mutations: { ao: "stats", octaves: "stats" } },
+  // K6.Q1a: spectral media (per-channel visibilities: 'frame' in group 0's sky entry, 'volume' per froxel); ?mutate=ao-grey
+  // gives every channel the green channel's visibilities
+  { name: "spectral frame, single scattering, 4 pairs", query: "?probe=frame&spectral=1&ms=0&ao=4", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { "ao-pairs": "transmittanceStats", "ao-grey": "transmittanceStats", ao: "stats" } },
+  { name: "spectral frame, diffusion, 7 pairs, sparse, two groups", query: "?probe=frame&spectral=1&ao=7&source=sparse&groups=2", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { "ao-pairs": "transmittanceStats", "ao-grey": "transmittanceStats", ao: "stats" } },
+  { name: "spectral frame, 'octaves', 3 pairs", query: "?probe=frame&spectral=1&ms=octaves&ao=3", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { "ao-pairs": "transmittanceStats", octaves: "transmittanceStats" } },
+  { name: "spectral gather, single scattering, 4 pairs", query: "?probe=gather&spectral=1&ms=0&ao=4", keys: ["stats"], mutations: { "ao-pairs": "stats", "ao-grey": "stats", ao: "stats" } },
+  { name: "spectral gather, diffusion, 4 pairs, 6 steps, sparse", query: "?probe=gather&spectral=1&ao=4&aoSteps=6&source=sparse&lod=none", keys: ["stats"], mutations: { "ao-pairs": "stats", "ao-grey": "stats", ao: "stats" } },
+  { name: "spectral gather, 'octaves', 2 pairs", query: "?probe=gather&spectral=1&ms=octaves&ao=2", keys: ["stats"], mutations: { ao: "stats", octaves: "stats" } },
+  // K6.Q1a `ambientProbe: 'radiance'` (the probe's sky up / down terms as the hemisphere's mean radiance)
+  { name: "frame, probe term 'radiance', 4 pairs", query: "?probe=frame&ms=0&ao=4&probeTerm=radiance", keys: ["transmittanceStats", "stats"], mutations: { "probe-term": "stats" } },
+  { name: "frame, probe term 'radiance', ambient occlusion off", query: "?probe=frame&ms=0&probeTerm=radiance", keys: ["transmittanceStats", "stats"], mutations: { "probe-term": "stats" } },
+  { name: "spectral frame, probe term 'radiance', 4 pairs", query: "?probe=frame&spectral=1&ms=0&ao=4&probeTerm=radiance", keys: ["transmittanceStats", "stats"], mutations: { "probe-term": "stats" } },
+  { name: "gather, probe term 'radiance', 4 pairs", query: "?probe=gather&ms=0&ao=4&probeTerm=radiance", keys: ["stats"], mutations: { "probe-term": "stats" } },
+  { name: "spectral gather, probe term 'radiance', 4 pairs", query: "?probe=gather&spectral=1&ms=0&ao=4&probeTerm=radiance", keys: ["stats"], mutations: { "probe-term": "stats" } },
+  // K6.Q1a: jitter + temporal turn the ring per frame (frame 5's jitter); ?mutate=ao-ring: the unturned ring
+  { name: "gather, 4 pairs, ring turned by the frame's jitter", query: "?probe=gather&ms=0&ao=4&aoJitter=5", keys: ["stats"], mutations: { "ao-ring": "stats" } },
 ];
 
 for (const p of PROBES) {
