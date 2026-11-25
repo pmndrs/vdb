@@ -1,13 +1,13 @@
 /**
  * K6.5: the CPU halves of the core volume shadow maps and the emission colour, in Node (the kernels run against
- * their twins in e2e/k6-core.spec.ts): the engine-free cascade fit equals the TSL port's (three's maths), the cube face
+ * their twins in e2e/k6-core.spec.ts): the engine-free cascade fit equals the (deleted, K6.8: frozen) TSL port's, the cube face
  * table round-trips, the spot camera from a view-projection, the LUT rows equal his blackbody read, the hook checks,
  * and the shadow budget (oldest first; a waiting map keeps its drawn view; lights not in the frame take no budget).
  */
 
+import { readFileSync } from "node:fs";
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
-import { VDBFrameRenderer } from "../../../src/three/frame/renderer.js";
 import {
   vdbFrameBlackbodyColor,
   vdbFrameBlackbodyTable,
@@ -20,79 +20,29 @@ import {
 } from "../../../src/tools/internal.js";
 import { VDBFrameShadowMaps, vdbEmissionHookProblems, VDBRetireQueue, type VDBFrameLight } from "../../../src/core/frame/index.js";
 
-const fakeRenderer = () =>
-  ({
-    isWebGPURenderer: true,
-    coordinateSystem: THREE.WebGPUCoordinateSystem,
-    shadowMap: { type: THREE.PCFShadowMap, enabled: true },
-    getRenderTarget: () => null,
-    getActiveCubeFace: () => 0,
-    getActiveMipmapLevel: () => 0,
-    getClearAlpha: () => 1,
-    getClearColor: (c: THREE.Color) => c,
-    setClearColor: () => undefined,
-    setRenderTarget: () => undefined,
-    clear: () => undefined,
-  }) as never;
-
 const close = (a: ArrayLike<number>, b: ArrayLike<number>, tol: number) => {
   for (let i = 0; i < a.length; i++) expect(Math.abs(a[i]! - b[i]!), `[${i}] ${a[i]} vs ${b[i]}`).toBeLessThanOrEqual(tol * Math.max(1, Math.abs(b[i]!)));
 };
 
 describe("K6.5 shadow twins", () => {
-  it("vdbFrameShadowFitCascades equals the TSL port's fitCascades (three's maths) on random cameras and lights", () => {
-    let seed = 7;
-    const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-    for (let trial = 0; trial < 24; trial++) {
-      const fr = new VDBFrameRenderer();
-      const count = 1 + (trial % 4);
-      Object.assign(fr.settings, { castShadowCascades: count, castShadowDistance: 200 + rand() * 4000 });
-      const g = fr.gridUniforms;
-      (g.frameGridCount as { value: number }).value = 2;
-      (g.frameGridMin.array as THREE.Vector3[])[1]!.set(-50 + rand() * 20, rand() * 30, -40 + rand() * 10);
-      (g.frameGridSize.array as THREE.Vector3[])[1]!.set(60 + rand() * 80, 40 + rand() * 60, 50 + rand() * 70);
-      const sun = new THREE.DirectionalLight();
-      // include a vertical light (the up axis switch)
-      if (trial === 5) sun.position.set(0, 100, 0);
-      else sun.position.set(rand() * 200 - 100, 50 + rand() * 200, rand() * 200 - 100);
-      sun.target.position.set(rand() * 20, 0, rand() * 20);
-      sun.updateMatrixWorld(true);
-      sun.target.updateMatrixWorld(true);
-      const camera = new THREE.PerspectiveCamera(30 + rand() * 50, 0.6 + rand(), 0.5 + rand(), 2000 + rand() * 5000);
-      camera.coordinateSystem = THREE.WebGPUCoordinateSystem;
-      camera.position.set(rand() * 300 - 150, rand() * 200, 100 + rand() * 300);
-      camera.lookAt(rand() * 40, rand() * 20, rand() * 40);
-      camera.updateProjectionMatrix();
-      camera.updateMatrixWorld(true);
-      const renderer = fakeRenderer();
-      const size = [64, 256, 512, 1024][trial % 4]!;
-      fr.settings.castShadowMapSize = size;
-      const entry = fr.volumeShadows.getEntry(renderer, sun);
-      const tsl = fr.volumeShadows.fitCascades(entry, camera, renderer);
-      const min = (g.frameGridMin.array as THREE.Vector3[])[1]!;
-      const gsize = (g.frameGridSize.array as THREE.Vector3[])[1]!;
-      const ours = vdbFrameShadowFitCascades({
-        cameraWorld: camera.matrixWorld.elements,
-        projectionInverse: camera.projectionMatrixInverse.elements,
-        near: camera.near,
-        far: camera.far,
-        orthographic: false,
-        castShadowDistance: fr.settings.castShadowDistance,
-        count,
-        size,
-        lightDirection: new THREE.Vector3().subVectors(sun.target.position, sun.position).normalize().toArray(),
-        casterBox: { min: min.toArray(), max: min.clone().add(gsize).toArray() },
-      });
-      expect(ours.count).toBe(tsl);
-      close(ours.breaks, entry.cascadeBreaks.toArray(), 1e-12);
-      close(ours.forward, (entry.rayUniforms.frameShadowForward.value as THREE.Vector3).toArray(), 1e-9);
-      for (let i = 0; i < count; i++) {
-        const c = entry.cascades![i]!;
-        close(ours.cascades[i]!.viewProjection, c.viewProjection.elements, 1e-9);
-        close(ours.cascades[i]!.origin, c.origin.toArray(), 1e-9);
+  it("vdbFrameShadowFitCascades equals the TSL port's fitCascades (three's maths) on random cameras and lights (K6.8: frozen)", () => {
+    // K6.8: the TSL port (three/frame/volume-shadows.ts fitCascades) is deleted; its outputs on the former test's random
+    // cameras and lights are frozen in fixtures/three-port-golden.json (dumped from the pre-deletion tree)
+    const golden = JSON.parse(readFileSync(new URL("./fixtures/three-port-golden.json", import.meta.url), "utf8")) as {
+      cascades: { input: Parameters<typeof vdbFrameShadowFitCascades>[0]; three: { count: number; breaks: number[]; forward: number[]; cascades: { viewProjection: number[]; origin: number[]; far: number }[] } }[];
+    };
+    expect(golden.cascades.length).toBe(24);
+    for (const { input, three } of golden.cascades) {
+      const ours = vdbFrameShadowFitCascades(input);
+      expect(ours.count).toBe(three.count);
+      close(ours.breaks, three.breaks, 1e-12);
+      close(ours.forward, three.forward, 1e-9);
+      for (let i = 0; i < input.count; i++) {
+        const c = three.cascades[i]!;
+        close(ours.cascades[i]!.viewProjection, c.viewProjection, 1e-9);
+        close(ours.cascades[i]!.origin, c.origin, 1e-9);
         expect(Math.abs(ours.cascades[i]!.far - c.far)).toBeLessThan(1e-9 * c.far);
       }
-      fr.dispose();
     }
   });
 

@@ -16,8 +16,8 @@
  * - The volumes composite either through the core's pass (`frame.render`) or in the page's own present shader
  *   (`vdbFrameIntegrateWgsl`, the host-side seam).
  *
- * The core APIs used here are internal until 0.2.0 (K6.8 makes them public), so the page imports
- * `packages/vdb/src/core/internal.ts` by path. The docs page "Rendering without three" walks through this file.
+ * Every API here is public since 0.2.0 (K6.8): `@pmndrs/vdb` and `@pmndrs/vdb/tools` only. The docs page "Rendering
+ * without three" walks through this file.
  *
  * Query (with the shell's `presentation`, `still`, `panel`): `?quality=low|medium|high`, `?lighting=frame|volume`,
  * `?composite=core|host`, `?cloud=wdas|cc0`, `?levelset=icosahedron|procedural`, `?test=1` (still camera, no loop,
@@ -25,9 +25,9 @@
  */
 import "../webgpu-gate.js";
 import { fixtureUrl } from "../assets.js";
-import { VDBGridPool } from "@pmndrs/vdb";
 import { NvdbFile, buildFromVdb, parseVdb, readWvdb, vdbBuildFromDense, wvdbDenseToNvdb, wvdbDenseVolume } from "@pmndrs/vdb/tools";
 import {
+  VDBGridPool,
   vdbCreateFrameRenderer,
   vdbCreateLevelSetPassGpu,
   vdbSparseSourceGpu,
@@ -36,7 +36,7 @@ import {
   type VDBFrameOccluder,
   type VDBFrameRendererGpu,
   type VDBFrameVolumeGpu,
-} from "../../../../packages/vdb/src/core/internal.js";
+} from "@pmndrs/vdb";
 import { MiB, PRESENTATION, QUALITY, STILL, fetchWithProgress, initialQuality, mountShowcase, params, probe, snapshotOf, type Quality, type Snapshot } from "../showcase-ui.js";
 import { RawPresenter, RawTargets, boxMatrix, lookAt, multiply, normalize, orthographic, perspective, rawCamera, type RawCamera, type Vec3 } from "./raw-frame.js";
 import { SKY_HEIGHT, SKY_WIDTH, skyAmbient, skyTexels } from "./sky.js";

@@ -50,7 +50,7 @@ import {
   type VDBFrameVec3,
   type VDBFrameVec4,
 } from "../../src/tools/internal.js";
-import { getFrameMediumProps, getFrameExtinctionSpectrum, getFrameSpectralGroups } from "../../src/three/frame/index.js";
+import { getFrameMediumProps, getFrameAngstromExponent } from "../../src/three/frame/index.js";
 
 // K3.5: mjurczyk's spectral media (tools/frame/medium.ts, spectral.ts). Each test pins a property of his formula or
 // table that a port error would break; the GPU passes are compared with these twins in e2e/k3-frame-spectral.spec.ts.
@@ -117,18 +117,18 @@ describe("spectrum and slot groups (his frameSpectrum.js)", () => {
       expect(s[0]).toBeCloseTo(2 * (550 / 650) ** alpha, 14);
       expect(s[1]).toBeCloseTo(1, 14);
       expect(s[2]).toBeCloseTo(0.5 * (550 / 450) ** alpha, 14);
-      const three = getFrameExtinctionSpectrum({ extinctionScale: { x: 2, y: 1, z: 0.5 }, angstromExponent: alpha }, new THREE.Vector3());
-      close3(three.toArray(), s, 14);
+      // K6.8: the adapter passes the exponent (a number or a preset name) to the core, which packs this twin's spectrum
+      expect(getFrameAngstromExponent(alpha)).toBe(alpha);
     }
     // Rayleigh air (4.09): blue is (650/450)^4.09 = 4.5× red
-    const air = getFrameExtinctionSpectrum({ extinctionScale: { x: 1, y: 1, z: 1 }, angstromExponent: "air" }, new THREE.Vector3());
-    expect(air.z / air.x).toBeCloseTo((650 / 450) ** 4.09, 12);
+    const air = vdbFrameExtinctionSpectrum([1, 1, 1], getFrameAngstromExponent("air"));
+    expect(air[2] / air[0]).toBeCloseTo((650 / 450) ** 4.09, 12);
+    expect([getFrameAngstromExponent("cloud"), getFrameAngstromExponent("dust"), getFrameAngstromExponent("smoke"), getFrameAngstromExponent("nope")]).toEqual([0, 0.3, 1.8, 0]);
     expect(vdbFrameExtinctionSpectrum([-1, 1, 1], 0)[0]).toBe(0);
   });
 
   it("slot groups: sky + slot 0, then two slots each", () => {
     expect([0, 1, 2, 3, 4, 5, 6].map(vdbFrameSpectralGroups)).toEqual([1, 1, 2, 2, 3, 3, 4]);
-    expect([0, 1, 2, 3, 4, 5, 6].map(getFrameSpectralGroups)).toEqual([1, 1, 2, 2, 3, 3, 4]);
   });
 
   it("group packing: (a.x, a.y.r), (a.y.gb, b.x.rg), (b.x.b, b.y) round-trips", () => {

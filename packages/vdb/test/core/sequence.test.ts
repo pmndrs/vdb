@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { VDBError } from "../../src/core/errors.js";
-import { VDBSequence } from "../../src/three/sequence.js";
-import type { VDBFrameLoader, VDBSequenceLoopMode, VDBSequenceTarget } from "../../src/three/sequence.js";
+import { VDBSequence } from "../../src/core/sequence.js";
+import type { VDBFrameLoader, VDBSequenceLoopMode, VDBSequenceTarget } from "../../src/core/sequence.js";
 
 /**
  * Node-safe `VDBSequence` tests: the prefetch ring + frame-time scheduler +

@@ -47,19 +47,7 @@ export type {
   VDBMultiScaleRecordOptions,
   VDBMultiScaleResizeOptions,
 } from "./compute/multi-scale.js";
-// K6.7: the core sparse source (public in K6.8).
-export { vdbSparseSourceGpu } from "./source/sparse.js";
-export type {
-  VDBSparseIndexBox,
-  VDBSparseLodGpu,
-  VDBSparseSourceGpu,
-  VDBSparseSourceGpuOptions,
-  VDBSparseSourceUpdate,
-  VDBSparseVolumeGpu,
-  VDBSparseVolumeGpuOptions,
-  VDBSparseVolumeGrids,
-} from "./source/sparse.js";
-export type { VDBVolumeSlot } from "./source/types.js";
+// K6.7: the sparse source's record layout (the source itself is public since K6.8).
 export {
   VDB_SPARSE_RECORD_BYTES,
   VDB_SPARSE_RECORD_FIELDS,
@@ -70,9 +58,9 @@ export {
   sparseRecordStructWgsl,
   sparseSourceWgsl,
 } from "./source/sparse-wgsl.js";
-// K6.1: the core frame renderer (public in K6.8).
+// K6.1: the core frame renderer's internals: kernels, specs, uniform layouts, twins' probes (the renderer is public since K6.8).
 export * from "./frame/index.js";
-// K6.6: level-set surfaces and point sprites (public in K6.8).
+// K6.6: level-set surfaces and point sprites (the passes and WGSL are public since K6.8; their layouts here).
 export * from "./surface/index.js";
 // K6.R: the reference renderer (brute-force path tracer over a volume source; internal only).
 export * from "./reference/index.js";

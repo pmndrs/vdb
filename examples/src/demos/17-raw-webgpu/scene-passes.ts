@@ -14,7 +14,7 @@
  * All four share group 0 (the {@link SceneUniforms}) and group 1 (the lighting inputs), so one WGSL `shade()` lights
  * every surface.
  */
-import { VDB_EMISSION_GRID, VDB_VOLUME_SHADOW_VIEW, vdbEmissionProbeWgsl, vdbVolumeShadowWgsl } from "../../../../packages/vdb/src/core/internal.js";
+import { VDB_EMISSION_GRID, VDB_VOLUME_SHADOW_VIEW, vdbEmissionProbeWgsl, vdbVolumeShadowWgsl } from "@pmndrs/vdb";
 import type { Vec3 } from "./raw-frame.js";
 
 // ------------------------------------------------------------------------------------------------ uniforms

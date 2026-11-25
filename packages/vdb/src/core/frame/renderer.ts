@@ -78,7 +78,7 @@ import { vdbFrameScatteringOctaves } from "../../tools/frame/index.js";
 import { VDB_FRAME_AMBIENT_MAX_PAIRS, vdbFrameAmbientDirections } from "../../tools/frame/ambient.js";
 import { vdbFrameMlpFromNeural, type VDBFrameMlp } from "../../tools/frame/mlp.js";
 import { vdbFrameNeuralWeights } from "../../tools/frame/neural-weights.js";
-import { vdbFrameDefaultSettings, type VDBFrameSettings } from "./settings.js";
+import { vdbFrameDefaultInternalSettings, type VDBFrameSettings } from "./settings.js";
 import { vdbFrameMultipleScatteringValue, vdbFramePhaseSpectrum, vdbFramePhaseVector, type VDBFramePhaseFields } from "./phase.js";
 import {
   VDB_FRAME_GROUP,
@@ -108,6 +108,7 @@ import {
   type VDBFrameUpdate,
   type VDBFrameVolumeGpu,
   type VDBFrameVolumeParams,
+  type VDBFrameUpdateOptions,
   type VDBFroxelLayout,
   type VDBFrameEmissionProbes,
   type VDBVolumeShadowMap,
@@ -141,7 +142,13 @@ export interface VDBFrameRendererGpu {
   addVolume(slot: VDBVolumeSlot, params?: Partial<VDBFrameVolumeParams>): VDBFrameVolumeGpu;
   /** Builds every pipeline the current volumes and settings reach, with the async creators. */
   prepare(options?: { lighting?: ("volume" | "frame")[] }): Promise<void>;
-  update(encoder: GPUCommandEncoder, frame: VDBFrameInput, options?: { froxels?: boolean }): VDBFrameUpdate;
+  /**
+   * Records the frame's kernels into the host's encoder (one update per submitted encoder). `froxels: false` keeps the
+   * last froxels (no froxel work; the composite reads them again). `timestampWrites` brackets every kernel the update
+   * records: `beginningOfPassWriteIndex` is written before the first and `endOfPassWriteIndex` after the last (two empty
+   * compute passes carry them, so the bracket holds whatever the update records).
+   */
+  update(encoder: GPUCommandEncoder, frame: VDBFrameInput, options?: VDBFrameUpdateOptions): VDBFrameUpdate;
   render(encoder: GPUCommandEncoder, targets: VDBFrameTargets): void;
   dispose(): void;
 }
@@ -316,7 +323,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
   constructor(device: GPUDevice, o: VDBFrameRendererGpuOptions) {
     this.device = device;
     this.#label = o.label ?? "vdb frame";
-    this.settings = { ...vdbFrameDefaultSettings(), ...(o.settings ?? {}) };
+    this.settings = { ...vdbFrameDefaultInternalSettings(), ...(o.settings ?? {}) };
     this.#composite = o.composite ?? null;
     this.#tier1 = o.features?.tier1 ?? !!device.features?.has?.("texture-formats-tier1");
     this.#maxVolumes = Math.min(VDB_FRAME_MAX_VOLUMES, Math.floor((device.limits?.maxUniformBufferBindingSize ?? 65536) / VDB_FRAME_VOLUME_BYTES));
@@ -413,7 +420,15 @@ class FrameRenderer implements VDBFrameRendererGpu {
 
   // ---------------------------------------------------------------- update
 
-  update(encoder: GPUCommandEncoder, frame: VDBFrameInput, options: { froxels?: boolean } = {}): VDBFrameUpdate {
+  update(encoder: GPUCommandEncoder, frame: VDBFrameInput, options: VDBFrameUpdateOptions = {}): VDBFrameUpdate {
+    const t = options.timestampWrites;
+    if (t && t.beginningOfPassWriteIndex !== undefined) encoder.beginComputePass({ label: `${this.#label} begin`, timestampWrites: { querySet: t.querySet, beginningOfPassWriteIndex: t.beginningOfPassWriteIndex } }).end();
+    const u = this.#update(encoder, frame, options);
+    if (t && t.endOfPassWriteIndex !== undefined) encoder.beginComputePass({ label: `${this.#label} end`, timestampWrites: { querySet: t.querySet, endOfPassWriteIndex: t.endOfPassWriteIndex } }).end();
+    return u;
+  }
+
+  #update(encoder: GPUCommandEncoder, frame: VDBFrameInput, options: VDBFrameUpdateOptions): VDBFrameUpdate {
     this.#check();
     this.#retire.advance();
     const s = this.settings;
@@ -830,9 +845,9 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const s = this.settings;
     const fw = this.#frameWriter;
     const U = VDB_FRAME_UNIFORMS;
-    const resolution = Math.max(2, Math.round(s.shadowResolution));
     const cascades = Math.min(VDB_FRAME_MAX_CASCADES, Math.max(1, Math.round(s.shadowCascades)));
     const spectral = !!s.spectral;
+    const resolution = this.#gridResolution(Math.max(2, Math.round(s.shadowResolution)), cascades, spectral);
     // K6.4: the slot groups in use (his getFrameSpectralGroups over the scene slots and the environment slot, set below)
     const sceneSlotCount = Math.min(lights.sorted.length, VDB_FRAME_SHADOW_SLOTS);
     const envSlotWanted = this.#env.present && this.#env.mode === "directional" && sceneSlotCount < VDB_FRAME_SHADOW_SLOTS && !(!!s.multipleScattering && s.multipleScattering !== "octaves");
@@ -971,6 +986,27 @@ class FrameRenderer implements VDBFrameRendererGpu {
       this.#envGridSignature = envSignature;
     }
     return { count, drawGrid, drawTransmittance, drawEnvironmentGrid, scattering: plan.kind, groups };
+  }
+
+  /**
+   * K6.8: the shadow grid resolution the device can hold. The transmittance stack (4 rgba16float targets per cascade, 3
+   * per slot group and cascade when spectral) is one texture; Dawn zero-fills a new texture through one staging buffer of
+   * its size, so a stack larger than the device's `maxBufferSize` (256 MiB by default: R = 256 with one cascade is
+   * 512 MiB) fails the host's submit and the frame is lost. Clamp R so the stack fits (warned once).
+   */
+  #gridResolution(resolution: number, cascades: number, spectral: boolean): number {
+    const maxBytes = this.device.limits?.maxBufferSize ?? 268435456;
+    const targets = spectral ? 3 * VDB_FRAME_SPECTRAL_GROUPS * cascades : 4 * cascades;
+    const maxDim = this.device.limits?.maxTextureDimension3D ?? 2048;
+    // the staging buffer's rows are padded to 256 bytes (Dawn's copy alignment)
+    const bytes = (side: number): number => {
+      const size = vdbFrameStackLayout(side, targets, maxDim).size;
+      return Math.ceil((size[0] * 8) / 256) * 256 * size[1] * size[2];
+    };
+    let r = resolution;
+    while (r > 2 && bytes(r) > maxBytes) r--;
+    if (r !== resolution) this.#warnOnce(`grid-resolution-${resolution}-${cascades}-${spectral}`, `settings.shadowResolution ${resolution} makes a transmittance stack of ${Math.round((resolution ** 3 * targets * 8) / 1048576)} MiB, more than the device's maxBufferSize (${Math.round(maxBytes / 1048576)} MiB); clamped to ${r}.`);
+    return r;
   }
 
   /** The grid textures for this resolution and cascade count (a change retires the old ones and redraws). */

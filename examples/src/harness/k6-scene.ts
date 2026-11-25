@@ -14,7 +14,7 @@
  */
 import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
-import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbSparseSource, type VDBFrameMultipleScattering, type VDBSparseLod, type VDBThreeVolumeSource } from "@pmndrs/vdb/three";
+import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbSparseSource, type VDBFrameMultipleScatteringMode, type VDBSparseLod, type VDBThreeVolumeSource } from "@pmndrs/vdb/three";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { K6_SCENES, k6LoadAsset, k6SceneFrame, k6SparseBox, type K6Lighting } from "./k6-scenes.js";
 
@@ -46,7 +46,7 @@ const W = Number(params.get("w") ?? 1280);
 const H = Number(params.get("h") ?? 720);
 const FROXELS = (params.get("froxels") ?? "512x512x24").split("x").map(Number);
 const LIGHTING = (params.get("lighting") ?? "frame") as K6Lighting;
-const parseMs = (v: string): VDBFrameMultipleScattering => (v === "0" || v === "false" ? false : v === "1" || v === "true" ? true : (v as VDBFrameMultipleScattering));
+const parseMs = (v: string): VDBFrameMultipleScatteringMode => (v === "0" || v === "false" ? false : v === "1" || v === "true" ? true : (v as VDBFrameMultipleScatteringMode));
 const MS = parseMs(params.get("ms") ?? "1");
 const BACKGROUND = new THREE.Color(0x598eff);
 
@@ -103,19 +103,19 @@ async function main(): Promise<void> {
 
   const asset = await k6LoadAsset(def.asset);
   const frameRenderer = new VDBFrameRenderer();
-  frameRenderer.backend = params.get("backend") === "core" ? "core" : "tsl";
-  frameRenderer.froxelMix = params.get("froxelMix") === "over" ? "over" : "mixture";
-  // K6.3: the core's 'multi-scale' settings (the V75 edge A/B)
-  if (params.has("msEdge")) frameRenderer.coreSettings.multiScaleEdge = params.get("msEdge") === "clamp" ? "clamp" : "zero";
-  if (params.has("msLevels")) frameRenderer.coreSettings.multiScaleLevels = Number(params.get("msLevels"));
-  // K6.3a `?msSigma=paper`: the σ = 2^k levels (a core setting `./three`'s coreSettings type does not list; assigned through)
-  if (params.has("msSigma")) Object.assign(frameRenderer.coreSettings, { multiScaleSigma: params.get("msSigma") === "paper" ? "paper" : "his" });
-  // K6.Q1: the shadowed ambient (?ao=1, ?aoPairs=, ?aoSteps=)
-  if (params.has("ao")) frameRenderer.coreSettings.ambientOcclusion = params.get("ao") === "1";
-  if (params.has("aoPairs")) frameRenderer.coreSettings.ambientOcclusionPairs = Number(params.get("aoPairs"));
-  if (params.has("aoSteps")) frameRenderer.coreSettings.ambientOcclusionSteps = Number(params.get("aoSteps"));
-  result.backend = frameRenderer.backend;
-  result.froxelMix = frameRenderer.froxelMix;
+  // K6.8: always the core (`?backend=` ignored). `?froxelMix=`; K6.3 'multi-scale' (`?msEdge=`, `?msLevels=`); K6.Q1 shadowed
+  // ambient (`?ao=1`, `?aoPairs=`, `?aoSteps=`)
+  const cs = frameRenderer.settings;
+  cs.froxelMix = params.get("froxelMix") === "over" ? "over" : "mixture";
+  if (params.has("msEdge")) Object.assign(cs, { multiScaleEdge: params.get("msEdge") === "clamp" ? "clamp" : "zero" });
+  if (params.has("msLevels")) cs.multiScaleLevels = Number(params.get("msLevels"));
+  // K6.3a `?msSigma=paper`: the σ = 2^k levels (an internal core setting, VDBFrameInternalSettings)
+  if (params.has("msSigma")) Object.assign(cs, { multiScaleSigma: params.get("msSigma") === "paper" ? "paper" : "his" });
+  if (params.has("ao")) cs.ambientOcclusion = params.get("ao") === "1";
+  if (params.has("aoPairs")) cs.ambientOcclusionPairs = Number(params.get("aoPairs"));
+  if (params.has("aoSteps")) cs.ambientOcclusionSteps = Number(params.get("aoSteps"));
+  result.backend = "core";
+  result.froxelMix = cs.froxelMix;
   Object.assign(frameRenderer.settings, {
     width: FROXELS[0],
     height: FROXELS[1],
@@ -218,7 +218,7 @@ async function main(): Promise<void> {
   result.width = W;
   result.height = H;
   result.rgba = await readImage(renderer, rt);
-  log(`${NAME} ${LIGHTING} ms ${String(MS)} backend ${frameRenderer.backend} (${frameRenderer.froxelMix}): ${W}x${H}`, "ok");
+  log(`${NAME} ${LIGHTING} ms ${String(MS)} (${cs.froxelMix}): ${W}x${H}`, "ok");
   volume.dispose();
   source.dispose();
   rt.dispose();

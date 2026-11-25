@@ -28,7 +28,7 @@ import {
   getDevice,
   vdbDenseTextures,
   vdbSparseSource,
-  type VDBFrameMultipleScattering,
+  type VDBFrameMultipleScatteringMode,
   type VDBThreeVolumeSource,
 } from "@pmndrs/vdb/three";
 import { createDeviceRenderer } from "../device-renderer.js";
@@ -84,7 +84,7 @@ const QUALITY: Record<Quality, { width: number; height: number; depth: number; s
 };
 
 type MsChoice = "neural" | "octaves" | "off";
-const MS_VALUE: Record<MsChoice, VDBFrameMultipleScattering> = { neural: "neural", octaves: "octaves", off: false };
+const MS_VALUE: Record<MsChoice, VDBFrameMultipleScatteringMode> = { neural: "neural", octaves: "octaves", off: false };
 
 const timeParam = params.get("time");
 const msParam = params.get("ms");

@@ -160,9 +160,8 @@ From v1; details in docs/archive/handoffs/.
   camera, so with his demo camera (~130 units from a 100-unit bunny) `shadowCascades: 4` gives one cascade
   (his `shadow-cascades-4` scene ≈ the default). To exercise cascades, put the camera inside the casters' box
   (`k3-frame ?dist=0.3`).
-- `'frame'` lighting's `'directional'` environment lights come from an async readback: the frame that requests
-  it renders the `'outward'` path. Harnesses render until `frameRenderer.environment` is set and await
-  `frameRenderer.environmentLights.settled`.
+- Since K6.8 the environment lights are extracted on the GPU by the core (no readback): they exist in the first frame.
+  A harness that reports them reads the core's environment buffer (`vdbFrameRendererEnvironment`, as k3-frame does).
 - Pool meshes that share one material across draws (his density / shadow-density pools; ours share a volume's
   material across cascades) rely on three r187 `uniform()` being per-object (`objectGroup`): values set in
   `onBeforeRender` reach each draw. Shared texture nodes swap `.value` per frame.
@@ -174,9 +173,10 @@ From v1; details in docs/archive/handoffs/.
 - `vdbSparseSource`'s GPU pyramid rebuilds inside a render (the `pyramidLevel` uniform's render update) when the
   density grid's `imageRevision` moved; that render must come after the `pool.update(encoder)` was submitted (as
   `grids.update()`): a growth's copies sit in that encoder, and the rebuild is its own submit.
-- three r187 render-pass timestamp uids (`r:<frameCalls>:<context>:f<frame>`) repeat when one frame renders the same
-  scene, camera and target twice; `examples/src/harness/k3-pass-timer.ts` makes them unique to time passes.
-  Chrome quantizes `timestamp-query` to 100 µs unless started with `--enable-webgpu-developer-features`.
+- K6.8: the froxel renderer's GPU time is the core update's bracket (`VDBFrameRenderer.passHook.timestampWrites`, two
+  empty compute passes carrying the writes; `examples/src/harness/k3-pass-timer.ts`); three's own render-pass timestamps
+  give the rest (the scene and the composite). Chrome quantizes `timestamp-query` to 100 µs unless started with
+  `--enable-webgpu-developer-features`.
 - A `playwright install` in another worktree removes other headless-shell revisions from the shared cache: point
   `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` at the revision your `@playwright/test` expects (`browsers.json`; 1228 for 1.61.1).
 - SIMD divergence decides GPU sampler speed: a per-lane "fast path, else fallback" runs both paths in every SIMD group
@@ -220,7 +220,7 @@ From v1; details in docs/archive/handoffs/.
   still be bound by a pass recorded in that render. Retire it after `setTimeout(0)` + `queue.onSubmittedWorkDone()`
   (the sparse source's `relayout`).
 - `vdbVolumeUniforms(sparseSource)` registers listeners on the source: call `uniforms.dispose()` when done
-  (`VDBFrameVolume.dispose()` does), or they live as long as the source.
+  (a `VDBFrameVolume` holds none since K6.8), or they live as long as the source.
 - `VDBSequence` ping-pong state is the clock anchor plus its direction (`startDir`); `_dir` is the direction at the
   SHOWN frame (a stalled target does not change it). Re-anchoring code must pass both, or a pause on the backward leg
   resumes forward. `stop()` drops only a clock-due pending frame: demo 12 does `seek(30)` then `stop()` for its paused
@@ -355,15 +355,13 @@ From v1; details in docs/archive/handoffs/.
   `environmentRotation` matrix; three looks up `Rᵀ d`). Its WebGPU cube lookups negate x: `diag(−1, 1, 1) · Rᵀ`.
 - Point-sampling three's PMREM (a `CUBE_UV` `scene.environment`) at roughness 0 into a coarse lat-long loses a small
   sun between samples (256 × 128: 5× less sun energy); the `./three` core fallback draws 1024 × 512 (≈ PMREM mip 0).
-- k3-frame `?backend=core` reads the environment lights from the core's buffer after one frame (no readback wait); the
-  TSL path still waits for its readback, so core-vs-TSL env A/Bs compare settled frames.
 - Another worktree's Vite server may already listen on your `WEBVDB_E2E_PORT` (5307 was taken during K6.5): Playwright
   reuses it and serves that worktree's sources (an "unknown ?probe=", or a `?backend=core` that silently runs TSL).
   Check `lsof -iTCP:<port> -sTCP:LISTEN` first, pick an unusual port, and assert in the harness which backend drew
   (`k3-frame-shadows` `result.backend`).
 - The frame chunk `lod` (`vdbFrameFroxelLod`) uses `VdbFrameFroxel` but does not list the `froxel` chunk as a
   dependency: list `"froxel"` in the roots of any kernel that takes `"lod"` ("unresolved type 'VdbFrameFroxel'").
-- Core volume shadow maps in `./three` (`backend: 'core'`): run the core update before the first receiver draws (the
+- Core volume shadow maps in `./three`: run the core update before the first receiver draws (the
   shadow node's `updateBefore` calls `frameRenderer.coreFrame`), not only in the proxy's `onBeforeRender`. three uploads a
   receiver's uniforms (the drawn view) when it draws, but the core's map draws are submitted before three's frame, so an
   update after the receivers gives that frame new maps read with old views (the K7.1 class).
@@ -382,8 +380,8 @@ From v1; details in docs/archive/handoffs/.
   group 0 by hand needs it too (`mieEntry` in `k6-core.ts`), or the bind group is invalid and the dispatch writes nothing.
 - K6.3: K7.3's `mips.record(encoder, …)` opens its own compute pass. The core renderer ends its update pass, records the
   chain and begins a new pass ('multi-scale' only); anything recorded between them must follow the same order.
-- K6.3 'mlp' / 'multi-scale' render in the core only (`backend: 'core'`); the TSL path runs them as 1D diffusion (warned).
-  `'neural'` in the core is the generic MLP running `renderer.mlp` (the adapter passes `neuralNetwork`).
+- `'neural'` in the core is the generic MLP running `renderer.mlp` (`./three`'s `VDBFrameRenderer.mlp`, his weights by
+  default); spectral runs 'mlp' / 'multi-scale' as 1D diffusion (V133).
 - Fail-before mutations on edge-only or far-field terms can pass silently: on the k6-core 16³ grid the 6th multi-scale level
   samples outside the box (levels − 1 changes nothing) and an edge-clamp change only moves texels where density reaches the
   border. Mutate something every voxel reads (2 levels, a shifted box).
@@ -457,9 +455,36 @@ From v1; details in docs/archive/handoffs/.
   worktree (rsync without `.git`/`artifacts`, symlink the root `fixtures/`), then `--reuse` its `reference-*.json` here.
   Exclude `/fixtures` anchored: a bare `--exclude fixtures` also drops `packages/vdb/test/tools/fixtures/`, k3-frame's
   `?url` import 500s, and `reference-report.mjs` waits forever (a module that fails to load never sets `done`).
-- V80 vs a real defect: render core and TSL with one froxel per pixel (`k3-frame ?w=640&h=360&froxels=640x360x24`).
-  The x, y filter of the prefix is then a no-op, so V80 differences vanish (K6.3a: core = TSL to 1/255) and anything left
-  is lighting. His froxels are 2.5 × 1.4 px at 1280 × 720, so V80 pixels sit on mostly vertical edges, 4–7 px inside
+- V80 vs a real defect: render with one froxel per pixel (`k3-frame ?w=640&h=360&froxels=640x360x24`). The x, y filter
+  of the prefix is then a no-op, so V80 differences vanish (K6.3a: core = TSL to 1/255, before K6.8 deleted the TSL
+  path) and anything left is lighting. His froxels are 2.5 × 1.4 px at 1280 × 720, so V80 pixels sit on mostly vertical edges, 4–7 px inside
   the pixels that equal the background (the cloud's fringe is several pixels of low coverage).
 - `URLSearchParams.get` returns the first value: `reference-report.mjs --query=ms=0` cannot override a parameter a row
   already sets; add a group or row instead.
+- K6.8: `./three`'s froxel renderer is the core only (no `backend`, no TSL passes). The harnesses ignore `?backend=`;
+  `?occlusion=0` (his scenes: his renderer has no mesh → volume shadows), `?froxelMix=`, `?ao=`, `?msEdge=`, `?msSigma=` set
+  core settings. `VDBFrameRenderer.settings` IS the core's settings object (copied into `core.settings` each update): a
+  new core setting needs no adapter code. `multiScaleEdge` / `multiScaleSigma` are internal (`VDBFrameInternalSettings`,
+  `core/internal.ts`): the object has them, the public `VDBFrameSettings` type does not; set them with a cast.
+- K6.8 regression gate: `e2e/k6-frames.spec.ts` renders every K3/K6 scene through `./three` and compares with a saved
+  set (`K6_FRAMES_OUT=<dir>` before a change, `K6_FRAMES_BASELINE=<dir>` after; identical or within float noise). Save the
+  "before" set from a `git archive` copy of the base commit with its own `pnpm install --offline` and Vite (Vite serves
+  sources live, so editing while a long run renders mixes versions); the same trick runs a long e2e suite while you edit.
+- K6.8: the TSL ports the tools twins were first checked against (three/frame/view.ts, layout.ts, the cascade fit) are
+  deleted; their outputs on the old random inputs are frozen in `packages/vdb/test/core/frame/fixtures/three-port-golden.json`.
+  Regenerating it needs a pre-K6.8 tree (`aa7ea3e`).
+- K6.8 `VDBFrameVolume.emissionColor` is `VDBEmissionColor` data; a function (a 0.1 TSL hook) throws `VDB_BAD_OPTION`.
+  His 'planck' with the CIE table (D33) is `{ lut: vdbFrameEmissionLutRow(0, vdbFrameBlackbodyTable(cie)) }`.
+- `vdbSparseSource` / `vdbDenseTextures` stay the `./three` source handles: the frame renderer reads their pool, ids, boxes
+  and stats into the core's own sources (`vdbSparseSourceGpu`, `vdbDenseSource`); their TSL nodes and GPU pyramid run
+  only for custom materials (`vdbVolumeNodes`). A harness that checks the TSL pyramid must sample through the nodes
+  (k3-pyramid `?three=1`), not through a `VDBFrameVolume`.
+- Dawn zero-fills a new texture through ONE staging buffer of its size (rows padded to 256 bytes): a texture over the
+  device's `maxBufferSize` (256 MiB by default) fails the whole submit ("Buffer size … exceeds the max buffer size
+  limit", an uncaptured error) and the frame silently loses its volumes. The core clamps `shadowResolution` for that
+  (K6.8: R = 256 with one cascade is a 512 MiB transmittance stack); size any new core texture the same way.
+- `./three` copies a sparse source's stats into its core slot when the three source's `stats` object changes
+  (`refreshStats()`); without that call the core slot re-reads the mean itself, one or two updates after the image
+  changed (its own readback). A first frame that must have the new mean awaits `source.refreshStats()` (demo 16).
+- `e2e/demo-0*.spec.ts-snapshots/*-chromium-linux.png` are Linux goldens: on macOS demo 06's panel text differs (3 % of
+  pixels, text only). Check such a failure against the pre-change tree WITH the fixture before suspecting a change.

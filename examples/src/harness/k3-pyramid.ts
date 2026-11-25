@@ -16,13 +16,16 @@
  * - `?sequence=1`: replace the grid with another image (pool.replace), check `stale`, rebuild, compare
  *   with the CPU pyramid of the new image over the same index box.
  * - `?three=1`: `vdbSparseSource` with `pyramidBuild: 'gpu'` vs `'cpu'` on cloud04 (the three textures
- *   behind both), then a `pool.replace` picked up by a render (the source's per-render refresh).
+ *   behind both), then a `pool.replace` picked up by a render (the source's per-render refresh). K6.8: the render is a
+ *   quad sampling the source's TSL nodes (`vdbVolumeNodes`, a custom-material host): the frame renderer draws through
+ *   the core's own sparse source (its pyramids: e2e/k6-sparse.spec.ts).
  * Results: `window.__VDB_K3_PYRAMID__` (e2e/k3-pyramid.spec.ts, scripts/k3/time-hardware.mjs).
  */
 import * as THREE from "three";
-import { WebGPURenderer } from "three/webgpu";
+import { NodeMaterial, WebGPURenderer } from "three/webgpu";
+import * as TSL from "three/tsl";
 import { VDBGridPool, vdbCreateBoxPyramid, type VDBBoxPyramidGpu } from "@pmndrs/vdb";
-import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, getGPUTexture, vdbSparseSource } from "@pmndrs/vdb/three";
+import { VDBGridNode, getGPUTexture, vdbSparseSource, vdbVolumeNodes, vdbVolumeUniforms, type VDBTslNode } from "@pmndrs/vdb/three";
 import { NvdbFile, buildFromVdb, parseVdb, readWvdb, vdbBoxPyramid, wvdbDenseToNvdb, wvdbDenseVolume } from "../../../packages/vdb/src/tools/internal.js";
 import cloudWvdbUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
 
@@ -352,20 +355,18 @@ async function threeCheck(device: GPUDevice): Promise<void> {
   };
   const buildsAfterCreate = gpuSource.pyramidBuilds;
 
-  // A render that samples the pyramid: no rebuild (nothing changed).
-  const frameRenderer = new VDBFrameRenderer();
-  Object.assign(frameRenderer.settings, { width: 32, height: 32, depth: 8, subSteps: 8, jitter: false, temporal: false, lighting: "volume" });
-  const volume = new VDBFrameVolume(gpuSource, { frameRenderer, shadowSteps: 8, extinction: 40 });
+  // A render that samples the pyramid through the source's TSL nodes (a slice at a coarse level): no rebuild (nothing changed).
+  const { Fn, float, positionGeometry, screenUV, vec3, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
+  const uniforms = vdbVolumeUniforms(gpuSource, { extinction: 40, densityScale: 1, normalizeDensity: true });
+  const nodes = vdbVolumeNodes(gpuSource, uniforms, { useMipmaps: true });
+  const material = new NodeMaterial();
+  material.vertexNode = vec4(positionGeometry.xy, 0.0, 1.0);
+  material.fragmentNode = Fn(() => vec4(vec3(nodes.sampleExtinction(vec3(screenUV.x.sub(0.5), screenUV.y.sub(0.5), 0.0), float(1.5))), 1.0))();
+  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+  quad.frustumCulled = false;
   const scene = new THREE.Scene();
-  scene.add(volume);
-  const sun = new THREE.DirectionalLight(0xffffff, 1);
-  sun.position.set(1, 2, 1);
-  scene.add(sun);
-  const box = new THREE.Box3(new THREE.Vector3(...gpuSource.bbox[0]), new THREE.Vector3(...gpuSource.bbox[1]));
-  const center = box.getCenter(new THREE.Vector3());
-  const camera = new THREE.PerspectiveCamera(60, 16 / 9, 0.01, 1e5);
-  camera.position.copy(center).add(new THREE.Vector3(1, 0.4, 1.2).multiplyScalar(box.getSize(new THREE.Vector3()).length() * 0.8));
-  camera.lookAt(center);
+  scene.add(quad);
+  const camera = new THREE.OrthographicCamera();
   const rt = new THREE.RenderTarget(160, 90, { type: THREE.HalfFloatType });
   const render = async () => {
     renderer.setRenderTarget(rt);
@@ -382,7 +383,7 @@ async function threeCheck(device: GPUDevice): Promise<void> {
   for (let i = 0; i < halfData.length; i++) halfData[i] = halfData[i]! >> 1;
   const next = wvdbDenseToNvdb(half).image;
   const versionBefore = gpuSource.version;
-  const scaleBefore = volume.sourceUniforms.densityScale.value as number;
+  const scaleBefore = uniforms.densityScale.value as number;
   pool.replace(id, next);
   pool.flush();
   grids.update();
@@ -400,8 +401,8 @@ async function threeCheck(device: GPUDevice): Promise<void> {
     after: { ...gpuSource.stats },
     expected: { ...fresh.stats },
     updates: gpuSource.statsUpdates,
-    scale: [scaleBefore, volume.sourceUniforms.densityScale.value as number] as [number, number],
-    expectedScale: volume.densityScale / fresh.stats.meanNonZero,
+    scale: [scaleBefore, uniforms.densityScale.value as number] as [number, number],
+    expectedScale: 1 / fresh.stats.meanNonZero,
   };
   fresh.dispose();
   const cpuNext = cpuPyramid(next, cloud.indexBox!, 32);
@@ -411,7 +412,8 @@ async function threeCheck(device: GPUDevice): Promise<void> {
   };
   result.three = { gpuVsCpu, buildsAfterCreate, buildsAfterRender, buildsAfterReplace, buildsAfterSecondRender, replaced, versions: [versionBefore, gpuSource.version], gpuBytes: { ...gpuSource.gpuBytes }, stats };
   log(`three: ${JSON.stringify(result.three)}`, gpuVsCpu.base.over === 0 && replaced.base.over === 0 && buildsAfterSecondRender === 2 ? "ok" : "fail");
-  volume.dispose();
+  uniforms.dispose();
+  material.dispose();
   gpuSource.dispose();
   cpuSource.dispose();
   rt.dispose();

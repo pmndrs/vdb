@@ -14,6 +14,9 @@ import { encodePng } from "../scripts/k3/png.mjs";
 // each preset renders deterministically; a grey spectral medium renders as the grey path; the white furnace holds on both
 // lighting modes (1D diffusion, grey and spectral); sparse vs dense >= 35 dB with spectral on.
 // PNGs go to artifacts/k3/ours/ (k3-frame-spectral-*.png).
+// K6.8: these scenes render through the core frame renderer (`./three` is a thin adapter); the TSL pass twins that
+// gated here are gone with the TSL passes, and the core kernels' twins (with fail-before mutations) are in
+// e2e/k6-core.spec.ts. What stays: clean, deterministic frames and the structural properties below.
 const PAGE_URL = "/src/harness/k3-frame.html";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OURS = path.join(repoRoot, "artifacts", "k3", "ours");
@@ -116,9 +119,9 @@ for (const [name, extra] of [
   ["neural-env", "ms=neural&medium=white-smoke&env=synthetic"],
   ["octaves-env", "ms=octaves&medium=soot&env=synthetic"],
 ] as const) {
-  test(`K3.5 spectral 'frame' lighting (${name}): every pass matches its twin; deterministic`, async ({ page }) => {
+  test(`K3.5 spectral 'frame' lighting (${name}): renders; deterministic`, async ({ page }) => {
     test.setTimeout(600_000);
-    const q = `${BASE}&${extra}&twins=1&redraw=2`;
+    const q = `${BASE}&${extra}&redraw=2`;
     const r = await run(page, q);
     const detail = detailOf(r);
     mkdirSync(OURS, { recursive: true });
@@ -126,15 +129,8 @@ for (const [name, extra] of [
     expectClean(r);
     expect(r.spectral, detail).toBe(true);
     expect(r.nonBackground!, detail).toBeGreaterThan(1_500);
-    expectTwin(r.spectralProbe, 2_000, detail);
-    expectTwin(r.transmittanceTwin, 10_000, detail);
-    expect(r.transmittanceTwin!.marched!, detail).toBeGreaterThan(500);
-    expectTwin(r.lightingTwin, 1_000, detail);
-    expectTwin(r.densityTwin, 5_000, detail, 5e-4);
     if (extra.includes("env=")) {
       // Octaves: the dominant environment light takes a slot (2 slots: groups 0 and 1); diffusion: every light on the grid
-      expectTwin(r.environmentGridTwin, 10_000, detail);
-      expect(r.spectralGroups, detail).toBe(extra.includes("octaves") ? 2 : 1);
     }
     // Static scene: the grid and every group's transmittance are drawn once (with the environment: once more when its
     // lights arrive from the readback and the dominant one takes a slot)
@@ -144,24 +140,15 @@ for (const [name, extra] of [
     expect(again.error).toBeUndefined();
     expect(compareImages(image(r), image(again)).psnr).toBe(Infinity);
     save(`k3-frame-spectral-${name}`, r);
-    console.log(
-      `[k3-frame-spectral] '${name}': probe ${fmt(r.spectralProbe)}, transmittance ${fmt(r.transmittanceTwin)} / ${r.transmittanceTwin!.marched} voxels / ${r.spectralGroups} groups, lighting ${fmt(r.lightingTwin)}, density ${fmt(r.densityTwin)}, environment grid ${fmt(r.environmentGridTwin)}; first frame ${r.firstFrameMs?.toFixed(0)} ms`,
-    );
   });
 }
 
-test("K3.5 four slot groups: six shadow slots (his sun + 5 directional lights) match their twins in every group", async ({ page }) => {
+test("K3.5 four slot groups: six shadow slots (his sun + 5 directional lights) render cleanly", async ({ page }) => {
   test.setTimeout(600_000);
-  const r = await run(page, `${BASE}&ms=1&medium=dark-smoke&extraLights=5&twins=1`);
+  const r = await run(page, `${BASE}&ms=1&medium=dark-smoke&extraLights=5`);
   const detail = detailOf(r);
   expectClean(r);
-  expect(r.spectralGroups, detail).toBe(4);
-  expectTwin(r.transmittanceTwin, 30_000, detail);
-  expect(r.transmittanceTwin!.groups, detail).toBe(4);
-  expectTwin(r.lightingTwin, 1_000, detail);
-  expectTwin(r.densityTwin, 5_000, detail, 5e-4);
   save("k3-frame-spectral-groups-4", r);
-  console.log(`[k3-frame-spectral] 4 groups: transmittance ${fmt(r.transmittanceTwin)}, lighting ${fmt(r.lightingTwin)}`);
 });
 
 test("K3.5 a grey spectral medium renders as the grey path; a Rayleigh spectrum tints the cloud", async ({ page }) => {
@@ -197,19 +184,15 @@ test("K3.5 every medium preset renders cleanly and deterministically on both lig
     expect(r.medium, detail).toBe(medium);
     expect(r.spectral, detail).toBe(true);
     expect(r.nonBackground!, detail).toBeGreaterThan(1_000);
-    expectTwin(r.spectralProbe, 2_000, detail);
     const again = await run(page, `${BASE}&ms=1&medium=${medium}`);
     expect(compareImages(image(r), image(again)).psnr).toBe(Infinity);
-    const v = await run(page, `?w=160&h=96&froxels=160x96x24&lighting=volume&ms=1&medium=${medium}&twin=1`);
+    const v = await run(page, `?w=160&h=96&froxels=160x96x24&lighting=volume&ms=1&medium=${medium}`);
     const vd = detailOf(v);
     expectClean(v);
-    expect(v.twin!.over, vd).toBe(0);
-    expect(v.twin!.covered, vd).toBeGreaterThan(50);
-    expect(v.chunkProbe!.over, vd).toBe(0);
     save(`k3-frame-spectral-medium-${medium}`, r);
     save(`k3-frame-spectral-volume-medium-${medium}`, v);
     const vsGrey = compareImages(image(r), image(grey));
-    lines.push(`${medium}: vs grey 2HG ${vsGrey.psnr.toFixed(2)} dB, channel means ${channelMeans(r).map((x) => x.toFixed(1)).join("/")}; 'volume' integrate twin ${fmt(v.twin)}`);
+    lines.push(`${medium}: vs grey 2HG ${vsGrey.psnr.toFixed(2)} dB, channel means ${channelMeans(r).map((x) => x.toFixed(1)).join("/")}`);
   }
   // Soot (albedo 0.25) is darker than fog (white) in the same light
   const soot = await run(page, `${BASE}&ms=1&medium=soot`);
@@ -218,9 +201,9 @@ test("K3.5 every medium preset renders cleanly and deterministically on both lig
   console.log(`[k3-frame-spectral] media:\n  ${lines.join("\n  ")}`);
 });
 
-test("K3.5 'volume' lighting: environment, hemisphere and light terms render (no warnings), change the image, and keep the twins", async ({ page }) => {
+test("K3.5 'volume' lighting: environment, hemisphere and light terms render (no warnings), change the image", async ({ page }) => {
   test.setTimeout(600_000);
-  const q = "?w=160&h=96&froxels=160x96x24&lighting=volume&twin=1";
+  const q = "?w=160&h=96&froxels=160x96x24&lighting=volume";
   const sun = await run(page, `${q}&ms=1&lights=dir`);
   const hemi = await run(page, `${q}&ms=1&lights=dir-hemi`);
   const env = await run(page, `${q}&ms=1&lights=dir&env=synthetic`);
@@ -229,14 +212,12 @@ test("K3.5 'volume' lighting: environment, hemisphere and light terms render (no
   for (const [name, r] of [["hemi", hemi], ["env", env], ["env-spectral", envSpectral]] as const) {
     const detail = detailOf(r);
     expectClean(r);
-    expect(r.twin!.over, detail).toBe(0);
-    expect(r.chunkProbe!.over, detail).toBe(0);
     const d = compareImages(image(r), image(sun));
     // The new terms add light: the frame gets brighter than the sun alone
     expect(d.above, `${name} ${JSON.stringify(d)}`).toBeGreaterThan(100);
     expect(channelMeans(r)[1]!).toBeGreaterThan(channelMeans(sun)[1]!);
     save(`k3-frame-spectral-volume-${name}`, r);
-    lines.push(`${name}: vs sun only ${d.psnr.toFixed(2)} dB (${d.above} px > 8/255), integrate twin ${fmt(r.twin)}`);
+    lines.push(`${name}: vs sun only ${d.psnr.toFixed(2)} dB (${d.above} px > 8/255)`);
   }
   expect(env.environment, detailOf(env)).toBeTruthy();
   console.log(`[k3-frame-spectral] 'volume' lighting terms: ${lines.join("; ")}`);
@@ -294,21 +275,3 @@ test("K3.5 white furnace on 'volume' and 'frame' lighting, grey and spectral", a
   );
 });
 
-// Provisional timings (D25: SwiftShader on a loaded laptop; never a gate). Opt in: K3_SPECTRAL_TIMING=1 (needs
-// fixtures/k3/bunny_cloud.wvdb). His step3-default-dir-isolated scene at 1920x1080 (512x512x24 froxels, grid 64³), grey
-// and spectral per lighting path: the froxel passes with the grid cached, the extra cost of a grid redraw (shadow
-// density + one transmittance pass per slot group), the first frame (compile included) and the transmittance passes.
-test("K3.5 timing report (opt-in): spectral vs grey pass count and ms", async ({ page }) => {
-  test.skip(process.env.K3_SPECTRAL_TIMING !== "1", "report-only: K3_SPECTRAL_TIMING=1");
-  test.setTimeout(3_600_000);
-  const rows: Record<string, unknown>[] = [];
-  for (const extra of ["ms=1", "ms=1&spectral=1", "ms=1&medium=dark-smoke&env=synthetic", "ms=octaves&medium=dark-smoke&env=synthetic", "ms=1&lighting=volume", "ms=1&lighting=volume&spectral=1"]) {
-    const r = await run(page, `?scene=step3-default-dir-isolated&w=1920&h=1080&${extra}&timing=1&timingFrames=15&timingWarmup=3&redraw=1`);
-    expect(r.error, detailOf(r)).toBeUndefined();
-    const t = r.timings as { froxelsMs: number | null; integrateMs: number | null; sceneMs: number | null; passes?: { gridRedrawMs: number | null } };
-    rows.push({ extra, groups: r.spectralGroups ?? null, transmittanceDraws: r.redraw?.transmittance.drawn ?? null, firstFrameMs: r.firstFrameMs, froxelsMs: t.froxelsMs, gridRedrawMs: t.passes?.gridRedrawMs ?? null, integrateMs: t.integrateMs, sceneMs: t.sceneMs });
-  }
-  mkdirSync(OURS, { recursive: true });
-  writeFileSync(path.join(OURS, "k3-frame-spectral-timings.json"), JSON.stringify(rows, null, 2));
-  console.log(`[k3-frame-spectral] timings (provisional, D25): ${JSON.stringify(rows, null, 2)}`);
-});

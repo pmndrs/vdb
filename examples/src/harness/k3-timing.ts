@@ -1,7 +1,8 @@
 /**
- * K3.2c timing harness: one froxel-renderer configuration per page load, timed per pass on the GPU
- * (three's render-pass timestamps mapped to pass names, `k3-pass-timer.ts`) and as a queue-synchronised
- * frame (render, then `queue.onSubmittedWorkDone()`: v1's hardware-gate fallback, docs/archive/handoffs/PHASE-3.md).
+ * K3.2c timing harness: one froxel-renderer configuration per page load, timed on the GPU (K6.8: the core update's
+ * kernels bracketed by `passHook.timestampWrites`, three's render passes by its own timestamps; `k3-pass-timer.ts`) and
+ * as a queue-synchronised frame (render, then `queue.onSubmittedWorkDone()`: v1's hardware-gate fallback,
+ * docs/archive/handoffs/PHASE-3.md).
  * Driven by `scripts/k3/time-hardware.mjs` on installed Chrome; SwiftShader works too (slowly).
  *
  * Query: `?asset=cloud04|bunny|smoke|wdas` (as k3-sparse: cloud04 and bunny are identical voxels on both
@@ -11,10 +12,10 @@
  * distance / box diagonal, 0.75), `?frames=` (30, measured) `?warmup=` (10), `?shadowRes=` (64), `?fast=0|1` and
  * `?cache=0|1` (K3.2d sparse level-0 sampling: `fastTrilinear`, `cacheAccessor`; default the source's defaults).
  *
- * Per measured frame: the froxel passes alone (`renderFroxels`; in 'frame' lighting the signature-cached
- * shadow density and transmittance are skipped in a still scene), the same with the grid passes forced
- * ('frame' only: `gridRedraw`), the scene with the held atlas (integrate + scene) and without the volume
- * (scene), then a whole frame timed on the queue. Medians. Results: `window.__VDB_K3_TIMING__`.
+ * Per measured frame: a whole frame (the core's kernels: `froxelsMs`; in 'frame' lighting the signature-cached grid
+ * passes are skipped in a still scene), the scene with the held froxels (`froxels = false`: composite + scene) and
+ * without the volume (scene), then a whole frame timed on the queue. Medians. `?timerCheck=1`: a few frames, then the
+ * timer's counters (e2e on SwiftShader; no timing taken). Results: `window.__VDB_K3_TIMING__`.
  */
 import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
@@ -49,6 +50,8 @@ interface Result {
   gpuBytes?: { source: number; pyramid: number; pyramidScratch: number };
   lodLevels?: number;
   setupMs?: number;
+  /** `?timerCheck=1`: the pass hook's counters and the core ms of a few frames (a check that the bracket works, not a timing). */
+  timerCheck?: { updates: number[]; core: (number | null)[]; render: number[] };
   /** `?image=1` (K6.1d/K6.2 A/B): the frame as display RGBA8 (base64, top row first), no timing. */
   width?: number;
   height?: number;
@@ -84,9 +87,10 @@ const DENSE_RES = Number(params.get("denseRes") ?? 128);
 const FAST = params.has("fast") ? params.get("fast") !== "0" : undefined;
 const CACHE = params.has("cache") ? params.get("cache") !== "0" : undefined;
 const BACKGROUND = new THREE.Color(0x598eff);
-// K6.1d / K6.2 A/B: `?image=1` reads one frame back instead of timing; `?backend=core` renders it through the core.
+// K6.1d / K6.2: `?image=1` reads one frame back instead of timing (K6.8: always the core; `?backend=` is ignored).
 const IMAGE = params.get("image") === "1";
-const BACKEND = params.get("backend") === "core" ? "core" : "tsl";
+const TIMER_CHECK = params.get("timerCheck") === "1";
+const BACKEND = "core";
 
 /** The half-float target, display RGBA8 (NoToneMapping, sRGB OETF) as base64. */
 async function readImage(renderer: WebGPURenderer, rt: THREE.RenderTarget): Promise<string> {
@@ -184,7 +188,6 @@ async function main(): Promise<void> {
 
   const asset = await loadAsset();
   const frameRenderer = new VDBFrameRenderer();
-  frameRenderer.backend = BACKEND;
   result.backend = BACKEND;
   Object.assign(frameRenderer.settings, {
     width: FROXELS[0],
@@ -266,7 +269,7 @@ async function main(): Promise<void> {
   scene.updateMatrixWorld(true);
   const rt = new THREE.RenderTarget(W, H, { type: THREE.HalfFloatType, depthBuffer: true, samples: 0 });
 
-  const timer = timestamps ? installPassTimer(renderer, frameRenderer) : null;
+  const timer = timestamps ? installPassTimer(renderer, frameRenderer, device) : null;
   const frame = () => {
     renderer.setRenderTarget(rt);
     renderer.render(scene, camera);
@@ -285,7 +288,30 @@ async function main(): Promise<void> {
     result.width = W;
     result.height = H;
     result.rgba = await readImage(renderer, rt);
-    log(`${ASSET} ${SOURCE} ${LIGHTING} backend ${BACKEND}: ${W}x${H} image`, "ok");
+    log(`${ASSET} ${SOURCE} ${LIGHTING}: ${W}x${H} image`, "ok");
+    timer?.dispose();
+    volume.dispose();
+    source.dispose();
+    rt.dispose();
+    return;
+  }
+
+  if (TIMER_CHECK) {
+    const check = { updates: [] as number[], core: [] as (number | null)[], render: [] as number[] };
+    // without timestamp-query: the CPU bracket alone (begin / end around each core update)
+    let counted = 0;
+    if (!timer) frameRenderer.passHook = { end: () => void counted++ };
+    for (let f = 0; f < 3; f++) {
+      frame();
+      await device.queue.onSubmittedWorkDone();
+      const t = timer ? await timer.collect() : { updates: counted, core: null, render: 0 };
+      counted = 0;
+      check.updates.push(t.updates);
+      check.core.push(t.core);
+      check.render.push(t.render);
+    }
+    result.timerCheck = check;
+    log(`timer check (timestamp-query ${timestamps}): ${JSON.stringify(check)}`, "ok");
     timer?.dispose();
     volume.dispose();
     source.dispose();
@@ -301,24 +327,17 @@ async function main(): Promise<void> {
   for (let f = 0; f < WARMUP + FRAMES; f++) {
     const keep = f >= WARMUP;
     if (timer) {
-      frameRenderer.renderFroxels(renderer, scene, camera);
-      const p = await timer.collect();
-      if (LIGHTING === "frame") {
-        frameRenderer.shadowDrawnVersion = -1;
-        frameRenderer.transmittanceSignature = [];
-        frameRenderer.environmentGridSignature = [];
-        frameRenderer.renderFroxels(renderer, scene, camera);
-        const r = await timer.collect();
-        if (keep) redraw.push(r);
-      }
-      frameRenderer.holdFroxels = true;
       frame();
-      frameRenderer.holdFroxels = false;
-      const held = sum(await timer.collect());
+      const t = await timer.collect();
+      const p = { core: t.core ?? Number.NaN };
+      frameRenderer.froxels = false;
+      frame();
+      frameRenderer.froxels = true;
+      const held = (await timer.collect()).render;
       volume.visible = false;
       frame();
       volume.visible = true;
-      const bare = sum(await timer.collect());
+      const bare = (await timer.collect()).render;
       if (keep) {
         passes.push(p);
         integrate.push(held - bare);

@@ -15,6 +15,9 @@ import { encodePng } from "../scripts/k3/png.mjs";
 // deterministic; sparse vs dense >= 35 dB in the new modes; the flipped defaults ('frame', temporal, 'neural') render.
 // The white furnace (his utils/furnace.js) is recorded per mode, not forced (his modes are approximations).
 // PNGs go to artifacts/k3/ours/ (k3-frame-scattering-*.png).
+// K6.8: these scenes render through the core frame renderer (`./three` is a thin adapter); the TSL pass twins that
+// gated here are gone with the TSL passes, and the core kernels' twins (with fail-before mutations) are in
+// e2e/k6-core.spec.ts. What stays: clean, deterministic frames and the structural properties below.
 const PAGE_URL = "/src/harness/k3-frame.html";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OURS = path.join(repoRoot, "artifacts", "k3", "ours");
@@ -107,9 +110,9 @@ const fmt = (t: Twin | undefined) => (t ? `${t.compared} (max ${t.maxAbs.toExpon
 const BASE = "?w=160&h=96&froxels=96x64x24&lighting=frame&lights=dir-hemi";
 
 for (const ms of ["neural", "two-sided", "octaves"] as const) {
-  test(`K3.4 'frame' lighting, multipleScattering '${ms}': passes match their twins; differs from single scattering; deterministic`, async ({ page }) => {
+  test(`K3.4 'frame' lighting, multipleScattering '${ms}': differs from single scattering; deterministic`, async ({ page }) => {
     test.setTimeout(500_000);
-    const q = `${BASE}&ms=${ms}&twins=1&redraw=2`;
+    const q = `${BASE}&ms=${ms}&redraw=2`;
     const r = await run(page, q);
     const detail = detailOf(r);
     mkdirSync(OURS, { recursive: true });
@@ -117,15 +120,6 @@ for (const ms of ["neural", "two-sided", "octaves"] as const) {
     expectClean(r);
     expect(r.settings!.multipleScattering, detail).toBe(ms);
     expect(r.nonBackground!, detail).toBeGreaterThan(1_500);
-    expectTwin(r.scatterProbe, 1_500, detail);
-    expectTwin(r.transmittanceTwin, 10_000, detail);
-    expect(r.transmittanceTwin!.marched!, detail).toBeGreaterThan(500);
-    expectTwin(r.lightingTwin, 1_000, detail);
-    expectTwin(r.densityTwin, 5_000, detail, 5e-4);
-    if (ms === "neural") {
-      expectTwin(r.gridMipTwin, 1_000, detail);
-      expect(r.gridMipTwin!.levels, detail).toBe(5);
-    }
     // Static scene: the grid, its mips and the transmittance are drawn once
     expect(r.redraw!.transmittance.drawn, detail).toBe(1);
     expect(r.redraw!.transmittance.skipped, detail).toBeGreaterThanOrEqual(3);
@@ -145,30 +139,19 @@ for (const ms of ["neural", "two-sided", "octaves"] as const) {
     // ...and it is not the 1D diffusion image.
     expect(vs1d.mse, JSON.stringify(vs1d)).toBeGreaterThan(0);
     save(`k3-frame-scattering-${ms}`, r);
-    console.log(
-      `[k3-frame-scattering] '${ms}': scatter probe ${fmt(r.scatterProbe)}, transmittance ${fmt(r.transmittanceTwin)} / ${r.transmittanceTwin!.marched} voxels, lighting ${fmt(r.lightingTwin)}, density ${fmt(r.densityTwin)}, grid mips ${fmt(r.gridMipTwin)}; vs off ${vsOff.psnr.toFixed(2)} dB (${vsOff.above} px > 8/255), vs 1D ${vs1d.psnr.toFixed(2)} dB; mean ${mean(r)} vs off ${mean(off)} vs 1D ${mean(on)}; first frame ${r.firstFrameMs?.toFixed(0)} ms (1D ${on.firstFrameMs?.toFixed(0)} ms)`,
-    );
   });
 }
 
-test("K3.4 environment + octaves: the environment grid and the octave totals match their twins", async ({ page }) => {
+test("K3.4 environment + octaves: octaves and neural render cleanly with an environment", async ({ page }) => {
   test.setTimeout(500_000);
   // Octaves: no diffusion, so the dominant environment light takes a slot and the rest go to the environment grid
-  const r = await run(page, `${BASE}&env=synthetic&lights=dir-hemi&ms=octaves&twins=1`);
+  const r = await run(page, `${BASE}&env=synthetic&lights=dir-hemi&ms=octaves`);
   const detail = detailOf(r);
   expectClean(r);
-  expectTwin(r.environmentGridTwin, 10_000, detail);
-  expectTwin(r.transmittanceTwin, 10_000, detail);
-  expectTwin(r.lightingTwin, 1_000, detail);
-  expectTwin(r.densityTwin, 5_000, detail, 5e-4);
   // Neural with the environment: every environment light goes to the grid (diffusion); the network lights the sun slot
-  const n = await run(page, `${BASE}&env=synthetic&lights=dir-hemi&ms=neural&twins=1`);
+  const n = await run(page, `${BASE}&env=synthetic&lights=dir-hemi&ms=neural`);
   const nd = detailOf(n);
   expectClean(n);
-  expectTwin(n.environmentGridTwin, 10_000, nd);
-  expectTwin(n.transmittanceTwin, 10_000, nd);
-  expectTwin(n.densityTwin, 5_000, nd, 5e-4);
-  console.log(`[k3-frame-scattering] environment: octaves grid ${fmt(r.environmentGridTwin)}, neural grid ${fmt(n.environmentGridTwin)} transmittance ${fmt(n.transmittanceTwin)}`);
 });
 
 const PHASES: [string, string][] = [
@@ -178,19 +161,15 @@ const PHASES: [string, string][] = [
   ["g-exponent", "phaseGExponent=1"],
 ];
 
-test("K3.4 phase functions ('frame' lighting): Lorenz-Mie, Mie RGB, phaseGExponent and isotropic render, differ from 2HG, and match the twins", async ({ page }) => {
+test("K3.4 phase functions ('frame' lighting): Lorenz-Mie, Mie RGB, phaseGExponent and isotropic render and differ from 2HG", async ({ page }) => {
   test.setTimeout(600_000);
   const dual = await run(page, `${BASE}&ms=1`);
   expect(dual.error).toBeUndefined();
   const lines: string[] = [];
   for (const [name, q] of PHASES) {
-    const r = await run(page, `${BASE}&ms=1&${q}&twins=1`);
+    const r = await run(page, `${BASE}&ms=1&${q}`);
     const detail = detailOf(r);
     expectClean(r);
-    expectTwin(r.transmittanceTwin, 10_000, detail);
-    // The lighting twin takes the per-channel phase (the direct maps at the visible position) since K3.4.
-    expectTwin(r.lightingTwin, 1_000, detail);
-    expectTwin(r.densityTwin, 5_000, detail, 5e-4);
     const d = compareImages(image(r), image(dual));
     expect(d.mse, `${name} vs 2HG ${JSON.stringify(d)}`).toBeGreaterThan(0);
     if (name === "lorenz-mie-rgb" || name === "g-exponent") {
@@ -204,14 +183,14 @@ test("K3.4 phase functions ('frame' lighting): Lorenz-Mie, Mie RGB, phaseGExpone
       lines.push(`${name}: ${tinted} px tinted`);
     }
     save(`k3-frame-scattering-phase-${name}`, r);
-    lines.push(`${name}: vs 2HG ${d.psnr.toFixed(2)} dB, lighting twin ${fmt(r.lightingTwin)}, density ${fmt(r.densityTwin)}`);
+    lines.push(`${name}: vs 2HG ${d.psnr.toFixed(2)} dB`);
   }
   console.log(`[k3-frame-scattering] phases: ${lines.join("; ")}`);
 });
 
-test("K3.4 'volume' lighting: two-sided, octaves and Lorenz-Mie in the inject pass render, differ from 1D, and the integrate twin holds", async ({ page }) => {
+test("K3.4 'volume' lighting: two-sided, octaves and Lorenz-Mie in the inject pass render and differ from 1D", async ({ page }) => {
   test.setTimeout(600_000);
-  const q = "?w=160&h=96&froxels=160x96x24&lighting=volume&twin=1";
+  const q = "?w=160&h=96&froxels=160x96x24&lighting=volume";
   const base = await run(page, `${q}&ms=1`);
   expect(base.error, detailOf(base)).toBeUndefined();
   const lines: string[] = [];
@@ -219,9 +198,6 @@ test("K3.4 'volume' lighting: two-sided, octaves and Lorenz-Mie in the inject pa
     const r = await run(page, `${q}&${extra}`);
     const detail = detailOf(r);
     expectClean(r);
-    expect(r.chunkProbe!.over, detail).toBe(0);
-    expect(r.twin!.over, detail).toBe(0);
-    expect(r.twin!.covered, detail).toBeGreaterThan(50);
     const d = compareImages(image(r), image(base));
     expect(d.mse, `${extra} vs 1D ${JSON.stringify(d)}`).toBeGreaterThan(0);
     save(`k3-frame-scattering-volume-${extra.replace(/[=&]/g, "-")}`, r);
@@ -296,22 +272,3 @@ test("K3.4 white furnace ('frame' lighting, 'directional' environment): radiance
   );
 });
 
-// Provisional timings (D25: SwiftShader on a loaded laptop; never a gate). Opt in: K3_SCATTERING_TIMING=1 (needs
-// fixtures/k3/bunny_cloud.wvdb). His step3-default-dir-isolated scene at 1920x1080, his 512x512x24 froxels / 32
-// sub-steps / grid 64³, per multiple scattering mode: the froxel passes with the grid cached, the extra cost of a grid
-// redraw (shadow density + grid mips + transmittance; the network runs in the transmittance pass) and the first frame's
-// wall time (WGSL / pipeline compile included).
-test("K3.4 timing report (opt-in): grid redraw ms and first-frame ms per multiple scattering mode", async ({ page }) => {
-  test.skip(process.env.K3_SCATTERING_TIMING !== "1", "report-only: K3_SCATTERING_TIMING=1");
-  test.setTimeout(3_600_000);
-  const rows: Record<string, unknown>[] = [];
-  for (const ms of ["1", "neural", "two-sided", "octaves", "0"]) {
-    const r = await run(page, `?scene=step3-default-dir-isolated&w=1920&h=1080&ms=${ms}&timing=1&timingFrames=15&timingWarmup=3`);
-    expect(r.error, detailOf(r)).toBeUndefined();
-    const t = r.timings as { froxelsMs: number | null; integrateMs: number | null; sceneMs: number | null; passes?: { gridRedrawMs: number | null } };
-    rows.push({ ms, firstFrameMs: r.firstFrameMs, froxelsMs: t.froxelsMs, gridRedrawMs: t.passes?.gridRedrawMs ?? null, integrateMs: t.integrateMs, sceneMs: t.sceneMs });
-  }
-  mkdirSync(OURS, { recursive: true });
-  writeFileSync(path.join(OURS, "k3-frame-scattering-timings.json"), JSON.stringify(rows, null, 2));
-  console.log(`[k3-frame-scattering] timings (provisional, D25): ${JSON.stringify(rows, null, 2)}`);
-});

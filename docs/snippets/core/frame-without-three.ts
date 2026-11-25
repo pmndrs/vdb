@@ -1,6 +1,5 @@
 // The samples of docs/site/core/rendering-without-three.mdx: the core frame renderer on raw WebGPU (demo 17's frame
-// loop, reduced). The frame renderer, the sparse source and the receiver WGSL are internal until 0.2.0 (K6.8), so this
-// file imports them by path, as demo 17 does; the regions shown on the page start after the imports.
+// loop, reduced), from the public `@pmndrs/vdb` (0.2.0); the regions shown on the page start after the imports.
 import { VDBGridPool } from '@pmndrs/vdb';
 import {
     vdbCreateFrameRenderer,
@@ -12,7 +11,7 @@ import {
     type VDBFrameInput,
     type VDBFrameRendererGpu,
     type VDBFrameUpdate,
-} from '../../../packages/vdb/src/core/internal.js';
+} from '@pmndrs/vdb';
 
 interface Camera {
     view: number[];

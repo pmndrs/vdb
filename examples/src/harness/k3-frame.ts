@@ -17,14 +17,12 @@
  * Pipeline: scene → linear HalfFloat RenderTarget (as his canvas frame-buffer target: 4x MSAA for his scenes, his
  * `antialias: true`; none for ours, `?msaa=`) → resolve →
  * readback → sRGB OETF on the CPU (three's formula, NoToneMapping) → RGBA8. Jitter and temporal
- * off: deterministic. Also: a probe pass of the TSL chunks against the CPU twins (`vdbFrame*`,
- * tools/frame) and, with `?twin=1`, the integrate pass against `vdbFrameIntegrate` from the read-back
- * froxel atlas (froxel grid = screen size, so each pixel reads one froxel column unfiltered).
+ * off: deterministic. K6.8: every frame is the core frame renderer through `./three` (the TSL passes and their
+ * twin probes are gone; the core kernels' twins are in k6-core).
  *
  * Other query: `?w=&h=`, `?froxels=WxHxD`, `?substeps=`, `?shadowSteps=`, `?ms=0|1`, `?mips=0`,
- * `?occluder=1` (an opaque box in front of the volume centre), `?novolume=1`, `?timing=1` (per-pass
- * GPU ms: scene, froxels (inject), integrate; `?timingFrames=300&timingWarmup=60` for medians; provisional per
- * D25), `?file=`, `?debug=1` (raw chunk-probe values in the result).
+ * `?occluder=1` (an opaque box in front of the volume centre), `?novolume=1`, `?file=`, `?froxelMix=`, `?msEdge=`,
+ * `?msLevels=`, `?ao=1&aoPairs=&aoSteps=`, `?occlusion=0` (core settings).
  *
  * K3.3 ('frame' lighting, R1 §6 Step 3): `?lighting=frame` (his Step 3 scenes set it: `step3-default`,
  * `step3-shadow-cascades-4`, `step3-shadow-grid-high`, `step3-two-bunnies`, `step3-environment-sky-midday`
@@ -32,9 +30,8 @@
  * NanoVDB grid, `?lod=` default 'coarse-pyramid'), `?cascades=`, `?shadowRes=`, `?shadowDistance=`,
  * `?second=1` (his second bunny), `?lights=dir|dir-hemi|none` (his sun; + his hemisphere and ambient
  * lights), `?env=synthetic|<UltraHDR url>` (`?envIntensity=`, `?envMode=directional|spherical-harmonics|outward`),
- * `?dist=` (smoke camera distance / diagonal), `?jitter=1`, `?temporal=1`, `?twins=1` (transmittance,
- * environment grid, density and lighting passes vs their CPU twins from read-back targets; the grid
- * chunk probe always runs), `?redraw=N` (N more frames, then the redraw-skip counters),
+ * `?dist=` (smoke camera distance / diagonal), `?jitter=1`, `?temporal=1`, `?redraw=N` (N more frames, then the
+ * redraw-skip counters),
  * `?temporalCheck=N` (N jittered frames without and with temporal reprojection: convergence).
  *
  * K3.4 (phase functions + multiple scattering, R1 §6 Step 4): `?ms=0|1|two-sided|octaves|neural` (default: the
@@ -43,54 +40,43 @@
  * (the renderer's 'frame' phase and the volume's 'volume' phase), `?extinction=`; his Step 4 scenes (`step4-*`, as
  * is and `*-dir-isolated`); `?furnace=1`: his white furnace (utils/furnace.js): a uniform environment of radiance
  * L = 0.5 as background and lighting, a white (non-absorbing) volume, no scene light; the result's `furnace` has the
- * 9 × 9 centre mean / L (his readout) and volume-pixel statistics of radiance / L. With `?twins=1` also the K3.4
- * chunk probe (`scatterProbe`) and, with 'neural', the grid mip twin.
+ * 9 × 9 centre mean / L (his readout) and volume-pixel statistics of radiance / L.
  *
  * K3.5 (spectral media + presets, R1 §6 Step 5): `?spectral=1` (the renderer's `spectral`), `?medium=<name>` (his GUI
  * 'Medium' field: getFrameMediumProps on the volume — albedo, Ångström exponent, phase — and the renderer's 'frame'
  * phase; turns spectral on), `?angstrom=` (the volume's Ångström exponent); his Step 5 scenes (`step5-*`, as is and
- * isolated). With `?twins=1` and spectral on, the spectral pass twins (transmittance per slot group, environment
- * grid, density, lighting) and the spectral chunk probe (`spectralProbe`); `?twin=1` takes the spectral integrate twin;
- * `?extraLights=N` adds N directional lights (6 shadow slots fill the 4 spectral slot groups).
+ * isolated). `?extraLights=N` adds N directional lights (6 shadow slots fill the 4 spectral slot groups).
  * 'volume' lighting now reads the environment, hemisphere and light-probe terms (the furnace runs on it too).
  * Results: `window.__VDB_K3_FRAME__` (e2e/k3-frame.spec.ts writes PNGs to artifacts/k3/ours/).
  */
 import * as THREE from "three";
-import { NodeMaterial, PMREMGenerator, WebGPURenderer } from "three/webgpu";
-import { VDB_FRAME_ENVIRONMENT, vdbFrameRendererEnvironment } from "../../../packages/vdb/src/core/internal.js";
-import * as TSL from "three/tsl";
+import { PMREMGenerator, WebGPURenderer } from "three/webgpu";
+import {
+  VDB_FRAME_ENVIRONMENT,
+  vdbFrameRendererEnvironment,
+  vdbFrameRendererGrid,
+  type VDBEmissionColor,
+  type VDBFrameMultipleScatteringMode as VDBFrameMultipleScattering,
+  type VDBFramePhaseName as VDBFramePhase,
+  type VDBFrameRedrawStats,
+  type VDBFrameSettings as VDBFrameRendererSettings,
+} from "../../../packages/vdb/src/core/internal.js";
 import { UltraHDRLoader } from "three/examples/jsm/loaders/UltraHDRLoader.js";
-import { VDBFrameEmissionLight, VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbFrameBlackbodyEmission, vdbFrameMedium, vdbFrameChunks, vdbSparseSource, type VDBFrameMultipleScattering, type VDBFramePhase, type VDBFrameRedrawStats, type VDBFrameRendererSettings, type VDBThreeVolumeSource } from "../../../packages/vdb/src/three/internal.js";
+import { VDBFrameEmissionLight, VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbFrameMedium, vdbSparseSource, type VDBThreeVolumeSource } from "../../../packages/vdb/src/three/internal.js";
 import { VDBGridPool } from "@pmndrs/vdb";
-import { densityTwin, environmentGridTwin, furnaceEnvironment, gridMipTwin, lightingTwin, probeGrid, probeScattering, syntheticEnvironment, transmittanceTwin, type TwinStats } from "./k3-frame-lighting.js";
+import { furnaceEnvironment, syntheticEnvironment } from "./k3-frame-lighting.js";
 import {
   wvdbDenseToNvdb,
   readWvdb,
-  vdbFrameDistanceFade,
-  vdbFrameHenyeyGreenstein,
-  vdbFrameIntegrate,
-  vdbFrameNoise,
-  vdbFramePhaseWeight,
-  vdbFrameShadowAbsorption,
-  vdbFrameShadowDepth,
-  vdbFrameShadowStep,
-  vdbFrameShadowTransmittance,
-  vdbFrameShadowedLight,
-  vdbFrameSliceDepth,
-  vdbFrameSrgbBlend,
+  vdbFrameBlackbodyTable,
+  vdbFrameEmissionLutRow,
   vdbSrgbOetf,
   vdbSrgbEotf as vdbSrgbEotfLocal,
   wvdbDenseVolume,
   type VDBColorMatchingFunctions,
-  type VDBFrameFroxelSample,
   type VDBFrameVec3,
 } from "../../../packages/vdb/src/tools/internal.js";
-import { probeSpectral, spectralDensityTwin, spectralEnvironmentGridTwin, spectralIntegrateTwin, spectralLightingTwin, spectralTransmittanceTwin } from "./k3-frame-spectral.js";
 import cloudWvdbUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type N = any;
-const { Fn, float, screenCoordinate, vec2, vec3, vec4, If, select } = TSL as unknown as Record<string, N>;
 
 interface SceneDef {
   name: string;
@@ -311,22 +297,6 @@ const HIS_SCENES: Record<string, SceneDef> = {
   ...STEP6_SCENES,
 };
 
-interface ChunkProbe {
-  count: number;
-  maxAbs: number;
-  maxRel: number;
-  over: number;
-  firstBad?: { row: number; x: number; channel: number; gpu: number; cpu: number };
-}
-
-interface TwinCheck {
-  pixels: number;
-  covered: number;
-  maxAbs: number;
-  over: number;
-  firstBad?: { x: number; y: number; gpu: number[]; cpu: number[] };
-}
-
 interface Result {
   done: boolean;
   error?: string;
@@ -353,8 +323,6 @@ interface Result {
   volumeRect?: number[];
   inPageIdentical?: boolean;
   nonBackground?: number;
-  chunkProbe?: ChunkProbe;
-  twin?: TwinCheck;
   timings?: { provisional: true; note: string; sceneMs: number | null; froxelsMs: number | null; fullMs: number | null; integrateMs: number | null; passes?: Record<string, number | null> };
   warnings: string[];
   uncaptured: string[];
@@ -363,27 +331,18 @@ interface Result {
   sourceKind?: "dense" | "sparse";
   settings?: Record<string, unknown>;
   grid?: { count: number; resolution: number; gridMin: number[][]; gridVoxel: number[][] };
-  gridProbe?: TwinStats;
-  transmittanceTwin?: TwinStats & { marched: number };
-  lightingTwin?: TwinStats & { lit: number };
-  environmentGridTwin?: TwinStats & { marched: number };
-  densityTwin?: TwinStats & { covered: number };
   environment?: { mode: string; count: number; directions: number[][]; colors: number[][]; frames: number } | null;
   redraw?: VDBFrameRedrawStats;
   // K3.4
   firstFrameMs?: number;
-  scatterProbe?: TwinStats;
-  gridMipTwin?: TwinStats & { levels: number };
   furnace?: { radiance: number; centerRatio: number[]; corner: number[]; volumePixels: number; meanRatio: number; minRatio: number; maxRatio: number; meanAbsDeviation: number; p05: number; p95: number; environment: { mode: string; count: number } | null };
   temporalCheck?: { frames: number; diffsOff: number[]; diffsOn: number[]; psnrSingleVsMean: number; psnrTemporalVsMean: number; volumePixels: number };
-  // K6.1
-  backend?: "tsl" | "core";
+  // K6.1 (K6.8: always the core)
+  backend?: "core";
   froxelMix?: "mixture" | "over";
   // K3.5
   spectral?: boolean;
   medium?: string | null;
-  spectralProbe?: TwinStats;
-  spectralGroups?: number;
 }
 
 declare global {
@@ -404,8 +363,6 @@ const FROXELS = (params.get("froxels") ?? (def?.smoke ? "128x128x24" : "512x512x
 const SUBSTEPS = Number(params.get("substeps") ?? 32);
 const SHADOW_STEPS = Number(params.get("shadowSteps") ?? 32);
 const MIPS = params.get("mips") !== "0";
-const TIMING = params.get("timing") === "1";
-const TWIN = params.get("twin") === "1";
 const OCCLUDER = params.get("occluder") === "1";
 const NOVOLUME = params.get("novolume") === "1";
 const MANIFEST = params.get("manifest") ?? "/fixtures/k3-reference/75e7345/manifest.json";
@@ -422,7 +379,6 @@ const FURNACE_RADIANCE = 0.5;
 const ENV =params.get("env") ?? (FURNACE ? "furnace" : def?.environment ? `/fixtures/k3/${def.environment}-HDR.jpg` : null);
 const ENV_INTENSITY = Number(params.get("envIntensity") ?? (ENV === "synthetic" || ENV === "furnace" ? 1.0 : 0.4));
 const ENV_MODE = (params.get("envMode") ?? "directional") as "outward" | "directional" | "spherical-harmonics";
-const TWINS = params.get("twins") === "1";
 const TEMPORAL_CHECK = Number(params.get("temporalCheck") ?? 0);
 const REDRAW_FRAMES = Number(params.get("redraw") ?? 0);
 const LIGHT_SETUP = (params.get("lights") ?? (FURNACE ? "none" : def?.lightSetup) ?? "dir") as SceneDef["lightSetup"] | "dir-hemi";
@@ -655,8 +611,6 @@ function setupStep6(o: { scene: THREE.Scene; renderer: WebGPURenderer; frameRend
       steps: cl?.steps ?? 24,
     });
     if (cl?.color) light.color.fromArray(cl.color);
-    // K6.5: `?backend=core` takes the probes from the core renderer's emission kernels
-    light.backend = frameRenderer.backend;
     scene.add(light);
   }
 }
@@ -688,8 +642,7 @@ async function main(): Promise<void> {
   if (!adapter) throw new Error("WebGPU: no adapter");
   const info = adapter.info;
   result.adapter = [info?.vendor, info?.architecture, info?.description].filter(Boolean).join(" ");
-  const features: GPUFeatureName[] = TIMING && adapter.features.has("timestamp-query") ? ["timestamp-query"] : [];
-  const device = await adapter.requestDevice({ requiredFeatures: features, ...(SOURCE_KIND === "sparse" ? { requiredLimits: VDBGridPool.requiredLimits(adapter) } : {}) });
+  const device = await adapter.requestDevice({ ...(SOURCE_KIND === "sparse" ? { requiredLimits: VDBGridPool.requiredLimits(adapter) } : {}) });
   device.addEventListener("uncapturederror", (e) => result.uncaptured.push((e as GPUUncapturedErrorEvent).error.message));
 
   // --- the dense volume (his bytes) ----------------------------------------------------------
@@ -710,11 +663,12 @@ async function main(): Promise<void> {
   }
   result.explosionFrame = explosionFrame;
   // D33: his 'planck' colours come from the CIE 1931 table; inject it through the hook when the fixture is present
-  let explosionColor: ReturnType<typeof vdbFrameBlackbodyEmission> | undefined;
+  let explosionColor: VDBEmissionColor | undefined;
   if (explosionFrame !== null) {
     const cie = await loadCieTable();
     result.emissionCmf = cie ? "cie-1931-table" : "wyman-2013-fit";
-    explosionColor = vdbFrameBlackbodyEmission("planck", 1.39, cie ? { cmf: cie } : {});
+    // his 'planck' spectrum: the core's built-in table (the Wyman fit), or a LUT row of the CIE table (soot exponent 0)
+    explosionColor = cie ? { lut: vdbFrameEmissionLutRow(0, vdbFrameBlackbodyTable(cie)) } : { spectrum: "planck", exponent: 1.39 };
     if (!cie && result.parityExpected) {
       result.parityExpected = false;
       result.parityNote = STEP6_WHY_NO_CIE;
@@ -736,29 +690,27 @@ async function main(): Promise<void> {
   };
 
   // --- renderer and scene -------------------------------------------------------------------
-  const renderer = new WebGPURenderer({ device, trackTimestamp: TIMING && features.length > 0 });
+  const renderer = new WebGPURenderer({ device });
   await renderer.init();
   // NOTE The froxel grid is capped by the drawing buffer size (layout.ts getFroxelSize), as on his canvas.
   renderer.setPixelRatio(1);
   renderer.setSize(W, H, false);
 
   const frameRenderer = new VDBFrameRenderer();
-  // K6.1: `?backend=core` renders through the core frame renderer (internal A/B); `?froxelMix=mixture|over`
-  frameRenderer.backend = params.get("backend") === "core" ? "core" : "tsl";
-  frameRenderer.froxelMix = params.get("froxelMix") === "over" ? "over" : "mixture";
-  // K6.3 `?msEdge=zero|clamp`, `?msLevels=`: the core's 'multi-scale' settings (with `?ms=multi-scale`, backend core)
-  if (params.has("msEdge")) frameRenderer.coreSettings.multiScaleEdge = params.get("msEdge") === "clamp" ? "clamp" : "zero";
-  if (params.has("msLevels")) frameRenderer.coreSettings.multiScaleLevels = Number(params.get("msLevels"));
-  // K6.3a `?msSigma=paper`: the σ = 2^k levels (a core setting `./three`'s coreSettings type does not list; assigned through)
-  if (params.has("msSigma")) Object.assign(frameRenderer.coreSettings, { multiScaleSigma: params.get("msSigma") === "paper" ? "paper" : "his" });
-  // K6.Q1 `?ao=1`, `?aoPairs=`, `?aoSteps=`: the core's shadowed ambient (backend core)
-  if (params.has("ao")) frameRenderer.coreSettings.ambientOcclusion = params.get("ao") === "1";
-  if (params.has("aoPairs")) frameRenderer.coreSettings.ambientOcclusionPairs = Number(params.get("aoPairs"));
-  if (params.has("aoSteps")) frameRenderer.coreSettings.ambientOcclusionSteps = Number(params.get("aoSteps"));
-  // K6.3 `?occlusion=0`: no mesh → volume shadows in the core (K6.5b; his renderer has none) for core vs TSL A/Bs
-  if (params.get("occlusion") === "0") frameRenderer.occlusion = false;
-  result.backend = frameRenderer.backend;
-  result.froxelMix = frameRenderer.froxelMix;
+  // K6.1 `?froxelMix=mixture|over`; K6.3 `?msEdge=zero|clamp`, `?msLevels=` ('multi-scale'); K6.Q1 `?ao=1`, `?aoPairs=`,
+  // `?aoSteps=` (shadowed ambient); K6.5b `?occlusion=0` (no mesh → volume shadows: his renderer has none)
+  const s = frameRenderer.settings;
+  s.froxelMix = params.get("froxelMix") === "over" ? "over" : "mixture";
+  if (params.has("msEdge")) Object.assign(s, { multiScaleEdge: params.get("msEdge") === "clamp" ? "clamp" : "zero" });
+  if (params.has("msLevels")) s.multiScaleLevels = Number(params.get("msLevels"));
+  // K6.3a `?msSigma=paper`: the σ = 2^k levels (an internal core setting, VDBFrameInternalSettings)
+  if (params.has("msSigma")) Object.assign(s, { multiScaleSigma: params.get("msSigma") === "paper" ? "paper" : "his" });
+  if (params.has("ao")) s.ambientOcclusion = params.get("ao") === "1";
+  if (params.has("aoPairs")) s.ambientOcclusionPairs = Number(params.get("aoPairs"));
+  if (params.has("aoSteps")) s.ambientOcclusionSteps = Number(params.get("aoSteps"));
+  if (params.get("occlusion") === "0") s.occlusion = false;
+  result.backend = "core";
+  result.froxelMix = s.froxelMix;
   Object.assign(frameRenderer.settings, {
     width: FROXELS[0],
     height: FROXELS[1],
@@ -858,7 +810,7 @@ async function main(): Promise<void> {
     shadowSteps: SHADOW_STEPS,
     mipmaps: MIPS,
     // K3.6 explosion (frame.js L25–47, his 'planck' values): base colour #555555, 0–3000 K, emissive intensity 15
-    ...(explosionFrame !== null ? { baseColor: "#555555", temperatureRange: [0, 3000] as [number, number], emissiveIntensity: 15, emissionColor: explosionColor } : {}),
+    ...(explosionFrame !== null ? { baseColor: "#555555", temperatureRange: [0, 3000] as [number, number], emissiveIntensity: 15, ...(explosionColor ? { emissionColor: explosionColor } : {}) } : {}),
   });
 
   const scene = new THREE.Scene();
@@ -1051,7 +1003,7 @@ async function main(): Promise<void> {
 
   // K6.2b: the core reduces the environment on the GPU (no readback): its lights exist in the first frame; read the
   // environment buffer once for the report
-  if (ENV && frameRenderer.backend === "core") {
+  if (ENV) {
     await frame();
     const core = frameRenderer.core!;
     const env = vdbFrameRendererEnvironment(core);
@@ -1071,19 +1023,6 @@ async function main(): Promise<void> {
     const count = u32[0]!;
     result.environment = { mode: ["outward", "directional", "spherical-harmonics"][u32[1]!] ?? "outward", count, directions: Array.from({ length: count }, (_, i) => at("direction", i)), colors: Array.from({ length: count }, (_, i) => at("color", i)), frames: 1 };
   }
-  // K3.5: 'volume' lighting reads the environment lights too
-  if (ENV && ENV_MODE !== "outward" && frameRenderer.backend !== "core") {
-    // K3.4 furnace / any environment: wait for the 'directional' lights (async readback).
-    let tries = 0;
-    while (!frameRenderer.environment && tries++ < 60) {
-      await frame();
-      await frameRenderer.environmentLights.settled;
-    }
-    const e = frameRenderer.environment as { mode: string; count: number; directions: number[][]; colors: number[][] } | null;
-    result.environment = e ? { mode: e.mode, count: e.count, directions: e.directions.slice(0, e.count).map((d) => [...d]), colors: e.colors.slice(0, e.count).map((c) => [...c]), frames: tries } : null;
-    if (!e) throw new Error("the environment lights did not arrive within 60 frames");
-  }
-
   // K3.6: the volume shadow filter goes on the lights in the first frame (the proxy's onBeforeRender, after the floor
   // drew), the receivers build with it in the next, whose first receiver draws the maps; his captures run 6+ frames.
   // shadow-only: the volume proxies hidden for the captured frames (the volumes still cast).
@@ -1117,26 +1056,6 @@ async function main(): Promise<void> {
   );
   if (!def.parityExpected) log(`parity with his capture not expected: ${def.why}`, "warn");
 
-  // --- integrate pass vs its CPU twin (froxel grid = screen: one unfiltered froxel column per pixel) ---
-  if (TWIN) {
-    const bg = BACKGROUND.clone();
-    result.twin = SPECTRAL ? await spectralIntegrateTwin(renderer, frameRenderer, firstLinear, W, H, [bg.r, bg.g, bg.b]) : await integrateTwin(renderer, frameRenderer, firstLinear);
-  }
-  if (SPECTRAL || params.get("spectralProbe") === "1") {
-    result.spectralProbe = await probeSpectral(renderer);
-    log(`spectral chunk probe: ${result.spectralProbe.compared} values, max |d| ${result.spectralProbe.maxAbs.toExponential(2)} (max rel ${result.spectralProbe.maxRel.toExponential(2)}), ${result.spectralProbe.over} over`, result.spectralProbe.over === 0 ? "ok" : "fail");
-  }
-
-  // --- TSL chunks vs the CPU twins --------------------------------------------------------------
-  result.chunkProbe = await probeChunks(renderer);
-  log(
-    `chunk probe: ${result.chunkProbe.count} values, max |GPU - CPU twin| ${result.chunkProbe.maxAbs.toExponential(2)} (max rel ${result.chunkProbe.maxRel.toExponential(2)}), ${result.chunkProbe.over} over`,
-    result.chunkProbe.over === 0 ? "ok" : "fail",
-  );
-  if (result.twin) {
-    log(`integrate twin: ${result.twin.pixels} pixels (${result.twin.covered} with volume), max |GPU - CPU| ${result.twin.maxAbs.toExponential(2)}, ${result.twin.over} over`, result.twin.over === 0 ? "ok" : "fail");
-  }
-
   // --- K3.4: the white furnace (his utils/furnace.js) ------------------------------------------------
   if (FURNACE) {
     // The furnace frame (background L) and the same frame over black: per pixel (sRGB blending, the integrate
@@ -1165,7 +1084,7 @@ async function main(): Promise<void> {
     };
     const center = meanOf(Math.floor(W / 2 - 4.5), Math.floor(H / 2 - 4.5), 9);
     const mean = ratios.reduce((a, b) => a + b, 0) / Math.max(1, ratios.length);
-    const env = frameRenderer.environment as { mode: string; count: number } | null;
+    const env = result.environment ?? null;
     result.furnace = {
       radiance: L,
       centerRatio: center.map((v) => v / L),
@@ -1182,54 +1101,11 @@ async function main(): Promise<void> {
     log(`furnace (ms ${String(frameRenderer.settings.multipleScattering)}): ${JSON.stringify(result.furnace)}`);
   }
 
-  // --- K3.3 'frame' lighting: grid layout, grid chunks, pass twins, redraw skips, temporal convergence ---------
+  // --- K3.3 'frame' lighting: the grid layout and the redraw skips ---------
   if (LIGHTING === "frame") {
-    const g = frameRenderer.gridUniforms;
-    const count = g.frameGridCount.value as number;
-    result.grid = {
-      count,
-      resolution: g.frameGridResolution.value as number,
-      gridMin: (g.frameGridMin.array as THREE.Vector3[]).slice(0, count).map((v) => v.toArray()),
-      gridVoxel: (g.frameGridVoxel.array as THREE.Vector3[]).slice(0, count).map((v) => v.toArray()),
-    };
-    // The last frame drew the passes the twins read (identical frames; the targets hold the last draw).
-    if (TWINS && SPECTRAL) {
-      const t = await spectralTransmittanceTwin(renderer, frameRenderer);
-      result.spectralGroups = t.groups;
-      result.transmittanceTwin = t;
-      result.lightingTwin = await spectralLightingTwin(renderer, frameRenderer);
-      if (SOURCE_KIND === "dense" && volumes.length === 1) result.densityTwin = await spectralDensityTwin(renderer, frameRenderer, volume, dense);
-      if (frameRenderer.environmentGridMaterial.frameLightCount.value > 0 && frameRenderer.redrawStats.environmentGrid.drawn > 0) result.environmentGridTwin = await spectralEnvironmentGridTwin(renderer, frameRenderer);
-      log(`spectral twins (${t.groups} groups): transmittance ${JSON.stringify(result.transmittanceTwin)}; lighting ${JSON.stringify(result.lightingTwin)}; density ${JSON.stringify(result.densityTwin ?? null)}; environment grid ${JSON.stringify(result.environmentGridTwin ?? null)}`);
-    } else if (TWINS) {
-      result.transmittanceTwin = await transmittanceTwin(renderer, frameRenderer);
-      result.lightingTwin = await lightingTwin(renderer, frameRenderer);
-      if (SOURCE_KIND === "dense" && volumes.length === 1) {
-        result.densityTwin = await densityTwin(renderer, frameRenderer, volume, dense);
-        log(`density twin: ${result.densityTwin.compared} values (${result.densityTwin.covered} froxels), max |d| ${result.densityTwin.maxAbs.toExponential(2)}, ${result.densityTwin.over} over`, result.densityTwin.over === 0 ? "ok" : "fail");
-      }
-      if (frameRenderer.environmentGridMaterial.frameLightCount.value > 0 && frameRenderer.redrawStats.environmentGrid.drawn > 0) {
-        result.environmentGridTwin = await environmentGridTwin(renderer, frameRenderer);
-        log(`environment grid twin: ${result.environmentGridTwin.compared} values (${result.environmentGridTwin.marched} marched), max |d| ${result.environmentGridTwin.maxAbs.toExponential(2)}, ${result.environmentGridTwin.over} over`, result.environmentGridTwin.over === 0 ? "ok" : "fail");
-      }
-      log(
-        `transmittance twin: ${result.transmittanceTwin.compared} values (${result.transmittanceTwin.marched} marched voxels), max |d| ${result.transmittanceTwin.maxAbs.toExponential(2)}, ${result.transmittanceTwin.over} over; lighting twin: ${result.lightingTwin.compared} values (${result.lightingTwin.lit} froxels), max |d| ${result.lightingTwin.maxAbs.toExponential(2)}, ${result.lightingTwin.over} over`,
-        result.transmittanceTwin.over + result.lightingTwin.over === 0 ? "ok" : "fail",
-      );
-    }
-    if (TWINS) {
-      // K3.4: the scattering chunks; the neural input mips
-      result.scatterProbe = await probeScattering(renderer);
-      log(`scattering probe: ${result.scatterProbe.compared} values, max |d| ${result.scatterProbe.maxAbs.toExponential(2)} (max rel ${result.scatterProbe.maxRel.toExponential(2)}), ${result.scatterProbe.over} over`, result.scatterProbe.over === 0 ? "ok" : "fail");
-      if (frameRenderer.transmittanceMaterial.neural) {
-        result.gridMipTwin = await gridMipTwin(renderer, frameRenderer);
-        log(`grid mip twin: ${result.gridMipTwin.compared} values over ${result.gridMipTwin.levels} levels, max |d| ${result.gridMipTwin.maxAbs.toExponential(2)}, ${result.gridMipTwin.over} over`, result.gridMipTwin.over === 0 ? "ok" : "fail");
-      }
-    }
-    if (SPECTRAL) result.spectralGroups = Math.ceil(Math.max(0, (frameRenderer.transmittanceMaterial.frameShadowLightCount.value as number) - 1) / 2) + 1;
-    result.gridProbe = await probeGrid(renderer, frameRenderer);
-    log(`grid chunk probe: ${result.gridProbe.compared} values, max |d| ${result.gridProbe.maxAbs.toExponential(2)}, ${result.gridProbe.over} over`, result.gridProbe.over === 0 ? "ok" : "fail");
-
+    // no volume in the scene (`?novolume=1`): no core renderer, no grid
+    const g = frameRenderer.core ? vdbFrameRendererGrid(frameRenderer.core) : null;
+    if (g) result.grid = { count: g.count, resolution: frameRenderer.settings.shadowResolution, gridMin: g.gridMin.slice(0, g.count).map((v) => [...v]), gridVoxel: g.gridVoxel.slice(0, g.count).map((v) => [...v]) };
     for (let f = 0; f < REDRAW_FRAMES; f++) await frame();
     result.redraw = JSON.parse(JSON.stringify(frameRenderer.redrawStats)) as VDBFrameRedrawStats;
     log(`redraws (drawn/skipped): ${JSON.stringify(result.redraw)}`);
@@ -1245,7 +1121,6 @@ async function main(): Promise<void> {
     const run = async (temporal: boolean): Promise<Float32Array[]> => {
       frameRenderer.settings.jitter = true;
       frameRenderer.settings.temporal = temporal;
-      frameRenderer.jitterIndex = 0;
       const out: Float32Array[] = [];
       for (let k = 0; k < TEMPORAL_CHECK; k++) out.push(await frame());
       return out;
@@ -1282,253 +1157,10 @@ async function main(): Promise<void> {
     log(`temporal: ${JSON.stringify(result.temporalCheck)}`);
   }
 
-  // --- per-pass timing (D25: provisional) ---------------------------------------------------------
-  if (TIMING && features.length > 0) {
-    const resolve = async () => {
-      const ms = await renderer.resolveTimestampsAsync("render");
-      return typeof ms === "number" ? ms : null;
-    };
-    const median = (v: (number | null)[]) => {
-      const x = v.filter((n): n is number => n !== null).sort((a, b) => a - b);
-      return x.length ? x[Math.floor(x.length / 2)]! : null;
-    };
-    const frames = Number(params.get("timingFrames") ?? 1);
-    const warmup = Number(params.get("timingWarmup") ?? 0);
-    const samples = { scene: [] as (number | null)[], froxels: [] as (number | null)[], integrate: [] as (number | null)[], full: [] as (number | null)[], grid: [] as (number | null)[] };
-    await resolve();
-    for (let f = 0; f < warmup + frames; f++) {
-      // Scene alone (volume hidden); the froxel (inject) passes alone; scene + integrate over the held atlas; the full frame.
-      volume.visible = false;
-      renderer.setRenderTarget(rt);
-      renderer.render(scene, camera);
-      const sceneMs = await resolve();
-      volume.visible = true;
-      frameRenderer.renderFroxels(renderer, scene, camera);
-      const froxelsMs = await resolve();
-      frameRenderer.holdFroxels = true;
-      renderer.setRenderTarget(rt);
-      renderer.render(scene, camera);
-      frameRenderer.holdFroxels = false;
-      const heldMs = await resolve();
-      renderer.render(scene, camera);
-      renderer.setRenderTarget(null);
-      const fullMs = await resolve();
-      // K3.3 'frame' lighting: the froxel passes again with the grid passes forced (signatures reset): the cost of a
-      // redraw of the shadow density, transmittance and environment grid.
-      let gridMs: number | null = null;
-      if (LIGHTING === "frame") {
-        frameRenderer.shadowDrawnVersion = -1;
-        frameRenderer.transmittanceSignature = [];
-        frameRenderer.gridMipSignature = [];
-        frameRenderer.environmentGridSignature = [];
-        frameRenderer.renderFroxels(renderer, scene, camera);
-        const redrawMs = await resolve();
-        gridMs = redrawMs !== null && froxelsMs !== null ? redrawMs - froxelsMs : null;
-      }
-      if (f < warmup) continue;
-      samples.scene.push(sceneMs);
-      samples.froxels.push(froxelsMs);
-      samples.integrate.push(heldMs !== null && sceneMs !== null ? heldMs - sceneMs : null);
-      samples.full.push(fullMs);
-      samples.grid.push(gridMs);
-    }
-    result.timings = {
-      provisional: true,
-      note: `D25: not from a quiet machine; median of ${frames} frame(s) after ${warmup} warm-up; never gate on it. full is three's figure for the whole render (nested froxel passes may not be included). 'frame' lighting: froxels is a frame with the grid passes skipped (static scene), gridRedraw the extra cost when they are drawn`,
-      sceneMs: median(samples.scene),
-      froxelsMs: median(samples.froxels),
-      integrateMs: median(samples.integrate),
-      fullMs: median(samples.full),
-      ...(LIGHTING === "frame" ? { passes: { gridRedrawMs: median(samples.grid) } } : {}),
-    };
-    log(`timings (provisional, D25): ${JSON.stringify(result.timings)}`, "warn");
-  } else {
-    result.timings = { provisional: true, note: "timing off (?timing=1 needs timestamp-query); D25", sceneMs: null, froxelsMs: null, fullMs: null, integrateMs: null };
-  }
+  // K6.8: per-pass timing moved to k3-timing (`passHook` timestamp writes); D25
+  result.timings = { provisional: true, note: "timing: examples/src/harness/k3-timing.html (D25)", sceneMs: null, froxelsMs: null, fullMs: null, integrateMs: null };
   for (const w of result.warnings) log(`warning: ${w}`, "warn");
   source.dispose();
-}
-
-/**
- * The integrate pass against `vdbFrameIntegrate` + `vdbFrameSrgbBlend`. Needs froxels = screen size
- * (each pixel reads its own froxel column at texel centres) and no occluder (empty depth).
- */
-async function integrateTwin(renderer: WebGPURenderer, frameRenderer: VDBFrameRenderer, linear: Float32Array): Promise<TwinCheck> {
-  const atlasTarget = frameRenderer.atlasTarget!;
-  const aw = atlasTarget.width;
-  const ah = atlasTarget.height;
-  const atlas = await readHalf(renderer, atlasTarget, aw, ah);
-  const fu = frameRenderer.froxelUniforms;
-  const grid = [fu.froxelGrid.value.x, fu.froxelGrid.value.y, fu.froxelGrid.value.z];
-  if (grid[0] !== W || grid[1] !== H) throw new Error(`?twin=1 needs ?froxels=${W}x${H}xD (got ${grid.join("x")})`);
-  const columns = fu.froxelColumns.value as number;
-  const range: [number, number] = [fu.froxelRange.value.x, fu.froxelRange.value.y];
-  const sr = frameRenderer.integrateMaterial.frameSliceRange.value;
-  const bg = BACKGROUND.clone();
-  const tol = 4e-3;
-  let maxAbs = 0;
-  let over = 0;
-  let covered = 0;
-  let firstBad: TwinCheck["firstBad"];
-  const step = 3;
-  let pixels = 0;
-  for (let y = 3; y < H; y += step) {
-    for (let x = 3; x < W; x += step) {
-      pixels++;
-      // Screen pixel (x, y top-left) → bottom-left froxel column (x, H - 1 - y).
-      const fy = H - 1 - y;
-      const froxels: VDBFrameFroxelSample[] = [];
-      for (let s = sr.x; s < sr.y; s++) {
-        const tx = (s % columns) * grid[0]! + x;
-        const ty = Math.floor(s / columns) * grid[1]! + fy;
-        // Atlas rows are bottom-left in the shaders' convention; the readback is top row first.
-        const row = ah - 1 - ty;
-        const o = (row * aw + tx) * 4;
-        froxels.push([atlas[o]!, atlas[o + 1]!, atlas[o + 2]!, atlas[o + 3]!]);
-      }
-      const r = vdbFrameIntegrate(froxels, [sr.x, sr.y], range, grid[2]!, 1e20);
-      const o = (y * W + x) * 4;
-      const gpu = [linear[o]!, linear[o + 1]!, linear[o + 2]!];
-      const cpu = r ? vdbFrameSrgbBlend([bg.r, bg.g, bg.b], r.radiance, r.alpha) : [bg.r, bg.g, bg.b];
-      if (r) covered++;
-      for (let c = 0; c < 3; c++) {
-        // Half-float output: relative tolerance on top of the absolute one.
-        const d = Math.abs(gpu[c]! - cpu[c]!);
-        maxAbs = Math.max(maxAbs, d);
-        if (d > tol + cpu[c]! * 2e-3) {
-          over++;
-          firstBad ??= { x, y, gpu, cpu };
-        }
-      }
-    }
-  }
-  return { pixels, covered, maxAbs, over, ...(firstBad ? { firstBad } : {}) };
-}
-
-/** Evaluates the TSL chunks in a fragment pass (RGBA32F, one value per channel) and compares with the CPU twins. */
-async function probeChunks(renderer: WebGPURenderer): Promise<ChunkProbe> {
-  const PW = 64;
-  const PH = 4;
-  const C = vdbFrameChunks;
-  const froxel = C.createFroxelUniforms();
-  const range: [number, number] = [0.5, 300.0];
-  froxel.froxelRange.value.set(range[0], range[1]);
-  froxel.frameFadeRadius.value = 50.0;
-  const jitterOn = 0.3;
-  const albedo: [number, number, number] = [0.9, 0.8, 0.7];
-  const ms = 0.42;
-  const phase: [number, number, number, number] = [0.8, -0.3, 0.2, 0];
-
-  const material = new NodeMaterial();
-  material.fragmentNode = Fn(() => {
-    const px = screenCoordinate.x.floor();
-    const row = screenCoordinate.y.floor().toVar();
-    const a = px.add(0.5).div(PW).toVar();
-    const out = vec4(0.0).toVar();
-    const cosT = a.mul(2.0).sub(1.0).toVar();
-    const sinT = float(1.0).sub(cosT.mul(cosT)).max(0.0).sqrt();
-    const ray = vec3(0.0, 0.0, 1.0);
-    const light = vec3(sinT, 0.0, cosT);
-    const phaseU = vec4(...phase);
-    const e = a.mul(4.0).toVar();
-    const alb = vec3(...albedo);
-    const msU = float(ms);
-    If(row.lessThan(0.5), () => {
-      out.assign(vec4(C.frameHenyeyGreenstein(cosT, float(0.8)), C.frameHenyeyGreenstein(cosT, float(-0.3)), C.frameHenyeyGreenstein(cosT, float(0.0)), C.framePhaseWeight(phaseU, ray, light)));
-    })
-      .ElseIf(row.lessThan(1.5), () => {
-        out.assign(
-          vec4(
-            C.frameSliceDepth(froxel, a),
-            C.frameNoise(float(-1.0), vec2(px.mul(7.0).add(3.0), row.mul(13.0).add(5.0))),
-            C.frameNoise(float(jitterOn), vec2(px.mul(7.0).add(3.0), row.mul(13.0).add(5.0))),
-            C.frameDistanceFade(froxel, vec3(0.0, 0.0, a.mul(-60.0))),
-          ),
-        );
-      })
-      .ElseIf(row.lessThan(2.5), () => {
-        const absorption = C.frameShadowAbsorption(e, alb).toVar();
-        const s = C.frameShadowStep(e, absorption, msU).toVar();
-        const depths = s.mul(3.0).toVar();
-        out.assign(vec4(s.y, C.frameShadowDepth(depths, msU), C.frameShadowTransmittance(depths, msU, vec4(0.0)).y, absorption));
-      })
-      .Else(() => {
-        const shadow = vec2(e.negate().exp(), e.mul(-0.5).exp()).toVar();
-        const s = C.frameShadowStep(e, C.frameShadowAbsorption(e, alb), float(0.0)).mul(2.0).toVar();
-        out.assign(
-          vec4(
-            C.frameShadowedLight(phaseU, vec3(1.0, 1.0, 0.0), vec4(0.0), ray, light, shadow).x,
-            C.frameShadowDepth(s, float(0.0)),
-            C.frameShadowTransmittance(s, float(0.0), vec4(0.0)).x,
-            select(a.greaterThan(0.5), C.framePhaseColor(phaseU, vec3(1.0, 1.0, 0.0), ray, light).y, float(0.0)),
-          ),
-        );
-      });
-    return out;
-  })();
-  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
-  material.vertexNode = vec4(TSL.positionGeometry.xy, 0.0, 1.0);
-  quad.frustumCulled = false;
-  const probeScene = new THREE.Scene();
-  probeScene.add(quad);
-  const target = new THREE.RenderTarget(PW, PH, { type: THREE.FloatType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
-  renderer.setRenderTarget(target);
-  renderer.render(probeScene, new THREE.OrthographicCamera());
-  renderer.setRenderTarget(null);
-  const raw = (await renderer.readRenderTargetPixelsAsync(target, 0, 0, PW, PH)) as unknown as Float32Array;
-  // Readback rows are top first, as screenCoordinate rows: out row 0 = probe row 0.
-  const gpu = tightRows(raw, PW, PH, 4);
-
-  let maxAbs = 0;
-  let maxRel = 0;
-  let over = 0;
-  let count = 0;
-  let firstBad: ChunkProbe["firstBad"];
-  for (let row = 0; row < PH; row++) {
-    for (let x = 0; x < PW; x++) {
-      const a = (x + 0.5) / PW;
-      const cosT = a * 2 - 1;
-      const sinT = Math.sqrt(Math.max(0, 1 - cosT * cosT));
-      const ray: [number, number, number] = [0, 0, 1];
-      const light: [number, number, number] = [sinT, 0, cosT];
-      const e = a * 4;
-      const pixel: [number, number] = [x * 7 + 3, row * 13 + 5];
-      let cpu: number[];
-      if (row === 0) {
-        cpu = [vdbFrameHenyeyGreenstein(cosT, 0.8), vdbFrameHenyeyGreenstein(cosT, -0.3), vdbFrameHenyeyGreenstein(cosT, 0), vdbFramePhaseWeight(phase, ray, light)];
-      } else if (row === 1) {
-        cpu = [vdbFrameSliceDepth(range, a), vdbFrameNoise(-1, pixel), vdbFrameNoise(jitterOn, pixel), vdbFrameDistanceFade(50, [0, 0, -a * 60])];
-      } else if (row === 2) {
-        const absorption = vdbFrameShadowAbsorption(e, albedo);
-        const s = vdbFrameShadowStep(e, absorption, ms);
-        const depths: [number, number, number] = [s[0] * 3, s[1] * 3, s[2] * 3];
-        cpu = [s[1], vdbFrameShadowDepth(depths, ms), vdbFrameShadowTransmittance(depths, ms)[1], absorption];
-      } else {
-        const shadow: [number, number] = [Math.exp(-e), Math.exp(-e * 0.5)];
-        const s0 = vdbFrameShadowStep(e, vdbFrameShadowAbsorption(e, albedo), 0);
-        const s: [number, number, number] = [s0[0] * 2, s0[1] * 2, s0[2] * 2];
-        cpu = [vdbFrameShadowedLight(phase, ray, light, shadow), vdbFrameShadowDepth(s, 0), vdbFrameShadowTransmittance(s, 0)[0], a > 0.5 ? vdbFramePhaseWeight(phase, ray, light) : 0];
-      }
-      for (let c = 0; c < 4; c++) {
-        const g = gpu[(row * PW + x) * 4 + c]!;
-        const d = Math.abs(g - cpu[c]!);
-        const rel = d / Math.max(1, Math.abs(cpu[c]!));
-        count++;
-        maxAbs = Math.max(maxAbs, d);
-        maxRel = Math.max(maxRel, rel);
-        // f32 vs f64; IGN noise amplifies the fract() argument error (×52.98), so 2e-3 there.
-        const tol = row === 1 && c === 2 ? 2e-3 : 2e-4;
-        if (rel > tol) {
-          over++;
-          firstBad ??= { row, x, channel: c, gpu: g, cpu: cpu[c]! };
-        }
-      }
-    }
-  }
-  target.dispose();
-  material.dispose();
-  if (params.get("debug") === "1") (result as unknown as Record<string, unknown>).probeGpu = Array.from(gpu);
-  return { count, maxAbs, maxRel, over, ...(firstBad ? { firstBad } : {}) };
 }
 
 main()

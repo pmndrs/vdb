@@ -1,5 +1,5 @@
 // #region frame-lighting
-import { vdbFrameLights } from '@pmndrs/vdb/three';
+import { VDB_FRAME_LIGHT_BITS } from '@pmndrs/vdb/three';
 // #endregion
 
 import type { VDBFrameVolume } from '@pmndrs/vdb/three';
@@ -19,6 +19,6 @@ export function frameLighting(volume: VDBFrameVolume): void {
     settings.environmentShOrder = 2;
 
     // Which of the scene's light types this volume uses.
-    volume.lights = vdbFrameLights.useDirectionalLights | vdbFrameLights.usePointLights | vdbFrameLights.useEnvironment;
+    volume.lights = VDB_FRAME_LIGHT_BITS.directional | VDB_FRAME_LIGHT_BITS.point | VDB_FRAME_LIGHT_BITS.environment;
     // #endregion
 }

@@ -1,10 +1,10 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { Camera, Matrix4, PerspectiveCamera, Quaternion, Vector3, Vector4, WebGPUCoordinateSystem } from "three";
 import { describe, expect, it } from "vitest";
 import { vdbDenseSource } from "../../../src/core/source/dense.js";
 import {
   ENV_GROUP0_LAYOUT,
   GROUP0_LAYOUT,
+  type VDBFrameInternalSettings,
   VDB_FRAME_GROUP,
   VDB_FRAME_LIGHTS,
   VDB_FRAME_UNIFORMS,
@@ -36,8 +36,6 @@ import {
   type VDBRenderSpec,
 } from "../../../src/core/frame/index.js";
 import { VDBFrameRenderer } from "../../../src/three/frame/renderer.js";
-import { getFroxelArea, getFroxelRect, getFroxelSliceRange } from "../../../src/three/frame/view.js";
-import { getFroxelSize } from "../../../src/three/frame/layout.js";
 import {
   vdbFrameClipCamera,
   vdbFrameClipVolume,
@@ -249,79 +247,52 @@ describe("K6.1 retire queue", () => {
 });
 
 describe("K6.1 settings", () => {
-  it("the core defaults equal ./three's VDBFrameRenderer settings, field by field, plus froxelMix, occlusion, the K6.3 / K6.3a multi-scale and the K6.Q1 ambient-occlusion fields", () => {
-    const core = vdbFrameDefaultSettings();
+  it("./three's VDBFrameRenderer settings are the core defaults (K6.8: one declaration), with froxelMix, occlusion, the K6.3 / K6.3a multi-scale (internal) and the K6.Q1 ambient-occlusion fields", () => {
+    const core = vdbFrameDefaultSettings() as VDBFrameInternalSettings;
     const three = new VDBFrameRenderer().settings as unknown as Record<string, unknown>;
-    const { froxelMix, occlusion, multiScaleLevels, multiScaleEdge, multiScaleSigma, ambientOcclusion, ambientOcclusionPairs, ambientOcclusionSteps, ...shared } = core;
+    expect(three).toEqual(core);
+    const { froxelMix, occlusion, multiScaleLevels, multiScaleEdge, multiScaleSigma, ambientOcclusion, ambientOcclusionPairs, ambientOcclusionSteps, multipleScattering } = core;
+    // the defaults the owner decides (K6.8 keeps them: a one-line change here and in settings.ts)
+    expect(multipleScattering).toBe("neural");
     expect([multiScaleLevels, multiScaleEdge, multiScaleSigma]).toEqual([6, "zero", "his"]);
     // K6.Q1: the shadowed ambient is off by default (his unshadowed ambient), 4 pairs, the volume's shadow steps
     expect([ambientOcclusion, ambientOcclusionPairs, ambientOcclusionSteps]).toEqual([false, 4, 0]);
     expect(froxelMix).toBe("mixture");
     // K6.5b: host occluder maps shadow the volumes by default (core only)
     expect(occlusion).toBe(true);
-    expect(shared).toEqual(three);
   });
 });
 
-describe("K6.1 tools/frame/view.ts equals three/frame/view.ts", () => {
-  let seed = 9;
-  const r = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
-  it("clip depths, rects, slices, areas and froxel sizes on random cameras and boxes", () => {
-    let compared = 0;
-    for (let trial = 0; trial < 200; trial++) {
-      const camera = new PerspectiveCamera(30 + r() * 60, 0.5 + r() * 1.5, 0.05 + r(), 50 + r() * 200);
-      camera.coordinateSystem = WebGPUCoordinateSystem;
-      camera.position.set(r() * 10 - 5, r() * 10 - 5, r() * 10 - 5);
-      camera.lookAt(r() - 0.5, r() - 0.5, r() - 0.5);
-      camera.updateMatrixWorld(true);
-      camera.updateProjectionMatrix();
-      const box = new Matrix4().compose(
-        new Vector3(r() * 4 - 2, r() * 4 - 2, r() * 4 - 2),
-        new Quaternion(r() - 0.5, r() - 0.5, r() - 0.5, 1).normalize(),
-        new Vector3(0.5 + r() * 3, 0.5 + r() * 3, 0.5 + r() * 3),
-      );
-      const clip = vdbFrameClipCamera(camera.matrixWorldInverse.elements, camera.projectionMatrix.elements, { coordinateSystem: "webgpu" });
-      const ours = vdbFrameClipVolume(clip, box.elements);
-      // three: the collector's maths on one record
-      const localToView = new Matrix4().multiplyMatrices(camera.matrixWorldInverse, box);
-      const W = 64 + Math.floor(r() * 400);
-      const H = 64 + Math.floor(r() * 400);
-      if (!ours) continue;
-      const theirsRect = new Vector4();
-      const okThree = getFroxelRect({ localToView }, camera as Camera, W, H, theirsRect);
-      const oursRect = vdbFrameFroxelRect(ours.localToView, camera.projectionMatrix.elements, W, H);
-      expect(!!oursRect).toBe(okThree);
-      if (oursRect) expect(oursRect).toEqual([theirsRect.x, theirsRect.y, theirsRect.z, theirsRect.w]);
-      const range = { x: Math.max(0.1, ours.viewNear), y: Math.max(ours.viewFar, ours.viewNear * 1.0001 + 0.2) };
-      const D = 8 + Math.floor(r() * 40);
-      const target = { first: 0, count: 0 };
-      getFroxelSliceRange({ viewNear: ours.viewNear, viewFar: ours.viewFar }, range, D, target);
-      const slices = vdbFrameVolumeSlices(ours.viewNear, ours.viewFar, [range.x, range.y], D);
-      expect(slices).toEqual(target);
-      const area = { rect: new Vector4(), first: 0, count: 0 };
-      getFroxelArea([{ volume: { localToView, viewNear: ours.viewNear, viewFar: ours.viewFar } }], camera as Camera, W, H, range, D, area);
-      const a = vdbFrameFroxelArea([{ rect: oursRect, ...slices }], W, H, D);
-      expect([...a.rect, a.first, a.count]).toEqual([area.rect.x, area.rect.y, area.rect.z, area.rect.w, area.first, area.count]);
-      compared++;
+// K6.8: the three TSL port of the view maths (three/frame/view.ts, layout.ts) is deleted; its outputs on the inputs of
+// the former equality test are frozen in fixtures/three-port-golden.json (dumped from the pre-deletion tree).
+describe("K6.1 tools/frame/view.ts equals the (deleted) three/frame/view.ts port, frozen", () => {
+  const golden = JSON.parse(readFileSync(new URL("./fixtures/three-port-golden.json", import.meta.url), "utf8")) as {
+    view: { view: number[]; projection: number[]; box: number[]; W: number; H: number; D: number; range: [number, number]; ok: boolean; rect: number[]; slices: { first: number; count: number }; area: number[] }[];
+    sizes: { input: [number, number, number, number, number]; size: { width: number; height: number }; held: Record<string, number> }[];
+  };
+  it("clip depths, rects, slices and areas on random cameras and boxes", () => {
+    expect(golden.view.length).toBeGreaterThan(40);
+    for (const g of golden.view) {
+      const clip = vdbFrameClipCamera(g.view, g.projection, { coordinateSystem: "webgpu" });
+      const ours = vdbFrameClipVolume(clip, g.box)!;
+      expect(ours).not.toBeNull();
+      const oursRect = vdbFrameFroxelRect(ours.localToView, g.projection, g.W, g.H);
+      expect(!!oursRect).toBe(g.ok);
+      if (oursRect) expect(oursRect).toEqual(g.rect);
+      const slices = vdbFrameVolumeSlices(ours.viewNear, ours.viewFar, g.range, g.D);
+      expect(slices).toEqual(g.slices);
+      const a = vdbFrameFroxelArea([{ rect: oursRect, ...slices }], g.W, g.H, g.D);
+      expect([...a.rect, a.first, a.count]).toEqual(g.area);
     }
-    expect(compared).toBeGreaterThan(40);
   });
 
-  it("froxel sizes and the held size follow layout.ts getFroxelSize", () => {
-    const held = { canvasX: 0, canvasY: 0, bufferX: 0, bufferY: 0 };
+  it("froxel sizes and the held size follow the (deleted) layout.ts getFroxelSize", () => {
     const ours = vdbFroxelHeldSize();
-    for (const [bw, bh, cw, ch, ppf] of [
-      [1280, 720, 640, 360, 0],
-      [1280, 720, 640, 360, 4],
-      [1300, 700, 650, 350, 4],
-      [2000, 700, 1000, 350, 4],
-      [300, 200, 300, 200, 2],
-    ] as const) {
-      const settings = { width: 512, height: 512, pixelsPerFroxel: ppf };
-      const three = getFroxelSize(settings, { getDrawingBufferSize: (t) => t.set(bw, bh), getSize: (t) => t.set(cw, ch) }, { width: 1, height: 1 }, held);
-      expect(vdbFrameFroxelSize(settings, { drawingBuffer: [bw, bh], canvas: [cw, ch] }, ours)).toEqual(three);
+    for (const g of golden.sizes) {
+      const [bw, bh, cw, ch, ppf] = g.input;
+      expect(vdbFrameFroxelSize({ width: 512, height: 512, pixelsPerFroxel: ppf }, { drawingBuffer: [bw, bh], canvas: [cw, ch] }, ours)).toEqual(g.size);
+      expect(ours).toEqual(g.held);
     }
-    expect(ours).toEqual(held);
   });
 });
 

@@ -6,10 +6,13 @@ sourcecode: packages/vdb/src/three/frame/volume.ts
 ---
 
 `VDBFrameVolume` is a `Group` whose proxy mesh draws a volume with froxel lighting: the volume's density and light are
-integrated into a view-aligned slice atlas, then composited over the scene up to the scene depth. It is mjurczyk's
-`FrameVolume` and `FrameRenderer` ([three-openvdb](https://github.com/mjurczyk/openvdb), MIT) ported to TSL and
-re-based on a volume source (D18). Add it to a scene and call `renderer.render(scene, camera)` as usual: the first
-proxy in a render draws the froxels, and every proxy then composites.
+integrated into a view-aligned froxel grid, then composited over the scene up to the scene depth. It is mjurczyk's
+`FrameVolume` and `FrameRenderer` ([three-openvdb](https://github.com/mjurczyk/openvdb), MIT) re-based on a volume
+source (D18). Since 0.2.0 the work runs in the core frame renderer (WebGPU compute kernels on three's device, D34;
+[Rendering without three](/core/rendering-without-three) uses it directly): `./three` collects the volumes and lights,
+records the core's update and composites its output. Add a volume to a scene and call `renderer.render(scene, camera)`
+as usual: the first proxy in a render runs the core update, and every proxy then composites.
+`volume.frameRenderer.core` is the core renderer (after the first render).
 
 To try the settings below live, open the [froxel renderer demo](https://pmndrs.github.io/vdb/examples/src/demos/10-frame-renderer/index.html) (demo 10, source in
 `examples/src/demos/10-frame-renderer`; locally, `pnpm dev`): it renders a cloud, smoke, an emissive explosion, a level set and a point grid with the panel's lighting, scattering,
@@ -164,7 +167,7 @@ const volume = new VDBFrameVolume(source, { frameRenderer: draft });
 
 {/* snippet: frame-lighting */}
 ```ts
-import { vdbFrameLights } from '@pmndrs/vdb/three';
+import { VDB_FRAME_LIGHT_BITS } from '@pmndrs/vdb/three';
 
 const settings = volume.frameRenderer.settings; // shared by every volume that uses this renderer
 
@@ -179,19 +182,20 @@ settings.environmentLighting = 'spherical-harmonics';
 settings.environmentShOrder = 2;
 
 // Which of the scene's light types this volume uses.
-volume.lights = vdbFrameLights.useDirectionalLights | vdbFrameLights.usePointLights | vdbFrameLights.useEnvironment;
+volume.lights = VDB_FRAME_LIGHT_BITS.directional | VDB_FRAME_LIGHT_BITS.point | VDB_FRAME_LIGHT_BITS.environment;
 ```
 
 | `lighting` | What it does |
 | --- | --- |
-| `'frame'` (default) | A world shadow grid of every caster, up to 4 cascades, redrawn only when its signature changes. Transmittance from each grid voxel to up to 6 scene lights and the sky, an optional environment grid, a density pass per volume and one lighting pass for all volumes, then temporal reprojection. |
+| `'frame'` (default) | A world shadow grid of every caster, up to 4 cascades, redrawn only when its signature changes. Transmittance from each grid voxel to up to 6 scene lights and the sky, an optional environment grid, then one gather per froxel that sums every volume's density and lights it, then temporal reprojection. |
 | `'volume'` | Each volume lights itself with its own shadow march. |
 
-`environmentLighting` turns the scene's environment into lights: `'outward'` (PMREM irradiance along each volume's
-outward direction), `'directional'` (default, up to 8 lights from a 64 x 32 readback) or `'spherical-harmonics'`
-(quadrature lights of order 1 or 2). `volume.lights` is a bitmask of `vdbFrameLights` (`useAmbientLights`,
-`usePointLights`, `useDirectionalLights`, `useSpotLights`, `useHemisphereLights`, `useEnvironment`);
-`vdbFrameAllLights` is the default.
+`environmentLighting` turns the scene's environment into lights: `'outward'` (L2 spherical-harmonics irradiance along
+each volume's outward direction), `'directional'` (default, up to 8 lights) or `'spherical-harmonics'` (quadrature lights
+of order 1 or 2), all extracted on the GPU from `scene.environment` (no readback). `volume.lights` is a bitmask of
+`VDB_FRAME_LIGHT_BITS` (`ambient`, `point`, `directional`, `spot`, `hemisphere`, `environment`); `VDB_FRAME_ALL_LIGHTS` is the
+default. Meshes with `castShadow` shadow the volumes through three's shadow maps (`settings.occlusion`, default on), and
+`settings.ambientOcclusion` (off by default) shadows ambient, hemisphere and light-probe light.
 
 ## Scattering and phase
 
@@ -225,7 +229,8 @@ volume.phaseG = 0.3;
 | `true` | 1D diffusion toward the light |
 | `'two-sided'` | 2D slab diffusion toward and away from the light |
 | `'octaves'` | Indirect octaves: octave n has extinction a^n, light b^n and phase g c^n (`scatteringOctave*`) |
-| `'neural'` (default) | A small trained network for the scene light slots in `'frame'` lighting, diffusion elsewhere. Its weights are a separate module; set `frameRenderer.neuralNetwork` to another network, or `null` to run `'neural'` as 1D diffusion. |
+| `'neural'` (default) | His small trained network for the scene light slots in `'frame'` lighting, diffusion elsewhere. It runs in a generic small-MLP evaluator: `frameRenderer.mlp` (EXPERIMENTAL, `VDBFrameMlp` data) holds the network; `null` runs `'neural'` as 1D diffusion. `'mlp'` is the same evaluator by its own name. |
+| `'multi-scale'` | Multi-scale diffusion from mips of the shadow grid (`multiScaleLevels`). |
 
 The phase is `'isotropic'`, `'henyey-greenstein'`, `'dual-lobe'`, `'lorenz-mie'` or `'lorenz-mie-rgb'`, with
 `phaseG`, `phaseBackG`, `phaseBackWeight` and `phaseGExponent`. Set it in one place, `settings.phase*`: it is the phase
@@ -272,8 +277,10 @@ in sRGB, as `WebGLRenderer` does.
 `mipmaps`, `shadowSteps`, `lights`, the phase overrides and `hdda`, plus `densityMean` (the mean `normalizeDensity`
 divides by; default the source's). `densityScale` behaves the same on dense and sparse sources. `volume.bbox` is the
 resolved box (the prop, or the source's), read-only: place the volume by it. A `source.replace()` needs no call
-(`updateSource()` forces a re-read). `dispose()` frees the proxy and the pass materials; the source belongs to you.
+(`updateSource()` forces a re-read). `emissionColor` is data: `'white'` (default), `{ spectrum: 'planck' | 'soot',
+exponent }` (his blackbody spectra), `{ lut }` or `{ wgsl }` (a validated WGSL hook). `dispose()` frees the proxy; the
+source belongs to you.
 
-`volume.frameRenderer.passHook` takes `begin(pass)` and `end(pass)` callbacks for the passes (`'froxels'`, `'inject'`,
-`'shadowDensity'`, `'gridMips'`, `'transmittance'`, `'environmentGrid'`, `'density'`, `'lighting'`, `'temporal'`) for
-timing and debugging.
+`volume.frameRenderer.passHook` brackets each core update: `timestampWrites` (a `'timestamp'` query set and two indices,
+written before the first and after the last kernel the update records) and `begin()` / `end(update)` callbacks on the
+CPU. `frameRenderer.froxels = false` keeps the last froxels (no froxel work; the composite draws them again).

@@ -3,7 +3,9 @@
  * or cube `GPUTexture` directly, so the adapter passes the scene environment's own texture (no readback, no PMREM):
  *
  * - an equirect texture (`EquirectangularReflectionMapping` / `RefractionMapping`): its GPUTexture; three uploads
- *   `flipY` data bottom row first, so the map's v runs up: a reflection of y joins the rotation;
+ *   `flipY` images bottom row first, and three samples GPU row 0 at v = 0 (the nadir: `equirectUV`) for every equirect,
+ *   `flipY` or not (a DataTexture's data row 0 is its v = 0): a reflection of y joins the rotation (K6.8: also for
+ *   `flipY: false` textures, which K6.2b left unflipped, so a synthetic data sky lit the volume from below);
  * - a cube texture: its GPUTexture as a 6-layer cube; three's WebGPU cube lookups negate x (`CubeTextureNode`), so a
  *   reflection of x joins the rotation;
  * - anything else (a PMREM `CubeUVReflectionMapping` atlas, a render-target cube): drawn once into a 1024 × 512 float
@@ -20,10 +22,8 @@ import * as TSL from "three/tsl";
 import type { VDBTslNode } from "../grid-node.js";
 import type { VDBFrameEnvironment } from "../../core/frame/types.js";
 import { getGPUTexture } from "../device.js";
-import { VDBFrameEnvironmentMaterial } from "./environment-material.js";
-import { frameFullscreenVertex } from "./chunks.js";
 
-const { Fn, cos, float, screenCoordinate, sin, vec2, vec3, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
+const { Fn, cos, float, pmremTexture, positionGeometry, screenCoordinate, sin, vec2, vec3, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
 
 /** The lat-long fallback's size: about one texel per PMREM mip-0 texel (0.35°), so a small sun is not lost between point samples. */
 const LATLONG = [1024, 512] as const;
@@ -31,12 +31,20 @@ const LATLONG = [1024, 512] as const;
 type SceneLike = THREE.Object3D & { environment?: THREE.Texture | null; environmentIntensity?: number; environmentRotation?: THREE.Euler };
 type RendererLike = { initTexture?(t: THREE.Texture): void; setRenderTarget(t: THREE.RenderTarget | null): void; getRenderTarget(): THREE.RenderTarget | null; render(s: THREE.Object3D, c: THREE.Camera): void };
 
-/** A lat-long of the scene environment in the core's equirect convention (row 0 the zenith, u = atan2(z, x) / 2π + ½). */
-class VDBCoreLatLongMaterial extends VDBFrameEnvironmentMaterial {
+/**
+ * A lat-long of the scene environment in the core's equirect convention (row 0 the zenith, u = atan2(z, x) / 2π + ½),
+ * through three's PMREM sampler at roughness 0 (his FrameEnvironmentMaterial: the PMREM node needs a texture, so a new
+ * or removed environment builds the shader again; no own envMap, so the PMREM rotation reads the pass scene's).
+ */
+class VDBCoreLatLongMaterial extends NodeMaterial {
+  environment: THREE.Texture | null = null;
+  environmentNodes: VDBTslNode[] = [];
+
   constructor() {
     super();
+    (this as unknown as { envMap: THREE.Texture | null }).envMap = null;
     this.name = "VDBCoreLatLongMaterial";
-    this.vertexNode = frameFullscreenVertex;
+    this.vertexNode = vec4(positionGeometry.xy, 0.0, 1.0);
     this.fragmentNode = this.createFragmentNode();
     this.side = THREE.DoubleSide;
     this.forceSinglePass = true;
@@ -45,8 +53,26 @@ class VDBCoreLatLongMaterial extends VDBFrameEnvironmentMaterial {
     this.blending = THREE.NoBlending;
   }
 
-  override rebuildNodes(): void {
-    this.fragmentNode = this.createFragmentNode();
+  setEnvironment(environment: THREE.Texture | null | undefined): void {
+    const next = environment ?? null;
+    if (!!next !== !!this.environment) {
+      this.environment = next;
+      this.environmentNodes = [];
+      this.fragmentNode = this.createFragmentNode();
+      this.needsUpdate = true;
+    } else if (next && this.environment !== next) {
+      this.environment = next;
+      this.environmentNodes.forEach((node) => {
+        node.value = next;
+      });
+    }
+  }
+
+  // NOTE Radiance of the PMREM environment at the roughness. Rotation is from the pass scene, intensity is not applied.
+  environmentRadiance(direction: VDBTslNode, roughness: number): VDBTslNode {
+    const node = pmremTexture(this.environment, direction, float(roughness));
+    this.environmentNodes.push(node);
+    return node;
   }
 
   createFragmentNode(): VDBTslNode {
@@ -90,7 +116,7 @@ export class VDBCoreEnvironment {
         this.#initialized.set(t, t.version);
       }
       // world → map: F · Rᵀ (column-major; Rᵀ's column c is R's row c)
-      const flip = cube ? [-1, 1, 1] : [1, t.flipY ? -1 : 1, 1];
+      const flip = cube ? [-1, 1, 1] : [1, -1, 1];
       const rotation = new Float32Array(9);
       for (let c = 0; c < 3; c++) for (let r = 0; r < 3; r++) rotation[c * 3 + r] = flip[r]! * e[r * 4 + c]!;
       return { id: t, revision: t.version, texture: getGPUTexture(renderer as never, t), projection: cube ? "cube" : "equirect", rotation, intensity };

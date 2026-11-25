@@ -20,8 +20,7 @@
  *   targets.copySceneColor(enc); frame.render(enc, targets.composite())   // or presenter.present(enc, { integrate })
  *   presenter.present(enc, ...); device.queue.submit([enc.finish()]);
  */
-import { vdbFrameIntegrateEntries, vdbFrameIntegrateWgsl, type VDBFrameOutputs, type VDBFrameTargets } from "../../../../packages/vdb/src/core/internal.js";
-import { vdbMat4Invert, vdbMat4Multiply } from "../../../../packages/vdb/src/tools/internal.js";
+import { vdbFrameIntegrateEntries, vdbFrameIntegrateWgsl, type VDBFrameOutputs, type VDBFrameTargets } from "@pmndrs/vdb";
 
 export type Vec3 = [number, number, number];
 
@@ -58,8 +57,49 @@ export function lookAt(eye: readonly number[], target: readonly number[], up: re
   return [...x, 0, ...y, 0, ...z, 0, eye[0]!, eye[1]!, eye[2]!, 1];
 }
 
-export const invert = (m: ArrayLike<number>): number[] => Array.from(vdbMat4Invert(m));
-export const multiply = (a: ArrayLike<number>, b: ArrayLike<number>): number[] => Array.from(vdbMat4Multiply(a, b));
+/** a · b, column-major 4 × 4 (the same sums as three's `Matrix4.multiplyMatrices`). */
+export function multiply(a: ArrayLike<number>, b: ArrayLike<number>): number[] {
+  const r = new Array<number>(16);
+  for (let c = 0; c < 4; c++) {
+    for (let row = 0; row < 4; row++) {
+      r[c * 4 + row] = a[row]! * b[c * 4]! + a[4 + row]! * b[c * 4 + 1]! + a[8 + row]! * b[c * 4 + 2]! + a[12 + row]! * b[c * 4 + 3]!;
+    }
+  }
+  return r;
+}
+
+/** The inverse of a column-major 4x4 (three's `Matrix4.invert`, as tools' `vdbMat4Invert`; the zero matrix when singular). */
+export function invert(m: ArrayLike<number>): number[] {
+  const [n11, n21, n31, n41, n12, n22, n32, n42, n13, n23, n33, n43, n14, n24, n34, n44] = Array.from(m) as number[] as [
+    number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number,
+  ];
+  const t11 = n23 * n34 * n42 - n24 * n33 * n42 + n24 * n32 * n43 - n22 * n34 * n43 - n23 * n32 * n44 + n22 * n33 * n44;
+  const t12 = n14 * n33 * n42 - n13 * n34 * n42 - n14 * n32 * n43 + n12 * n34 * n43 + n13 * n32 * n44 - n12 * n33 * n44;
+  const t13 = n13 * n24 * n42 - n14 * n23 * n42 + n14 * n22 * n43 - n12 * n24 * n43 - n13 * n22 * n44 + n12 * n23 * n44;
+  const t14 = n14 * n23 * n32 - n13 * n24 * n32 - n14 * n22 * n33 + n12 * n24 * n33 + n13 * n22 * n34 - n12 * n23 * n34;
+  const det = n11 * t11 + n21 * t12 + n31 * t13 + n41 * t14;
+  if (det === 0) return new Array<number>(16).fill(0);
+  const d = 1 / det;
+  const r = [
+    t11 * d,
+    (n24 * n33 * n41 - n23 * n34 * n41 - n24 * n31 * n43 + n21 * n34 * n43 + n23 * n31 * n44 - n21 * n33 * n44) * d,
+    (n22 * n34 * n41 - n24 * n32 * n41 + n24 * n31 * n42 - n21 * n34 * n42 - n22 * n31 * n44 + n21 * n32 * n44) * d,
+    (n23 * n32 * n41 - n22 * n33 * n41 - n23 * n31 * n42 + n21 * n33 * n42 + n22 * n31 * n43 - n21 * n32 * n43) * d,
+    t12 * d,
+    (n13 * n34 * n41 - n14 * n33 * n41 + n14 * n31 * n43 - n11 * n34 * n43 - n13 * n31 * n44 + n11 * n33 * n44) * d,
+    (n14 * n32 * n41 - n12 * n34 * n41 - n14 * n31 * n42 + n11 * n34 * n42 + n12 * n31 * n44 - n11 * n32 * n44) * d,
+    (n12 * n33 * n41 - n13 * n32 * n41 + n13 * n31 * n42 - n11 * n33 * n42 - n12 * n31 * n43 + n11 * n32 * n43) * d,
+    t13 * d,
+    (n14 * n23 * n41 - n13 * n24 * n41 - n14 * n21 * n43 + n11 * n24 * n43 + n13 * n21 * n44 - n11 * n23 * n44) * d,
+    (n12 * n24 * n41 - n14 * n22 * n41 + n14 * n21 * n42 - n11 * n24 * n42 - n12 * n21 * n44 + n11 * n22 * n44) * d,
+    (n13 * n22 * n41 - n12 * n23 * n41 - n13 * n21 * n42 + n11 * n23 * n42 + n12 * n21 * n43 - n11 * n22 * n43) * d,
+    t14 * d,
+    (n13 * n24 * n31 - n14 * n23 * n31 + n14 * n21 * n33 - n11 * n24 * n33 - n13 * n21 * n34 + n11 * n23 * n34) * d,
+    (n14 * n22 * n31 - n12 * n24 * n31 - n14 * n21 * n32 + n11 * n24 * n32 + n12 * n21 * n34 - n11 * n22 * n34) * d,
+    (n12 * n23 * n31 - n13 * n22 * n31 + n13 * n21 * n32 - n11 * n23 * n32 - n12 * n21 * n33 + n11 * n22 * n33) * d,
+  ];
+  return r;
+}
 
 /** Unit box [−½, ½]³ → world box `[lo, hi]` (column-major): a volume's `params.matrixWorld` for an axis-aligned box. */
 export function boxMatrix(lo: readonly number[], hi: readonly number[]): number[] {

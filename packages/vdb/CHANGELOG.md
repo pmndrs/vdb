@@ -6,7 +6,41 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 
 ## [Unreleased]
 
+### Breaking (0.2.0, K6.8: `./three` is a thin adapter over the core frame renderer)
+
+- `@pmndrs/vdb/three`: `VDBFrameRenderer` draws every frame with the core frame renderer (compute kernels on three's
+  device; D34). The TSL pass materials, their shader chunks and the internal `backend` switch are deleted.
+  - `settings` is the core's `VDBFrameSettings` (his names and defaults, plus `froxelMix`, `occlusion`,
+    `multiScaleLevels`, `ambientOcclusion`, `ambientOcclusionPairs`, `ambientOcclusionSteps`; the multi-scale A/B
+    settings `multiScaleEdge` and `multiScaleSigma` stay internal).
+    `VDBFrameRendererSettings` is removed; `VDBFramePhase` → `VDBFramePhaseName`, `VDBFrameMultipleScattering` →
+    `VDBFrameMultipleScatteringMode` (the core's declarations, re-exported).
+  - `neuralNetwork` → `mlp` (EXPERIMENTAL: the generic small-MLP data, `VDBFrameMlp`; default his trained weights; null
+    runs 'neural' / 'mlp' as 1D diffusion).
+  - `renderFroxels()` / `holdFroxels` → `froxels` (false keeps the last froxels: the core's `update(…, { froxels })`).
+  - `passHook` is `{ timestampWrites?, begin?, end? }`: timestamp writes bracket the kernels of each core update
+    (`VDBFramePass` is removed).
+  - `redrawStats` is the core's `VDBFrameRedrawStats` (with `volumeShadows`); `environment` / `environmentLights` (the
+    TSL readback) are removed: the core extracts environment lights on the GPU.
+  - New `VDBFrameRenderer.core`: the `VDBFrameRendererGpu` (its `outputs`, after the first render).
+  - `VDBFrameVolume.emissionColor` takes `VDBEmissionColor` data (`'white'`, `{ spectrum: 'planck' | 'soot', exponent }`,
+    `{ lut }`, `{ wgsl }`); `vdbFrameBlackbodyEmission(s, e)` and `VDBFrameBlackbodyHook` are removed (use
+    `{ spectrum: s, exponent: e }`). A TSL hook throws `VDB_BAD_OPTION`.
+  - `vdbFrameLights` / `vdbFrameAllLights` → the core's `VDB_FRAME_LIGHT_BITS` (`ambient`, `point`, `directional`, `spot`,
+    `hemisphere`, `environment`) / `VDB_FRAME_ALL_LIGHTS`, re-exported.
+  - `VDBFrameVolume` drops `sourceUniforms`, `volumes` and the pass-material fields; its box is `boxMatrix`.
+    `vdbVolumeUniforms` / `vdbVolumeNodes` stay for custom TSL materials.
+- `VDBSequence` moves to the core (`@pmndrs/vdb`; engine-free); `@pmndrs/vdb/three` re-exports it.
+
 ### Added
+
+- Core (0.2.0, K6): the frame renderer `vdbCreateFrameRenderer` (`VDBFrameRendererGpu`: `addVolume`, `update`, `render`,
+  `prepare`, `outputs`, `mlp`) with its input and output types; `vdbSparseSourceGpu` (one source per pool);
+  `vdbFrameIntegrateWgsl` / `vdbFrameIntegrateEntries` (the composite in a host pass, `{ spectral }`),
+  `vdbVolumeShadowWgsl` (`vdbVolumeShadow`, `vdbVolumeShadowCube`, `vdbVolumeShadowRgb`, `vdbVolumeShadowCubeRgb`;
+  `VDB_VOLUME_SHADOW_VIEW`), `vdbEmissionProbeWgsl` (`VDB_EMISSION_GRID`); the level-set and point passes
+  (`vdbCreateLevelSetPassGpu`, `vdbLevelSetSurfaceWgsl`, `vdbCreatePointPassGpu`, `vdbPointSpriteWgsl`);
+  `VDBFrameUpdateOptions.timestampWrites`.
 
 - NanoVDB **Half** grids (`GridType::Half` = 9, raw IEEE binary16 values; implemented in NanoVDB 13.2, OpenVDB PR 2335), end
   to end (K7.H). Core: grid type `'half'` (`VDBGridTypeName`, `VDB_GRID_TYPE_IDS.half`, in `VDB_ALL_SCALAR_TYPES`); the pool

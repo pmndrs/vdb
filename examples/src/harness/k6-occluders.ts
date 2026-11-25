@@ -137,7 +137,6 @@ async function main(): Promise<void> {
   result.volume = file.name;
   const dense = wvdbDenseVolume(readWvdb(file.bytes), { mipmaps: true });
   const fr = new VDBFrameRenderer();
-  fr.backend = "core";
   Object.assign(fr.settings, { width: W / 2, height: H / 2, depth: 32, temporal: false, jitter: false, lighting: LIGHTING, multipleScattering: true, shadowResolution: 64 });
 
   // The cloud: its longest side 2 units, centred at (0, 1.5, 0)
@@ -232,10 +231,10 @@ async function main(): Promise<void> {
   const last = seen[seen.length - 1];
   result.backend = { core: !!fr.core, occluders: (last?.occluders ?? []).map((o) => Number(o.light)), layers: (last?.occluders ?? []).map((o) => o.viewProjection.length) };
 
-  fr.occlusion = false;
+  fr.settings.occlusion = false;
   await frame();
   const off = await frame();
-  fr.occlusion = true;
+  fr.settings.occlusion = true;
   box.castShadow = false;
   await frame();
   const noCaster = await frame();

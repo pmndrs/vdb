@@ -1,86 +1,68 @@
 /**
- * K3.2c: per-pass GPU times of the froxel renderer from three's own render-pass timestamps
- * (`WebGPURenderer({ trackTimestamp: true })`, the `timestamp-query` feature).
- *
- * three r187 writes a begin/end timestamp per render call and, after `resolveTimestampsAsync('render')`,
- * keeps each call's duration in `backend.timestampQueryPool.render.timestamps` by uid. This maps uids
- * to the frame renderer's pass names: `VDBFrameRenderer.passHook` brackets each pass, and the
- * renderer's inspector hook (`inspector.beginRender(uid)`) sees every render call inside the bracket.
- * Two three internals (harness only, checked at install): the uid is made unique per call (three's
- * `'r:<frameCalls>:<context id>:f<frame>'` repeats when a pass renders the same scene, camera and
- * target twice in one frame), and the pool's `timestamps` map is read after the resolve.
+ * K3.2c / K6.8: GPU times of the froxel renderer. The core update's kernels are bracketed by timestamp writes
+ * (`VDBFrameRenderer.passHook.timestampWrites`: a `'timestamp'` query set, written before the first and after the last
+ * kernel the update records); three's own render passes (`WebGPURenderer({ trackTimestamp: true })`) give the rest of
+ * the frame (the scene and the volume composite). Both need the `timestamp-query` feature; D25: timings are provisional.
  */
 import type { WebGPURenderer } from "three/webgpu";
 import type { VDBFrameRenderer } from "@pmndrs/vdb/three";
 
-type Backend = {
-  updateTimeStampUID?: (ctx: object) => void;
-  get(ctx: object): { timestampUID?: string };
-  timestampQueryPool?: Record<string, { timestamps?: Map<string, number> } | null>;
-};
-type Inspector = { beginRender?: (uid: string, ...rest: unknown[]) => void };
+export interface PassTimes {
+  /** GPU ms of the last core update's kernels (null: no update since the last collect). */
+  core: number | null;
+  /** Core updates recorded since the last collect (`passHook.begin` / `end`). */
+  updates: number;
+  /** GPU ms of three's render passes since the last collect (0 without `trackTimestamp`). */
+  render: number;
+}
 
 export interface PassTimer {
-  /** Durations (ms) by pass name of the render calls since the last `collect()`; `other` = outside any pass. */
-  collect(): Promise<Record<string, number>>;
-  /** Removes the hooks. */
+  collect(): Promise<PassTimes>;
+  /** Removes the hook and frees the query set. */
   dispose(): void;
 }
 
-/** Installs the hooks on `renderer` and `frameRenderer` (see the file comment). */
-export function installPassTimer(renderer: WebGPURenderer, frameRenderer: VDBFrameRenderer): PassTimer {
-  const backend = renderer.backend as unknown as Backend;
-  const inspector = (renderer as unknown as { inspector: Inspector }).inspector;
-  if (typeof backend.updateTimeStampUID !== "function" || typeof backend.get !== "function" || typeof inspector?.beginRender !== "function") {
-    throw new Error("installPassTimer: three r187 internals not found (backend.updateTimeStampUID / inspector.beginRender)");
-  }
-  const stack: string[] = [];
-  const passOf = new Map<string, string>();
-  let serial = 0;
-
-  const updateUid = backend.updateTimeStampUID.bind(backend);
-  backend.updateTimeStampUID = (ctx: object) => {
-    updateUid(ctx);
-    const data = backend.get(ctx);
-    // Keep three's ':f<frame>' suffix (its resolve parses it); make the rest unique per call.
-    if (typeof data.timestampUID === "string") data.timestampUID = data.timestampUID.replace(/:f(\d+)$/, `#${++serial}:f$1`);
-  };
-  const beginRender = inspector.beginRender.bind(inspector);
-  inspector.beginRender = (uid: string, ...rest: unknown[]) => {
-    passOf.set(uid, stack[stack.length - 1] ?? "other");
-    beginRender(uid, ...rest);
-  };
-  const previousHook = frameRenderer.passHook;
+/** Installs the timestamp bracket on `frameRenderer` (the device needs `timestamp-query`). */
+export function installPassTimer(renderer: WebGPURenderer, frameRenderer: VDBFrameRenderer, device: GPUDevice): PassTimer {
+  const querySet = device.createQuerySet({ type: "timestamp", count: 2, label: "k3 pass timer" });
+  const resolve = device.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC, label: "k3 pass timer resolve" });
+  const read = device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ, label: "k3 pass timer read" });
+  let begun = 0;
+  let ended = 0;
+  const previous = frameRenderer.passHook;
   frameRenderer.passHook = {
-    begin: (pass, detail) => {
-      stack.push(pass);
-      previousHook?.begin?.(pass, detail);
+    timestampWrites: { querySet, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 },
+    begin: () => {
+      begun++;
     },
-    end: (pass, detail) => {
-      // Pop back to (and including) this pass, tolerant of a missing end.
-      const i = stack.lastIndexOf(pass);
-      if (i >= 0) stack.length = i;
-      previousHook?.end?.(pass, detail);
+    end: () => {
+      ended++;
     },
   };
-
   return {
     async collect() {
-      await renderer.resolveTimestampsAsync("render");
-      const pool = backend.timestampQueryPool?.render;
-      const out: Record<string, number> = {};
-      for (const [uid, ms] of pool?.timestamps ?? []) {
-        const pass = passOf.get(uid) ?? "other";
-        out[pass] = (out[pass] ?? 0) + ms;
+      const updates = ended;
+      let core: number | null = null;
+      if (updates > 0) {
+        const encoder = device.createCommandEncoder({ label: "k3 pass timer" });
+        encoder.resolveQuerySet(querySet, 0, 2, resolve, 0);
+        encoder.copyBufferToBuffer(resolve, 0, read, 0, 16);
+        device.queue.submit([encoder.finish()]);
+        await read.mapAsync(GPUMapMode.READ);
+        const t = new BigUint64Array(read.getMappedRange().slice(0));
+        read.unmap();
+        core = Number(t[1]! - t[0]!) / 1e6;
       }
-      pool?.timestamps?.clear();
-      passOf.clear();
-      return out;
+      begun = ended = 0;
+      const ms = await renderer.resolveTimestampsAsync("render").catch(() => 0);
+      return { core, updates, render: typeof ms === "number" ? ms : 0 };
     },
     dispose() {
-      backend.updateTimeStampUID = updateUid;
-      inspector.beginRender = beginRender;
-      frameRenderer.passHook = previousHook;
+      frameRenderer.passHook = previous;
+      querySet.destroy();
+      resolve.destroy();
+      read.destroy();
+      void begun;
     },
   };
 }

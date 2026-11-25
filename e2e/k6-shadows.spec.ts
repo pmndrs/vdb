@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
@@ -8,11 +8,14 @@ import { compareImages } from "../scripts/k3/metrics.mjs";
 // @ts-expect-error -- see above
 import { encodePng } from "../scripts/k3/png.mjs";
 
-// K6.5 (design §7.2): the K3 Step 6 scenes (examples/src/harness/k3-frame-shadows.ts) through the core renderer
-// (`?backend=core`: the core's volume shadow maps and emission probes, received by three) against the TSL path on the
-// same device. The shadow and emission terms are isolated as (on − off) per backend (castShadows off / the emission
-// light off), so the froxel composite's own core-vs-TSL silhouette difference (V80) cancels; the whole frames are
-// reported. Two core loads are byte-identical. PNGs: artifacts/k6/shadows/.
+// K3.6 / K6.5 / K6.8: volume shadows on meshes and the emission light through `./three` (examples/src/harness/
+// k3-frame-shadows.ts), the core's maps and probes received by three. The core kernels have their twins in
+// e2e/k6-core.spec.ts (`?probe=shadow`, `?probe=emission`); these frames are in the K6.8 regression set
+// (e2e/k6-frames.spec.ts), and his Step 6 scenes too. Gates here: the shadows darken the ground (and nothing else moves
+// when castShadows goes off but the ground), every case's map is drawn with the expected layout, the sparse source and
+// 'frame' lighting give the same shadows as dense 'volume', the emission light lights the ground (black without it),
+// two page loads are byte-identical, no errors or warnings. (The last core-vs-TSL numbers: docs/archive/handoffs/K6-5.md,
+// K6-5b.md, K6-8.md.) PNGs: artifacts/k6/shadows/.
 const PAGE_URL = "/src/harness/k3-frame-shadows.html";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = path.join(repoRoot, "artifacts", "k6", "shadows");
@@ -44,7 +47,7 @@ async function run(page: Page, query: string): Promise<Result> {
 
 const bytes = (b64: string) => new Uint8Array(Buffer.from(b64, "base64"));
 const image = (r: Result, b64: string) => ({ width: r.width!, height: r.height!, data: bytes(b64) });
-const detailOf = (r: Result) => JSON.stringify({ ...r, rgba: r.rgba ? `${r.rgba.length} b64` : undefined, rgbaOff: r.rgbaOff ? `${r.rgbaOff.length} b64` : undefined }, null, 2);
+const detailOf = (r: Result) => JSON.stringify({ ...r, rgba: r.rgba ? `${r.rgba.length} b64` : undefined, rgbaOff: r.rgbaOff ? `${r.rgbaOff.length} b64` : undefined, coverage: undefined }, null, 2);
 
 function save(name: string, r: Result, b64: string): Buffer {
   const png = Buffer.from(encodePng(image(r, b64)) as Uint8Array);
@@ -53,40 +56,23 @@ function save(name: string, r: Result, b64: string): Buffer {
   return png;
 }
 
-/**
- * The term a feature adds on meshes (on − off, signed, per channel) of each backend, compared: max and mean |Δ| in
- * 1/255, over the pixels outside the volume's dilated coverage of either backend (inside it the term is seen through
- * the froxel composite, whose silhouette differs between the backends by V80).
- */
-function termDiff(tsl: Result, core: Result): { pixels: number; affected: number; maxDelta: number; meanDelta: number; over2: number } {
-  const a = bytes(tsl.rgba!);
-  const aOff = bytes(tsl.rgbaOff!);
-  const b = bytes(core.rgba!);
-  const bOff = bytes(core.rgbaOff!);
-  const covA = bytes(tsl.coverage!);
-  const covB = bytes(core.coverage!);
-  let maxDelta = 0;
-  let sum = 0;
-  let over2 = 0;
-  let affected = 0;
+/** Pixels outside the volume's dilated coverage where on and off differ (the term on meshes), and the largest change. */
+function term(r: Result): { pixels: number; affected: number; maxDelta: number } {
+  const on = bytes(r.rgba!);
+  const off = bytes(r.rgbaOff!);
+  const cov = bytes(r.coverage!);
   let pixels = 0;
-  for (let i = 0; i < a.length / 4; i++) {
-    if (covA[i] || covB[i]) continue;
+  let affected = 0;
+  let maxDelta = 0;
+  for (let i = 0; i < cov.length; i++) {
+    if (cov[i]) continue;
     pixels++;
-    let px = 0;
-    let any = false;
-    for (let c = 0; c < 3; c++) {
-      const ta = a[i * 4 + c]! - aOff[i * 4 + c]!;
-      const tb = b[i * 4 + c]! - bOff[i * 4 + c]!;
-      if (ta !== 0 || tb !== 0) any = true;
-      px = Math.max(px, Math.abs(ta - tb));
-    }
-    if (any) affected++;
-    maxDelta = Math.max(maxDelta, px);
-    sum += px;
-    if (px > 2) over2++;
+    let d = 0;
+    for (let c = 0; c < 3; c++) d = Math.max(d, Math.abs(on[i * 4 + c]! - off[i * 4 + c]!));
+    if (d > 0) affected++;
+    maxDelta = Math.max(maxDelta, d);
   }
-  return { pixels, affected, maxDelta, meanDelta: sum / pixels, over2 };
+  return { pixels, affected, maxDelta };
 }
 
 function expectClean(r: Result): void {
@@ -97,137 +83,78 @@ function expectClean(r: Result): void {
   expect(r.inPageIdentical, detail).toBe(true);
 }
 
-const SHADOW_CASES: { name: string; query: string }[] = [
-  { name: "sun, dense", query: "?case=shadow" },
-  { name: "sun, 4 cascades", query: "?case=shadow&cascades=4" },
-  { name: "spot", query: "?case=shadow&light=spot" },
-  { name: "sun, sparse", query: "?case=shadow&source=sparse" },
-  { name: "sun, 'frame' lighting", query: "?case=shadow&lighting=frame" },
+const SHADOW_CASES: { name: string; query: string; cascades: number }[] = [
+  { name: "sun, dense", query: "?case=shadow", cascades: 1 },
+  { name: "sun, 4 cascades", query: "?case=shadow&cascades=4", cascades: -1 },
+  { name: "spot", query: "?case=shadow&light=spot", cascades: 0 },
+  { name: "sun, sparse", query: "?case=shadow&source=sparse", cascades: 1 },
+  { name: "sun, 'frame' lighting", query: "?case=shadow&lighting=frame", cascades: 1 },
 ];
 
 for (const c of SHADOW_CASES) {
-  test(`K6.5 A/B core vs TSL: volume shadows on meshes (${c.name})`, async ({ page }) => {
+  test(`K6.5 volume shadows on meshes through ./three (${c.name}): the core's map darkens the ground`, async ({ page }) => {
     test.setTimeout(900_000);
     const errors = collectErrors(page);
-    const tsl = await run(page, c.query);
-    expectClean(tsl);
-    const core = await run(page, `${c.query}&backend=core`);
-    expectClean(core);
-    // the core drew: its renderer exists and holds the light's map (the TSL run made none)
-    expect(core.backend, detailOf(core)).toMatchObject({ requested: "core", core: true, maps: 1 });
-    expect(tsl.backend, detailOf(tsl)).toMatchObject({ requested: "tsl", core: false });
+    const r = await run(page, c.query);
+    expectClean(r);
+    expect(r.backend, detailOf(r)).toMatchObject({ core: true, maps: 1 });
     const slug = c.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
-    save(`shadows-${slug}-tsl`, tsl, tsl.rgba!);
-    save(`shadows-${slug}-core`, core, core.rgba!);
-    const term = termDiff(tsl, core);
-    const frame = compareImages(image(tsl, tsl.rgba!), image(core, core.rgba!));
-    const frameOff = compareImages(image(tsl, tsl.rgbaOff!), image(core, core.rgbaOff!));
-    console.log(
-      `[k6-shadows] ${c.name} on ${core.adapter}: shadow term (on − off) core vs TSL: ${term.affected} px affected, max |Δ| ${term.maxDelta}/255, mean ${term.meanDelta.toFixed(4)}/255, ${term.over2} px > 2/255; frames ${frame.psnr.toFixed(2)} dB (${frame.above} px > 8/255), shadows off ${frameOff.psnr.toFixed(2)} dB; TSL ${JSON.stringify(tsl.shadowStats)} core ${JSON.stringify(core.shadowStats)}; entries tsl ${JSON.stringify(tsl.entry)} core ${JSON.stringify(core.entry)}`,
-    );
-    // The core maps shadow the ground like the TSL maps
-    expect(core.shadowStats!.shadowedPixels, detailOf(core)).toBeGreaterThan(100);
-    expect(Math.abs(core.shadowStats!.shadowedPixels - tsl.shadowStats!.shadowedPixels), detailOf(core)).toBeLessThanOrEqual(tsl.shadowStats!.shadowedPixels * 0.02);
-    expect(term.affected, JSON.stringify(term)).toBeGreaterThan(100);
-    expect(term.maxDelta, JSON.stringify(term)).toBeLessThanOrEqual(2);
-    expect(term.over2, JSON.stringify(term)).toBe(0);
-    expect(core.entry, detailOf(core)).toMatchObject({ size: tsl.entry!.size, cascades: tsl.entry!.cascades });
+    save(`shadows-${slug}`, r, r.rgba!);
+    save(`shadows-${slug}-off`, r, r.rgbaOff!);
+    const t = term(r);
+    console.log(`[k6-shadows] ${c.name} on ${r.adapter}: ${JSON.stringify(r.shadowStats)}; term ${JSON.stringify(t)}; entry ${JSON.stringify(r.entry)}`);
+    expect(r.shadowStats!.shadowedPixels, detailOf(r)).toBeGreaterThan(100);
+    expect(r.shadowStats!.meanDarkening, detailOf(r)).toBeGreaterThan(0);
+    expect(t.affected, JSON.stringify(t)).toBeGreaterThan(100);
+    expect(r.entry, detailOf(r)).toMatchObject({ size: 512 });
+    if (c.cascades > 0) expect(r.entry!.cascades, detailOf(r)).toBe(c.cascades);
+    if (c.cascades < 0) expect(r.entry!.cascades, detailOf(r)).toBeGreaterThanOrEqual(1);
     expect(errors).toEqual([]);
   });
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-// K6.5 gate 2/3 (design §7.2, §7.3): his K3 Step 6 scenes (examples/src/harness/k3-frame.ts) through `?backend=core`
-// vs `?backend=tsl` on the same device (bar PSNR ≥ 45 dB, ≤ 0.2 % pixels > 4/255), 1280 × 720 with his froxels. The
-// `*-shadow-only-dir-isolated` scenes show only the shadows on his floor (the core's maps, received by three) and gate;
-// K6.3: the full cast-shadow scenes (his 'neural') gate too, the core with `occlusion=0` (K6.5b's mesh → volume shadows
-// are not in his renderer); the explosion scenes are reported (V80 silhouette). Images go to artifacts/k6/ours-{core,tsl}/ for scripts/k3/compare.mjs
-// against his captures (the regression report). Opt in with K6_CORE_AB=1 (needs fixtures/k3).
-// ---------------------------------------------------------------------------------------------------------------
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const AB_STEP6: { scene: string; gate: boolean }[] = [
-  { scene: "step6-cast-shadow-shadow-only-dir-isolated", gate: true },
-  { scene: "step6-cast-shadow-obstacle-shadow-only-dir-isolated", gate: true },
-  { scene: "step6-cast-shadow-obstacle-cascades-4-shadow-only-dir-isolated", gate: true },
-  // K6.3: his 'neural' runs in the core (the generic MLP): the full cast-shadow scenes gate, with the core's mesh → volume
-  // shadows off (K6.5b: his renderer has none; the obstacle shadows the bunny in the core otherwise)
-  { scene: "step6-cast-shadow-dir-isolated", gate: true },
-  { scene: "step6-cast-shadow-obstacle-dir-isolated", gate: true },
-  { scene: "step6-cast-shadow-obstacle-cascades-4-dir-isolated", gate: true },
-  { scene: "step6-cast-shadow-obstacle-coarse-dir-isolated", gate: true },
-  { scene: "step6-cast-shadow-two-bunnies-dir-isolated", gate: true },
-  { scene: "step6-explosion-emission-env-isolated", gate: false },
-  { scene: "step6-explosion-emission-cascades-4-env-isolated", gate: false },
-  { scene: "step6-explosion-emission-probes-8-env-isolated", gate: false },
-];
+test("K6.5 volume shadows: the sparse source and 'frame' lighting shadow the ground as dense 'volume'; two loads agree", async ({ page }) => {
+  test.setTimeout(1_200_000);
+  const dense = await run(page, "?case=shadow");
+  expectClean(dense);
+  const again = await run(page, "?case=shadow");
+  expectClean(again);
+  expect(save("shadows-dense-run2", again, again.rgba!).equals(save("shadows-dense-run1", dense, dense.rgba!)), "two page loads byte-identical").toBe(true);
+  for (const q of ["&source=sparse", "&lighting=frame"]) {
+    const other = await run(page, `?case=shadow${q}`);
+    expectClean(other);
+    // the ground's shadow (castShadows on − off) from the same shadow grid: same pixels within a few %
+    const a = dense.shadowStats!.shadowedPixels;
+    const b = other.shadowStats!.shadowedPixels;
+    console.log(`[k6-shadows] dense vs ${q}: shadowed ${a} vs ${b}; frames ${compareImages(image(dense, dense.rgbaOff!), image(other, other.rgbaOff!)).psnr.toFixed(2)} dB (shadows off)`);
+    expect(Math.abs(a - b), `${a} vs ${b}`).toBeLessThanOrEqual(a * 0.05);
+  }
+});
 
-interface K3Result {
-  done: boolean;
-  error?: string;
-  width?: number;
-  height?: number;
-  rgba?: string;
-  inPageIdentical?: boolean;
-  uncaptured: string[];
-  warnings: string[];
-  backend?: string;
-}
-
-async function k3(page: Page, query: string): Promise<K3Result> {
-  await page.goto(`/src/harness/k3-frame.html${query}`);
-  await page.waitForFunction(() => (window as { __VDB_K3_FRAME__?: { done: boolean } }).__VDB_K3_FRAME__?.done === true, undefined, { timeout: 1_200_000 });
-  return (await page.evaluate(() => (window as { __VDB_K3_FRAME__?: unknown }).__VDB_K3_FRAME__)) as K3Result;
-}
-const k3Image = (r: K3Result) => ({ width: r.width!, height: r.height!, data: new Uint8Array(Buffer.from(r.rgba!, "base64")) });
-
-for (const { scene, gate } of AB_STEP6) {
-  test(`K6.5 A/B core vs TSL: ${scene}${gate ? "" : " (report)"}`, async ({ page }) => {
-    test.skip(process.env.K6_CORE_AB !== "1", "set K6_CORE_AB=1 (needs fixtures/k3)");
-    test.skip(!existsSync(path.join(REPO, "fixtures", "k3", "bunny_cloud.wvdb")), "fixtures/k3/bunny_cloud.wvdb missing");
-    test.setTimeout(2_400_000);
-    const tsl = await k3(page, `?scene=${scene}&backend=tsl`);
-    const core = await k3(page, `?scene=${scene}&backend=core&occlusion=0`);
-    expect(tsl.error, JSON.stringify({ ...tsl, rgba: undefined })).toBeUndefined();
-    expect(core.error, JSON.stringify({ ...core, rgba: undefined })).toBeUndefined();
-    expect(core.uncaptured, JSON.stringify({ ...core, rgba: undefined })).toEqual([]);
-    expect(core.backend).toBe("core");
-    const cmp = compareImages(k3Image(core), k3Image(tsl), { minPsnr: 45, threshold: 4, maxFraction: 0.002 });
-    for (const [dir, r] of [["ours-core", core], ["ours-tsl", tsl]] as const) {
-      mkdirSync(path.join(REPO, "artifacts", "k6", dir), { recursive: true });
-      writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.png`), Buffer.from(encodePng(k3Image(r)) as Uint8Array));
-      writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.json`), JSON.stringify({ ...r, rgba: undefined }, null, 2));
-    }
-    console.log(`[k6-ab-step6] ${scene}: PSNR ${cmp.psnr.toFixed(2)} dB, ${(cmp.fraction * 100).toFixed(3)}% > 4/255 (max ${cmp.maxDiff}); core warnings ${JSON.stringify(core.warnings)}`);
-    if (gate) expect(cmp.failures, JSON.stringify(cmp)).toEqual([]);
-  });
-}
-
-test("K6.5 A/B core vs TSL: the emission light (explosion frame 10, dense and sparse); two core loads agree", async ({ page }) => {
+test("K6.5 the emission light (explosion frame 10 and a smooth blob, dense and sparse): lights the ground; black without it; two loads agree", async ({ page }) => {
   test.setTimeout(1_200_000);
   const errors = collectErrors(page);
-  let firstCore: Buffer | null = null;
-  for (const source of ["dense", "sparse"] as const) {
-    const q = `?case=emission&source=${source}`;
-    const tsl = await run(page, q);
-    expectClean(tsl);
-    const core = await run(page, `${q}&backend=core`);
-    expectClean(core);
-    expect(core.emitters, detailOf(core)).toBe(1);
-    expect(core.backend, detailOf(core)).toMatchObject({ requested: "core", core: true, probes: true });
-    expect(core.lightOff!.nonBlack, detailOf(core)).toBe(0);
-    save(`emission-${source}-tsl`, tsl, tsl.rgba!);
-    const png = save(`emission-${source}-core`, core, core.rgba!);
-    if (source === "dense") firstCore = png;
-    const term = termDiff(tsl, core);
-    const frame = compareImages(image(tsl, tsl.rgba!), image(core, core.rgba!));
-    console.log(`[k6-emission] ${source} on ${core.adapter}: light term (on − off) core vs TSL: ${term.affected} px affected, max |Δ| ${term.maxDelta}/255, mean ${term.meanDelta.toFixed(4)}/255, ${term.over2} px > 2/255; frames ${frame.psnr.toFixed(2)} dB (${frame.above} px > 8/255)`);
-    expect(term.affected, JSON.stringify(term)).toBeGreaterThan(1000);
-    expect(term.maxDelta, JSON.stringify(term)).toBeLessThanOrEqual(2);
-    expect(term.over2, JSON.stringify(term)).toBe(0);
+  let first: Buffer | null = null;
+  for (const [emitter, source] of [
+    ["explosion", "dense"],
+    ["explosion", "sparse"],
+    ["blob", "dense"],
+  ] as const) {
+    const r = await run(page, `?case=emission&emitter=${emitter}&source=${source}`);
+    expectClean(r);
+    const detail = detailOf(r);
+    expect(r.emitters, detail).toBe(1);
+    expect(r.backend, detail).toMatchObject({ core: true, probes: true });
+    expect(r.lightOff!.groundPixels, detail).toBeGreaterThan(2000);
+    expect(r.lightOff!.nonBlack, detail).toBe(0);
+    const t = term(r);
+    console.log(`[k6-emission] ${emitter} ${source} on ${r.adapter}: term ${JSON.stringify(t)}`);
+    expect(t.affected, JSON.stringify(t)).toBeGreaterThan(1000);
+    const png = save(`emission-${emitter}-${source}`, r, r.rgba!);
+    if (emitter === "explosion" && source === "dense") first = png;
   }
-  const again = await run(page, "?case=emission&source=dense&backend=core");
+  const again = await run(page, "?case=emission&emitter=explosion&source=dense");
   expectClean(again);
-  const png = save("emission-dense-core-run2", again, again.rgba!);
-  expect(png.equals(firstCore!), "two core page loads byte-identical").toBe(true);
+  expect(save("emission-explosion-dense-run2", again, again.rgba!).equals(first!), "two page loads byte-identical").toBe(true);
   expect(errors).toEqual([]);
 });

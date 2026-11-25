@@ -25,7 +25,7 @@ import { GRID_MIP_BINDINGS, TRANSMITTANCE_MLP_BINDINGS, TRANSMITTANCE_MULTI_SCAL
 import { vdbFrameGridMipSpec } from "./kernels.js";
 import { computePipeline } from "./pipelines.js";
 import { BUFFER_USAGE, TEXTURE_USAGE, VDBRetireQueue } from "./resources.js";
-import type { VDBFrameSettings } from "./settings.js";
+import type { VDBFrameInternalSettings, VDBFrameSettings } from "./settings.js";
 
 /** The last cascade of the shadow grid, as the scattered-light terms read it. */
 export interface VDBFrameScatteringGrid {
@@ -131,9 +131,10 @@ export class VDBFrameScattering {
     }
     if (kind === "multi-scale") {
       const levels = Math.min(8, Math.max(2, Math.round(settings.multiScaleLevels)));
-      const edge: VDBFrameMultiScaleEdge = settings.multiScaleEdge === "clamp" ? "clamp" : "zero";
+      const internal = settings as VDBFrameInternalSettings;
+      const edge: VDBFrameMultiScaleEdge = internal.multiScaleEdge === "clamp" ? "clamp" : "zero";
       // K6.3a: the paper's σ = 2^k reads mip k + 1 for level k, so the chain holds one more level (at most 8)
-      const levelOffset = vdbFrameMultiScaleLevelOffset(settings.multiScaleSigma);
+      const levelOffset = vdbFrameMultiScaleLevelOffset(internal.multiScaleSigma);
       const chainLevels = Math.min(8, levels + levelOffset);
       const key = `${grid.resolution}:${levels}:${edge}:${levelOffset}`;
       if (!this.#ms || this.#msKey !== key) {
