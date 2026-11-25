@@ -118,6 +118,7 @@ describe("K3.6 settings and three internals", () => {
 describe("K3.6 volume shadows: filters on lights", () => {
   it("castShadows puts the volume filter on each shadow light (keeping a user filter as its base); off restores it", () => {
     const fr = new VDBFrameRenderer();
+    fr.backend = "tsl"; // K6.8 Stage A: the TSL maps (deleted in Stage B)
     const scene = new THREE.Scene();
     const sun = new THREE.DirectionalLight();
     const spot = new THREE.SpotLight();
@@ -166,6 +167,7 @@ describe("K7.1 volume shadow update budget (his c13f2d5)", () => {
   // updateMaps without a GPU: the shadow grid is "ready" and the map draws are recorded, not drawn
   const budgetRig = () => {
     const fr = new VDBFrameRenderer();
+    fr.backend = "tsl"; // K6.8 Stage A: the TSL maps (deleted in Stage B)
     fr.settings.castShadows = true;
     fr.settings.castShadowUpdatesPerFrame = 1;
     const shadows = fr.volumeShadows;

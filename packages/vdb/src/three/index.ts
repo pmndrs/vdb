@@ -36,7 +36,8 @@ export {
   VDB_VOLUME_SAMPLE_BUDGET_CAP,
 } from "./material.js";
 export type { VDBVolumeMaterialParameters, VDBProxyGridInfo, VDBUintUniform } from "./material.js";
-export { VDBSequence } from "./sequence.js";
+// K6.8: VDBSequence lives in the core (engine-free, Q7); re-exported here.
+export { VDBSequence } from "../core/sequence.js";
 export type {
   VDBSequenceLoopMode,
   VDBSequenceOptions,
@@ -45,7 +46,7 @@ export type {
   VDBSequenceTarget,
   VDBSequencePoolLike,
   VDBFrameLoader,
-} from "./sequence.js";
+} from "../core/sequence.js";
 
 // K3.7 (R1 §6 Step 7): level-set surfaces traced on the sparse pool, and point grids as sprites.
 export { VDBLevelSetMaterial, VDB_LEVEL_SET_SAMPLES_CAP } from "./level-set-material.js";

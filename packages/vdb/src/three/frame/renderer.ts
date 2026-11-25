@@ -466,10 +466,11 @@ export class VDBFrameRenderer {
 
   /**
    * @internal K6.1 A/B: `'core'` renders `'volume'` lighting on dense sources through the core frame renderer
-   * (compute kernels on three's device) and composites with `VDBFrameCoreIntegrateMaterial`; `'tsl'` (default)
-   * is the TSL path, the reference until K6.8. Set it before making volumes (their proxy material follows it).
+   * (compute kernels on three's device) and composites with `VDBFrameCoreIntegrateMaterial` (the default since K6.8
+   * Stage A); `'tsl'` is the TSL path, deleted in K6.8 Stage B. Set it before making volumes (their proxy material
+   * follows it).
    */
-  backend: "tsl" | "core" = "tsl";
+  backend: "tsl" | "core" = "core";
   /** @internal K6.1 A/B: the core's froxel mix (`'mixture'` default; `'over'` is his blend). */
   froxelMix: "mixture" | "over" = "mixture";
   /** @internal K6.3 A/B: core-only settings over `settings` (`multiScaleLevels`, `multiScaleEdge`). */

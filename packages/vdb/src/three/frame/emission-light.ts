@@ -684,7 +684,7 @@ export class VDBFrameEmissionLight extends THREE.Light {
    * @internal K6.5 A/B: `'core'` takes the probes from the core frame renderer of the scene's `backend: 'core'` volumes
    * (its emission kernels; set before the first render: the light node builds with it).
    */
-  backend: "tsl" | "core" = "tsl";
+  backend: "tsl" | "core" = "core";
   /** @internal K6.5: the core's probes after the last update (`backend: 'core'`). */
   coreProbes: VDBFrameEmissionProbes | null = null;
   /** @internal K6.5: the stand-in of the core probe stack. */

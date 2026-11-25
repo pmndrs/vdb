@@ -75,8 +75,8 @@
  * (or reject with) `VDB_DISPOSED`; `update` returns the last frame.
  */
 
-import { VDBError } from "../core/errors.js";
-import { NvdbFile } from "../tools/index.js";
+import { VDBError } from "./errors.js";
+import { NvdbFile } from "../tools/nvdb-file.js";
 
 /** The part of a `VDBGridPool` the player uses. */
 export interface VDBSequencePoolLike<TFrame = Uint32Array> {

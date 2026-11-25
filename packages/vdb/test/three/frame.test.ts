@@ -109,7 +109,7 @@ describe("VDBFrameVolume and the view code", () => {
     expect(v.getDensityScale()).toBeCloseTo(1 / dense.meanDensity, 9);
     v.normalizeDensity = false;
     expect(v.getDensityScale()).toBe(1);
-    expect(v.proxy.material).toBe(frameRenderer.integrateMaterial);
+    expect(v.proxy.material).toBe(frameRenderer.proxyMaterial());
     expect(v.proxy.renderOrder).toBe(1_000_000);
     // The box: his FrameVolume matrix of the unit box (centre, size) from the .wvdb bbox.
     const box = new THREE.Box3(new THREE.Vector3(-0.5, -0.5, -0.5), new THREE.Vector3(0.5, 0.5, 0.5)).applyMatrix4(v.volumes[0]!.matrix);

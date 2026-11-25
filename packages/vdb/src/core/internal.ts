@@ -70,6 +70,9 @@ export {
   sparseRecordStructWgsl,
   sparseSourceWgsl,
 } from "./source/sparse-wgsl.js";
+// K6.8: the sequence player (engine-free; public in K6.8 Stage C).
+export { VDBSequence } from "./sequence.js";
+export type { VDBFrameLoader, VDBSequenceLoopMode, VDBSequenceOptions, VDBSequencePoolLike, VDBSequenceRange, VDBSequenceStats, VDBSequenceTarget } from "./sequence.js";
 // K6.1: the core frame renderer (public in K6.8).
 export * from "./frame/index.js";
 // K6.6: level-set surfaces and point sprites (public in K6.8).
