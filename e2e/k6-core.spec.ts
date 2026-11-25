@@ -415,6 +415,10 @@ const K610B_PROBES: { name: string; query: string; keys: K610bKey[]; mutations: 
     keys: ["stats"],
     mutations: { "wgsl-composite-ortho": "stats", "wgsl-composite-reversed": "stats", "wgsl-composite-depth": "stats", "wgsl-composite-srgb": "stats" },
   },
+  // the emission colour inside the 'volume' gathers (volume B, the one with an emission channel (dense: groups=2): a synthetic LUT row or a user hook; the twins read the same)
+  { name: "gather, emission colour LUT row", query: "?probe=gather&groups=2&emissionColor=lut", keys: ["stats"], mutations: { "wgsl-emission-lut": "stats", "emission-color": "stats" } },
+  { name: "gather sparse, emission colour user WGSL hook", query: "?probe=gather&source=sparse&lod=none&emissionColor=hook", keys: ["stats"], mutations: { "wgsl-emission-hook": "stats", "emission-color": "stats" } },
+  { name: "gather spectral, emission colour LUT row", query: "?probe=gather&spectral=1&groups=2&emissionColor=lut", keys: ["stats"], mutations: { "wgsl-emission-lut": "stats" } },
   // the temporal resolve with a moving camera: the history read between texels, a per-froxel motion blend
   { name: "resolve (temporal), the camera moved", query: "?probe=resolve&move=1", keys: ["stats"], mutations: { "wgsl-resolve-reproject": "stats", "wgsl-resolve-motion": "stats", "temporal-clamp": "stats" } },
 ];

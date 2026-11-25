@@ -743,6 +743,9 @@ const WGSL_PATCHES: Record<string, [string, string]> = {
   // K6.10b, the resolve under camera motion: the reprojection ignores the camera's turn in x, y; the motion blend's gain halves
   "wgsl-resolve-reproject": ["let previousUv = previousClip.xy / previousClip.w * 0.5 + 0.5;", "let previousUv = uv;"],
   "wgsl-resolve-motion": ["clamp(motion * 4.0, 0.0, 1.0)", "clamp(motion * 2.0, 0.0, 1.0)"],
+  // K6.10b, the emission colour in the gathers: the LUT's lower texel read with its channels turned; the hook's result too
+  "wgsl-emission-lut": ["textureLoad(vdbFrameEmissionLut, vec2u(column, row), 0).rgb", "textureLoad(vdbFrameEmissionLut, vec2u(column, row), 0).brg"],
+  "wgsl-emission-hook": ["return vdbUserEmissionColor(t, temperature);", "return vdbUserEmissionColor(t, temperature).bgr;"],
   "wgsl-composite-srgb": ["var backgroundColor = vdbFrameSrgbOetfColor(sceneColor.rgb);", "var backgroundColor = sceneColor.rgb;"],
   "wgsl-composite-ortho": ["let orthographic = (vdbFrame.flags.z & 2u) != 0u;", "let orthographic = false;"],
   "wgsl-composite-reversed": ["let reversed = (vdbFrame.flags.z & 1u) != 0u;", "let reversed = false;"],
@@ -840,11 +843,23 @@ function occluderTwin(o: SynthOccluders, counter: { n: number }): (index: number
   };
 }
 
+/** K6.10b: a synthetic emission LUT row for the gather probe (256 × rgb, f32 as the core's rgba32float LUT; not white). */
+const GATHER_LUT = Float32Array.from({ length: 256 * 3 }, (_, i) => {
+  const x = Math.floor(i / 3) / 255;
+  const c = i % 3;
+  return c === 0 ? 0.2 + 0.8 * x : c === 1 ? 1 - 0.7 * x : 0.3 + 0.5 * Math.sin(x * 9) ** 2;
+});
+/** K6.10b: the gather probe's user hook and its twin. */
+const GATHER_HOOK = "fn vdbUserEmissionColor(t: f32, temperature: f32) -> vec3f {\n  return vec3f(1.0 - 0.6 * t, 0.25 + t, temperature / 4000.0);\n}\n";
+const gatherHookTwin = (t: number, temperature: number): VDBFrameVec3 => [1 - 0.6 * t, 0.25 + t, temperature / 4000];
+
 async function probeGather(device: GPUDevice): Promise<void> {
   const mix = (params.get("mix") ?? "mixture") as "mixture" | "over";
   const groups = Number(params.get("groups") ?? 1);
   const mips = params.get("mips") !== "0";
   const kind = params.get("source") === "sparse" ? "sparse" : "dense";
+  // K6.10b `&emissionColor=lut|hook`: volume B's emission colour is a synthetic LUT row or a user WGSL hook (white before)
+  const emissionColorKind = params.get("emissionColor");
   const [GW, GH, GD] = [24, 16, 12];
   const restore = patchShaders(device);
   const scene = await probeScene(device, { kind, groups, mips });
@@ -889,9 +904,12 @@ async function probeGather(device: GPUDevice): Promise<void> {
     wrap3D: "mirror",
     offset3D: [0.1, 0, -0.05],
     hdda: true,
+    ...(emissionColorKind === "lut" ? { emissionColor: { lut: GATHER_LUT } } : emissionColorKind === "hook" ? { emissionColor: { wgsl: GATHER_HOOK } } : {}),
   };
   const a = renderer.addVolume(scene.slots[0]!, pA);
   const b = renderer.addVolume(scene.slots[1]!, pB);
+  // a hook draws white until it validated (asynchronously)
+  if (emissionColorKind === "hook") await renderer.prepare();
   const eyeWorld = lookAt([3.2, 1.6, 4.4], [0.2, 0, 0]);
   const view = vdbMat4Invert(eyeWorld);
   const projection = perspective(0.75, GW / GH, 0.1, 100);
@@ -935,6 +953,8 @@ async function probeGather(device: GPUDevice): Promise<void> {
     ...twinRecord(h, sampler, c, vdbFrameFroxelRect(c.localToView, projection, GW, GH)!, vdbFrameVolumeSlices(c.viewNear, c.viewFar, range, GD), p.phaseG ?? 0.8, ms),
     // K6.4: the renderer's spectrum packing (his getFrameExtinctionSpectrum)
     extinctionSpectrum: vdbFrameExtinctionSpectrum([...p.extinctionScale], p.angstromExponent),
+    // K6.10b: B's emission colour (the LUT row's f32 texels; the hook's maths)
+    emissionColor: h === b && MUTATE !== "emission-color" ? (emissionColorKind === "lut" ? (_t: number, temperature: number) => vdbFrameEmissionLutColor(GATHER_LUT, temperature) : emissionColorKind === "hook" ? gatherHookTwin : null) : null,
   }));
   // record order = source-group order: A's source first (one group: add order)
   const ordered = records;

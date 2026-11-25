@@ -179,6 +179,8 @@ export interface TwinVolume {
   temperatureRange: [number, number];
   /** K6.4: the extinction scale of each channel (spectral; default 1, 1, 1). */
   extinctionSpectrum?: V3;
+  /** K6.10b: the volume's emission colour (t, temperature) → rgb, a LUT row or a hook's twin (default white). */
+  emissionColor?: ((t: number, temperature: number) => V3) | null;
 }
 
 /** The frame values the gather kernel reads. */
@@ -413,7 +415,7 @@ export function volumeFroxelTwin(frame: TwinFrame, r: TwinVolume, cell: V3, muta
     irradiance = add(irradiance, scale(mul3([l.color[0], l.color[1], l.color[2]], light), spot));
   }
   const lit = scale(mul3(albedo, irradiance), 1 / Math.PI);
-  const radiance = add([Math.max(r.scatterColor[0], lit[0]), Math.max(r.scatterColor[1], lit[1]), Math.max(r.scatterColor[2], lit[2])], emissionAt(r, local, readLod));
+  const radiance = add([Math.max(r.scatterColor[0], lit[0]), Math.max(r.scatterColor[1], lit[1]), Math.max(r.scatterColor[2], lit[2])], emissionAt(r, local, readLod, r.emissionColor ?? null));
   return { radiance, alpha: slice.alpha };
 }
 
@@ -546,7 +548,7 @@ export function volumeFroxelSpectralTwin(frame: TwinFrame, r: TwinVolume, cell: 
     irradiance = add(irradiance, scale(mul3([l.color[0], l.color[1], l.color[2]], light), spot));
   }
   const lit = scale(mul3(albedo, irradiance), 1 / Math.PI);
-  const radiance = add([Math.max(r.scatterColor[0], lit[0]), Math.max(r.scatterColor[1], lit[1]), Math.max(r.scatterColor[2], lit[2])], emissionAt(r, local, readLod));
+  const radiance = add([Math.max(r.scatterColor[0], lit[0]), Math.max(r.scatterColor[1], lit[1]), Math.max(r.scatterColor[2], lit[2])], emissionAt(r, local, readLod, r.emissionColor ?? null));
   return { radiance, alpha: slice.alpha };
 }
 
