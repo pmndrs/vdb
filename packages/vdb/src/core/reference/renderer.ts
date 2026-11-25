@@ -17,6 +17,7 @@
  */
 
 import { VDBError } from "../errors.js";
+import { VDBRetireQueue } from "../frame/resources.js";
 import type { VDBSlot } from "../types.js";
 import type { VDBVolumeSource } from "../source/types.js";
 import {
@@ -88,7 +89,10 @@ export interface VDBReferenceRendererGpu {
   readonly wgsl: string;
   /** Batches accumulated since the last {@link setScene} / {@link reset}. */
   readonly batches: number;
-  /** Set the scene and settings (packs the uniforms, uploads an equirect map) and reset the accumulation. */
+  /**
+   * Set the scene and settings (packs the uniforms, uploads an equirect map) and reset the accumulation. The textures it
+   * replaces are destroyed in a later task (K6.10b): submit the encoder of an earlier `render()` in the task that recorded it.
+   */
   setScene(scene: VDBReferenceScene, settings: Omit<VDBReferenceSettings, "width" | "height">): void;
   /** Drop the accumulation (the next batch starts from 0; batch indices restart, so the samples repeat). */
   reset(): void;
@@ -298,6 +302,9 @@ class ReferenceRenderer implements VDBReferenceRendererGpu {
   #front = 0;
   #settings: Required<VDBReferenceSettings> | null = null;
   #disposed = false;
+  // K6.10b: textures setScene replaced; destroyed in a later task (a render recorded before setScene, in the host's
+  // encoder, may still name them until the host submits)
+  readonly #retire = new VDBRetireQueue();
 
   constructor(device: GPUDevice, o: VDBReferenceRendererGpuOptions, wgsl: string, pipeline: GPUComputePipeline, layouts: GPUBindGroupLayout[]) {
     this.device = device;
@@ -374,15 +381,15 @@ class ReferenceRenderer implements VDBReferenceRendererGpu {
     const eq = scene.environment?.equirect;
     if (eq) {
       if (eq.data.length !== eq.width * eq.height * 4) throw new VDBError("VDB_BAD_OPTION", `reference renderer: the equirect map has ${eq.data.length} floats, expected ${eq.width}x${eq.height}x4`);
-      this.#env.destroy();
+      this.#retire.retireAfterTask(this.#env);
       this.#env = this.#makeEnv(eq.width, eq.height, eq.data);
     }
     const max3d = this.device.limits.maxTextureDimension3D;
     const m = layout.majorants;
     if (m.width > max3d || m.height > max3d || m.depth > max3d) throw new VDBError("VDB_BAD_OPTION", `reference renderer: the majorant atlas ${m.width}x${m.height}x${m.depth} exceeds maxTextureDimension3D ${max3d} (use larger cells)`);
-    this.#tables.destroy();
+    this.#retire.retireAfterTask(this.#tables);
     this.#tables = this.#makeEnv(layout.tables.width, layout.tables.height, layout.tables.data);
-    this.#majorants.destroy();
+    this.#retire.retireAfterTask(this.#majorants);
     this.#majorants = this.#makeMajorants(m.width, m.height, m.depth, m.data);
     this.#buildGroup1();
     this.reset();
@@ -454,6 +461,7 @@ class ReferenceRenderer implements VDBReferenceRendererGpu {
     this.#majorants.destroy();
     this.#uniforms.destroy();
     this.#batch.destroy();
+    this.#retire.drain();
   }
 }
 
