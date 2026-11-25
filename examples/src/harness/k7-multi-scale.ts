@@ -7,7 +7,8 @@
  *
  * Build cases: rg16float → rg16float (edge zero and clamp), a region of a stacked grid (origin), an rgba16float
  * source with channels [2, 0] into rgba16float, one channel into r16float, an rg32float source (format-agnostic
- * input). Lookup cases: 1024 queries each on the zero chain and on the stacked region (origin, no bleed).
+ * input). Lookup cases: 1024 queries each on the zero chain and on the stacked region (origin, no bleed); K6.3a: the zero
+ * chain at the paper's σ = 2^k (`levelOffset` 1) with its fail-before (`mutated`: the twin at offset 0).
  * Retire check: a resize between frames, the old view still bound by a dispatch in the next frame's encoder.
  * Results: `window.__VDB_K7_MULTI_SCALE__` (e2e/k7-multi-scale.spec.ts).
  */
@@ -58,6 +59,8 @@ interface LookupResult {
   light: { maxAbs: number; maxRel: number; nonZero: number; worst?: { i: number; gpu: number; cpu: number } };
   /** Max |gpu − cpu| / max(1, |cpu|) of vdbFrameMultiScaleSample (both channels, every level). */
   sample: { maxRel: number; outside: number };
+  /** K6.3a fail-before (a `levelOffset` lookup): max |gpu − twin| with the twin at offset 0 (must be large). */
+  mutated?: number;
 }
 
 interface Result {
@@ -273,13 +276,14 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 }
 `;
 
-async function lookup(device: GPUDevice, built: Built, name: string, n: number, seed: number): Promise<VDBFrameTexture3D[]> {
+async function lookup(device: GPUDevice, built: Built, name: string, n: number, seed: number, levelOffset = 0): Promise<VDBFrameTexture3D[]> {
   const { spec, mips } = built;
   const size = spec.size;
   const voxel: V3 = [0.5, 0.75, 0.5];
   const boxMin: V3 = [-3, 1, 2];
   const boxSize: V3 = [size[0] * voxel[0], size[1] * voxel[1], size[2] * voxel[2]];
-  const grid = { boxMin, boxSize, unit: Math.max(...voxel), levels: spec.levels, multipleScattering: 0.2 };
+  // K6.3a: levelOffset 1 = the paper's σ = 2^k (level k reads mip k + 1; the last level clamps to the chain's last mip)
+  const grid = { boxMin, boxSize, unit: Math.max(...voxel), levels: spec.levels, multipleScattering: 0.2, levelOffset, mipLevels: spec.levels - 1 };
   const params = vdbFrameMultiScaleParams({ ...grid, baseSize: size, ...(spec.origin ? { baseOrigin: spec.origin } : {}) });
   const r = rng(seed);
   const q = new Float32Array(n * 8);
@@ -347,6 +351,10 @@ async function lookup(device: GPUDevice, built: Built, name: string, n: number, 
     res.light.maxAbs = Math.max(res.light.maxAbs, abs);
     res.light.maxRel = Math.max(res.light.maxRel, abs / Math.max(cpu, 1e-3));
     if (cpu > 1e-3) res.light.nonZero++;
+    if (levelOffset !== 0) {
+      const plain = vdbFrameMultiScaleLight((k, p) => vdbFrameMultiScaleSample(textures, grid, k, p), { ...grid, levelOffset: 0 }, world, dir, q[o + 3]!);
+      res.mutated = Math.max(res.mutated ?? 0, Math.abs(g - plain));
+    }
     const s = vdbFrameMultiScaleSample(textures, grid, q[o + 7]!, world);
     if (s[0] === 0 && s[1] === 0) res.sample.outside++;
     for (const c of [0, 1]) res.sample.maxRel = Math.max(res.sample.maxRel, Math.abs(gpu[i * 4 + 1 + c]! - s[c]!) / Math.max(1, Math.abs(s[c]!)));
@@ -411,6 +419,7 @@ async function main(): Promise<void> {
 
   await lookup(device, zero, "lookup rg-zero", 1024, 10);
   await lookup(device, stacked, "lookup stacked", 1024, 11);
+  await lookup(device, zero, "lookup rg-zero paper", 1024, 12, 1);
   await retire(device, zero);
 }
 

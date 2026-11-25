@@ -67,11 +67,6 @@ export interface VDBFrameSettings {
   /** K6.3 `'multi-scale'`: levels read, base included (2–8; his `multiScaleLevels`, default 6). */
   multiScaleLevels: number;
   /**
-   * K6.3 `'multi-scale'`: the mip edge rule (V75): `'zero'` (default; density outside the grid is 0) or his
-   * `'clamp'` (clamp-to-edge). An A/B setting for K6.R1.
-   */
-  multiScaleEdge: "zero" | "clamp";
-  /**
    * K6.5b: the host's depth shadow maps (`VDBFrameInput.occluders`) shadow the volumes (mesh → volume shadows: the
    * 'frame' transmittance and gather, the 'volume' march). Default true; it does nothing without maps.
    */
@@ -91,8 +86,32 @@ export interface VDBFrameSettings {
   ambientOcclusionSteps: number;
 }
 
+/**
+ * K6.8: the settings the renderer also reads that are not public in 0.2.0 (A/B settings of 'multi-scale'; K6.3a
+ * recommends dropping multi-scale as a default candidate, the owner decides). The renderer's settings object has them
+ * (`vdbFrameDefaultSettings()` makes them); set them through this type (`core/internal.ts`).
+ */
+export interface VDBFrameInternalSettings extends VDBFrameSettings {
+  /**
+   * K6.3 `'multi-scale'`: the mip edge rule (V75): `'zero'` (default; density outside the grid is 0) or his
+   * `'clamp'` (clamp-to-edge). An A/B setting for K6.R1.
+   */
+  multiScaleEdge: "zero" | "clamp";
+  /**
+   * K6.3a `'multi-scale'`: the blur of each level (V75 item 5). `'his'` (default; his 4e2d46f): level k reads the
+   * binomial mip k, σ ≈ 2^(k−1) voxels. `'paper'`: level k reads mip k + 1, σ ≈ 2^k voxels (Disney "Deep Scattering"
+   * §4.2: the Gaussian width equals the level's stencil spacing); the chain holds one more mip. An A/B setting.
+   */
+  multiScaleSigma: "his" | "paper";
+}
+
 /** His v0.26 defaults (`FrameRenderer.js` L191–246, as `VDBFrameRenderer.settings`), plus `froxelMix: 'mixture'`, `occlusion: true` and the K6.Q1 ambient occlusion (off). */
 export function vdbFrameDefaultSettings(): VDBFrameSettings {
+  return vdbFrameDefaultInternalSettings();
+}
+
+/** The defaults with the internal fields typed ({@link VDBFrameInternalSettings}). */
+export function vdbFrameDefaultInternalSettings(): VDBFrameInternalSettings {
   return {
     width: 512,
     height: 512,
@@ -134,6 +153,7 @@ export function vdbFrameDefaultSettings(): VDBFrameSettings {
     froxelMix: "mixture",
     multiScaleLevels: 6,
     multiScaleEdge: "zero",
+    multiScaleSigma: "his",
     occlusion: true,
     ambientOcclusion: false,
     ambientOcclusionPairs: 4,

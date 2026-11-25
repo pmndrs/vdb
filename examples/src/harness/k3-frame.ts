@@ -701,8 +701,10 @@ async function main(): Promise<void> {
   // `?aoSteps=` (shadowed ambient); K6.5b `?occlusion=0` (no mesh → volume shadows: his renderer has none)
   const s = frameRenderer.settings;
   s.froxelMix = params.get("froxelMix") === "over" ? "over" : "mixture";
-  if (params.has("msEdge")) s.multiScaleEdge = params.get("msEdge") === "clamp" ? "clamp" : "zero";
+  if (params.has("msEdge")) Object.assign(s, { multiScaleEdge: params.get("msEdge") === "clamp" ? "clamp" : "zero" });
   if (params.has("msLevels")) s.multiScaleLevels = Number(params.get("msLevels"));
+  // K6.3a `?msSigma=paper`: the σ = 2^k levels (an internal core setting, VDBFrameInternalSettings)
+  if (params.has("msSigma")) Object.assign(s, { multiScaleSigma: params.get("msSigma") === "paper" ? "paper" : "his" });
   if (params.has("ao")) s.ambientOcclusion = params.get("ao") === "1";
   if (params.has("aoPairs")) s.ambientOcclusionPairs = Number(params.get("aoPairs"));
   if (params.has("aoSteps")) s.ambientOcclusionSteps = Number(params.get("aoSteps"));

@@ -78,7 +78,7 @@ import { vdbFrameScatteringOctaves } from "../../tools/frame/index.js";
 import { VDB_FRAME_AMBIENT_MAX_PAIRS, vdbFrameAmbientDirections } from "../../tools/frame/ambient.js";
 import { vdbFrameMlpFromNeural, type VDBFrameMlp } from "../../tools/frame/mlp.js";
 import { vdbFrameNeuralWeights } from "../../tools/frame/neural-weights.js";
-import { vdbFrameDefaultSettings, type VDBFrameSettings } from "./settings.js";
+import { vdbFrameDefaultInternalSettings, type VDBFrameSettings } from "./settings.js";
 import { vdbFrameMultipleScatteringValue, vdbFramePhaseSpectrum, vdbFramePhaseVector, type VDBFramePhaseFields } from "./phase.js";
 import {
   VDB_FRAME_GROUP,
@@ -323,7 +323,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
   constructor(device: GPUDevice, o: VDBFrameRendererGpuOptions) {
     this.device = device;
     this.#label = o.label ?? "vdb frame";
-    this.settings = { ...vdbFrameDefaultSettings(), ...(o.settings ?? {}) };
+    this.settings = { ...vdbFrameDefaultInternalSettings(), ...(o.settings ?? {}) };
     this.#composite = o.composite ?? null;
     this.#tier1 = o.features?.tier1 ?? !!device.features?.has?.("texture-formats-tier1");
     this.#maxVolumes = Math.min(VDB_FRAME_MAX_VOLUMES, Math.floor((device.limits?.maxUniformBufferBindingSize ?? 65536) / VDB_FRAME_VOLUME_BYTES));

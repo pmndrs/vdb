@@ -595,11 +595,16 @@ export interface VDBFrameMultiScaleParams {
   baseOrigin?: readonly [number, number, number];
   /** Base region texels per axis (the chain's `layout.size`). */
   baseSize: readonly [number, number, number];
+  /**
+   * K6.3a: level k of the lookup reads mip level min(k + levelOffset, the chain's mips) (default 0, his; 1 is the
+   * paper's σ = 2^k, `multiScaleSigma: 'paper'`, with one more level in the chain).
+   */
+  levelOffset?: number;
 }
 
 /**
  * The 64 bytes of a WGSL `VdbFrameMultiScale` (into `target` at `byteOffset`, or a new buffer): boxMin, levels,
- * boxSize, unit, baseOrigin, multipleScattering, baseSize, pad.
+ * boxSize, unit, baseOrigin, multipleScattering, baseSize, levelOffset (K6.3a; was padding, 0 = unchanged).
  */
 export function vdbFrameMultiScaleParams(p: VDBFrameMultiScaleParams, target: ArrayBuffer = new ArrayBuffer(VDB_FRAME_MULTI_SCALE_PARAMS_BYTES), byteOffset = 0): ArrayBuffer {
   const f = new Float32Array(target, byteOffset, 16);
@@ -614,7 +619,7 @@ export function vdbFrameMultiScaleParams(p: VDBFrameMultiScaleParams, target: Ar
   u[3] = p.levels;
   f[7] = p.unit;
   f[11] = p.multipleScattering;
-  f[15] = 0;
+  u[15] = p.levelOffset ?? 0;
   return target;
 }
 
@@ -633,7 +638,7 @@ const COMPONENTS = ["x", "y", "z", "w"];
  * the VDB module, so module bytes and the size snapshot never move). Declares:
  *
  *     struct VdbFrameMultiScale { boxMin: vec3f, levels: u32, boxSize: vec3f, unit: f32,
- *                                 baseOrigin: vec3f, multipleScattering: f32, baseSize: vec3f, pad0: f32 }
+ *                                 baseOrigin: vec3f, multipleScattering: f32, baseSize: vec3f, levelOffset: u32 }
  *     fn vdbFrameMultiScaleSample(base: texture_3d<f32>, mips: texture_3d<f32>, smp: sampler,
  *                                 ms: VdbFrameMultiScale, level: u32, world: vec3f) -> vec2f
  *     fn vdbFrameMultiScaleLight(base: texture_3d<f32>, mips: texture_3d<f32>, smp: sampler,
@@ -666,7 +671,7 @@ struct VdbFrameMultiScale {
     baseOrigin: vec3f,
     multipleScattering: f32,
     baseSize: vec3f,
-    pad0: f32,
+    levelOffset: u32,
 };
 
 // (extinction, absorption) of a level at a world position: 0 outside the box; level 0 is the base region with
@@ -689,7 +694,8 @@ fn vdbFrameMultiScaleSample(base: texture_3d<f32>, mips: texture_3d<f32>, smp: s
 
 // Scattered light (total - direct) of a light slot: level k reads the bulk of the segment h (2^k - 1) to
 // h (2^(k+1) - 1) toward the light (5 points: the axis and +-h 2^k on two axes at right angles), the 1D diffusion
-// of the summed bulk gives total - its direct part (mjurczyk 4e2d46f, after Disney "Deep Scattering" 4.2).
+// of the summed bulk gives total - its direct part (mjurczyk 4e2d46f, after Disney "Deep Scattering" 4.2). K6.3a:
+// the points read mip level min(k + levelOffset, mips): offset 1 blurs level k with sigma ~ 2^k voxels (the paper).
 fn vdbFrameMultiScaleLight(base: texture_3d<f32>, mips: texture_3d<f32>, smp: sampler, ms: VdbFrameMultiScale, world: vec3f, direction: vec3f, maxDistance: f32) -> f32 {
     let h = ms.unit;
     let g = ms.multipleScattering;
@@ -703,18 +709,20 @@ fn vdbFrameMultiScaleLight(base: texture_3d<f32>, mips: texture_3d<f32>, smp: sa
         v = vec3f(0.0, 0.0, 1.0);
     }
     var depths = vec3f(0.0);
-    let count = min(ms.levels, textureNumLevels(mips) + 1u);
+    let top = textureNumLevels(mips);
+    let count = min(ms.levels, top + 1u);
     for (var k = 0u; k < count; k++) {
         let scale = h * exp2(f32(k));
         let start = scale - h;
         let segment = min(scale, maxDistance - start);
         if segment > 0.0 {
             let center = world + direction * (start + segment * 0.5);
-            let bulk = (vdbFrameMultiScaleSample(base, mips, smp, ms, k, center)
-                + vdbFrameMultiScaleSample(base, mips, smp, ms, k, center + u * scale)
-                + vdbFrameMultiScaleSample(base, mips, smp, ms, k, center - u * scale)
-                + vdbFrameMultiScaleSample(base, mips, smp, ms, k, center + v * scale)
-                + vdbFrameMultiScaleSample(base, mips, smp, ms, k, center - v * scale)) * 0.2;
+            let read = min(k + ms.levelOffset, top);
+            let bulk = (vdbFrameMultiScaleSample(base, mips, smp, ms, read, center)
+                + vdbFrameMultiScaleSample(base, mips, smp, ms, read, center + u * scale)
+                + vdbFrameMultiScaleSample(base, mips, smp, ms, read, center - u * scale)
+                + vdbFrameMultiScaleSample(base, mips, smp, ms, read, center + v * scale)
+                + vdbFrameMultiScaleSample(base, mips, smp, ms, read, center - v * scale)) * 0.2;
             let absorbed = min(bulk.y, bulk.x);
             let reduced = (bulk.x - absorbed) * g;
             depths += vec3f(bulk.x, sqrt(absorbed * 3.0 * (absorbed + reduced)), reduced) * segment;

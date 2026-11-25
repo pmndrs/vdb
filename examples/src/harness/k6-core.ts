@@ -125,6 +125,7 @@ import {
   vdbFrameMlpInputs,
   vdbFrameMlpMipTexel,
   vdbFrameMlpSampleLevel,
+  vdbFrameMultiScaleLevelOffset,
   vdbFrameMultiScaleLight,
   vdbFrameMultiScaleSample,
   vdbFrameTexture3DLinear,
@@ -279,7 +280,7 @@ const MS_PARAM = params.get("ms");
 const MS_MODE: VDBFrameMultipleScatteringMode = MS_PARAM === null || MS_PARAM === "1" ? true : MS_PARAM === "0" ? false : (MS_PARAM as VDBFrameMultipleScatteringMode);
 /** Octave settings of `?ms=octaves` (off the defaults so a swapped term shows). */
 const OCTAVE_SETTINGS = { scatteringOctaves: 3, scatteringOctaveExtinction: 0.6, scatteringOctaveContribution: 0.45, scatteringOctavePhase: 0.7 };
-const MS_SETTINGS = { multipleScattering: MS_MODE, ...OCTAVE_SETTINGS, multiScaleEdge: (params.get("edge") ?? "zero") as "zero" | "clamp", multiScaleLevels: Number(params.get("levels") ?? 6) };
+const MS_SETTINGS = { multipleScattering: MS_MODE, ...OCTAVE_SETTINGS, multiScaleEdge: (params.get("edge") ?? "zero") as "zero" | "clamp", multiScaleLevels: Number(params.get("levels") ?? 6), multiScaleSigma: (params.get("sigma") === "paper" ? "paper" : "his") as "his" | "paper" };
 const MS_OCTAVES = vdbFrameScatteringOctaves(MS_SETTINGS) as VDBFrameVec4;
 /** K6.5b `?occluders=1`: synthetic host depth maps for the directional, point and spot probe lights (frame and gather probes). */
 const OCCLUDERS = params.get("occluders") === "1";
@@ -1159,9 +1160,12 @@ async function probeFrame(device: GPUDevice): Promise<void> {
   if (msMips.length > 0) {
     const levels = MS_SETTINGS.multiScaleLevels;
     const edge = MUTATE === "ms-edge" ? (MS_SETTINGS.multiScaleEdge === "clamp" ? "zero" : "clamp") : MS_SETTINGS.multiScaleEdge;
+    // K6.3a: the paper's σ = 2^k reads mip k + 1 (one more level in the chain, at most 8)
+    const levelOffset = vdbFrameMultiScaleLevelOffset(MS_SETTINGS.multiScaleSigma);
+    const chainLevels = Math.min(8, levels + levelOffset);
     // the chain from the read-back last cascade (K7.3's twin), then the lookup twin on the read-back chain
     const base = { data: shadowStack.data, dimensions: [...shadowStack.size] as VDBFrameVec3, channels: 4 };
-    const cpuMips = vdbFrameMultiScaleMips(base, { levels, edge, origin: [lastOrigin[0]!, lastOrigin[1]!, lastOrigin[2]!], size: [R, R, R], channels: [0, 1] });
+    const cpuMips = vdbFrameMultiScaleMips(base, { levels: chainLevels, edge, origin: [lastOrigin[0]!, lastOrigin[1]!, lastOrigin[2]!], size: [R, R, R], channels: [0, 1] });
     const mstats = newStats("1 f16 ulp (K7.3 rg16float multi-scale mips of the last cascade vs vdbFrameMultiScaleMips on the read-back grid)");
     msMips.forEach((m, k) => {
       const c = cpuMips.levels[k]!;
@@ -1170,7 +1174,13 @@ async function probeFrame(device: GPUDevice): Promise<void> {
     result.mipStats = mstats;
     const textures = { base, baseOrigin: [lastOrigin[0]!, lastOrigin[1]!, lastOrigin[2]!] as VDBFrameVec3, baseSize: [R, R, R] as VDBFrameVec3, baseChannels: [0, 1], mips: msMips.map((m) => ({ data: m.data, dimensions: [...m.size] as VDBFrameVec3, channels: 2 })) };
     const box = { boxMin: layout.gridMin[lastCascade]!, boxSize: layout.gridSize[lastCascade]! };
-    const msGrid = { unit: Math.max(...layout.gridVoxel[lastCascade]!), levels: MUTATE === "ms-levels" ? 2 : levels, multipleScattering: msValue };
+    const msGrid = {
+      unit: Math.max(...layout.gridVoxel[lastCascade]!),
+      levels: MUTATE === "ms-levels" ? 2 : levels,
+      multipleScattering: msValue,
+      levelOffset: MUTATE === "ms-sigma" ? 1 - levelOffset : levelOffset,
+      mipLevels: chainLevels - 1,
+    };
     slotTotal = (direct, world, direction, _depth, maxDistance) => Math.min(direct + vdbFrameMultiScaleLight((k, p) => vdbFrameMultiScaleSample(textures, box, k, p), msGrid, world, direction, maxDistance), 1);
   }
   const slotLights = lightRecords(lights).slice(0, 6).map((l) => l.position);

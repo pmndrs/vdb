@@ -325,9 +325,11 @@ export {
   vdbFrameTexture3DLinear,
   vdbFrameMultiScaleSample,
   vdbFrameMultiScaleLight,
+  vdbFrameMultiScaleLevelOffset,
 } from "./frame/multi-scale.js";
 export type {
   VDBFrameMultiScaleEdge,
+  VDBFrameMultiScaleSigma,
   VDBFrameMultiScaleMipLevel,
   VDBFrameMultiScaleLayout,
   VDBFrameTexture3D,

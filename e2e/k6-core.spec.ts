@@ -195,6 +195,14 @@ const K63_PROBES: { name: string; query: string; keys: K63Key[]; mutations: Reco
   { name: "frame, 'neural' (= 'mlp'), sparse, two groups", query: "?probe=frame&ms=neural&source=sparse&groups=2", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "mlp-weights": "transmittanceStats" } },
   { name: "frame, 'multi-scale' (edge zero)", query: "?probe=frame&ms=multi-scale", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "ms-edge": "mipStats", "ms-levels": "transmittanceStats" } },
   { name: "frame, 'multi-scale' (edge clamp, 4 levels)", query: "?probe=frame&ms=multi-scale&edge=clamp&levels=4", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "ms-edge": "mipStats" } },
+  // K6.3a: the paper's wider levels (`multiScaleSigma: 'paper'`: level k reads mip k + 1, σ ≈ 2^k voxels; one more mip)
+  {
+    name: "frame, 'multi-scale' (σ = 2^k, paper)",
+    query: "?probe=frame&ms=multi-scale&sigma=paper",
+    keys: ["gridStats", "mipStats", "transmittanceStats", "stats"],
+    mutations: { "ms-sigma": "transmittanceStats", "ms-edge": "mipStats" },
+  },
+  { name: "frame, 'multi-scale' (σ = 2^k, 8 levels: the last level clamps to the chain)", query: "?probe=frame&ms=multi-scale&sigma=paper&levels=8", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "ms-sigma": "transmittanceStats" } },
   // K6.5b × K6.3: host occluder maps with each mode's own scattered term (octaves: occluded in the gather)
   { name: "frame, 'octaves' with occluder maps", query: "?probe=frame&ms=octaves&occluders=1", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { occluder: "stats" } },
   { name: "frame, 'two-sided' with occluder maps", query: "?probe=frame&ms=two-sided&occluders=1", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { "occluder-scattered": "transmittanceStats" } },
@@ -222,6 +230,7 @@ for (const p of K63_PROBES) {
       const bad = await run(page, `${p.query}&mutate=${m}`);
       expect(bad.error, detail(bad)).toBeUndefined();
       expect(bad[key]!.over, `mutation ${m} must fail ${key}: ${detail(bad)}`).toBeGreaterThan(Math.floor(bad[key]!.compared * 0.001));
+      console.log(`[k6-core] K6.3 ${p.name} mutation ${m}: ${key} ${bad[key]!.over} / ${bad[key]!.compared} over`);
     }
     expect(errors).toEqual([]);
   });

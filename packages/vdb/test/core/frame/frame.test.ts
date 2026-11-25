@@ -4,6 +4,7 @@ import { vdbDenseSource } from "../../../src/core/source/dense.js";
 import {
   ENV_GROUP0_LAYOUT,
   GROUP0_LAYOUT,
+  type VDBFrameInternalSettings,
   VDB_FRAME_GROUP,
   VDB_FRAME_LIGHTS,
   VDB_FRAME_UNIFORMS,
@@ -246,14 +247,14 @@ describe("K6.1 retire queue", () => {
 });
 
 describe("K6.1 settings", () => {
-  it("./three's VDBFrameRenderer settings are the core defaults (K6.8: one declaration), with froxelMix, occlusion, the K6.3 multi-scale and the K6.Q1 ambient-occlusion fields", () => {
-    const core = vdbFrameDefaultSettings();
+  it("./three's VDBFrameRenderer settings are the core defaults (K6.8: one declaration), with froxelMix, occlusion, the K6.3 / K6.3a multi-scale (internal) and the K6.Q1 ambient-occlusion fields", () => {
+    const core = vdbFrameDefaultSettings() as VDBFrameInternalSettings;
     const three = new VDBFrameRenderer().settings as unknown as Record<string, unknown>;
     expect(three).toEqual(core);
-    const { froxelMix, occlusion, multiScaleLevels, multiScaleEdge, ambientOcclusion, ambientOcclusionPairs, ambientOcclusionSteps, multipleScattering } = core;
+    const { froxelMix, occlusion, multiScaleLevels, multiScaleEdge, multiScaleSigma, ambientOcclusion, ambientOcclusionPairs, ambientOcclusionSteps, multipleScattering } = core;
     // the defaults the owner decides (K6.8 keeps them: a one-line change here and in settings.ts)
     expect(multipleScattering).toBe("neural");
-    expect([multiScaleLevels, multiScaleEdge]).toEqual([6, "zero"]);
+    expect([multiScaleLevels, multiScaleEdge, multiScaleSigma]).toEqual([6, "zero", "his"]);
     // K6.Q1: the shadowed ambient is off by default (his unshadowed ambient), 4 pairs, the volume's shadow steps
     expect([ambientOcclusion, ambientOcclusionPairs, ambientOcclusionSteps]).toEqual([false, 4, 0]);
     expect(froxelMix).toBe("mixture");

@@ -4,7 +4,7 @@
  * The reference page (`k6-reference.html?case=scene`) renders the same definition.
  *
  * Query: `?scene=<name>` (K6_SCENES), `?lighting=volume|frame`, `?ms=0|1|two-sided|octaves|neural` (K6.3, core only:
- * `mlp`, `multi-scale` with `?msEdge=zero|clamp`, `?msLevels=`),
+ * `mlp`, `multi-scale` with `?msEdge=zero|clamp`, `?msLevels=`, K6.3a `?msSigma=his|paper`),
  * `?backend=tsl|core` (K6.1/K6.2 internal A/B), `?froxelMix=mixture|over`, `?w=&h=` (default 1280 × 720), `?froxels=WxHxD`
  * (default his 512x512x24), `?lod=` (sparse sources: default 'coarse-pyramid', D28), `?shadowRes=`, `?shadowSteps=`.
  * Jitter and temporal reprojection off (deterministic); no MSAA (no meshes).
@@ -107,8 +107,10 @@ async function main(): Promise<void> {
   // ambient (`?ao=1`, `?aoPairs=`, `?aoSteps=`)
   const cs = frameRenderer.settings;
   cs.froxelMix = params.get("froxelMix") === "over" ? "over" : "mixture";
-  if (params.has("msEdge")) cs.multiScaleEdge = params.get("msEdge") === "clamp" ? "clamp" : "zero";
+  if (params.has("msEdge")) Object.assign(cs, { multiScaleEdge: params.get("msEdge") === "clamp" ? "clamp" : "zero" });
   if (params.has("msLevels")) cs.multiScaleLevels = Number(params.get("msLevels"));
+  // K6.3a `?msSigma=paper`: the σ = 2^k levels (an internal core setting, VDBFrameInternalSettings)
+  if (params.has("msSigma")) Object.assign(cs, { multiScaleSigma: params.get("msSigma") === "paper" ? "paper" : "his" });
   if (params.has("ao")) cs.ambientOcclusion = params.get("ao") === "1";
   if (params.has("aoPairs")) cs.ambientOcclusionPairs = Number(params.get("aoPairs"));
   if (params.has("aoSteps")) cs.ambientOcclusionSteps = Number(params.get("aoSteps"));
