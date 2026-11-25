@@ -391,6 +391,19 @@ export function vdbSrgbEotf(x: number): number {
   return x < 0.04045 ? x * 0.0773993808 : Math.pow(x * 0.9478672986 + 0.0521327014, 2.4);
 }
 
+/**
+ * K6.10b twin of the composite's `vdbFrameSceneViewDepth`: the view depth (positive) of a scene depth value, three's
+ * perspective / orthographic `depthToViewZ` with or without reversed depth; an empty depth (1, or 0 reversed) is 1e20.
+ */
+export function vdbFrameSceneViewDepth(depth: number, near: number, far: number, o: { reversed?: boolean; orthographic?: boolean } = {}): number {
+  const reversed = !!o.reversed;
+  if (reversed ? depth <= 0 : depth >= 1) return 1e20;
+  let viewZ: number;
+  if (o.orthographic) viewZ = reversed ? (far - near) * depth - far : (near - far) * depth - near;
+  else viewZ = reversed ? (near * far) / ((near - far) * depth - near) : (near * far) / ((far - near) * depth - far);
+  return -viewZ;
+}
+
 /** The integrate pass's sRGB blend (`srgbBlending`, clamp on): linear out. */
 export function vdbFrameSrgbBlend(background: Vec3, radiance: Vec3, alpha: number, clampColors = true): Vec3 {
   const enc = (x: number) => (clampColors ? clamp(vdbSrgbOetf(x), 0, 1) : vdbSrgbOetf(x));

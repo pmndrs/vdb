@@ -46,6 +46,7 @@ interface Result {
   probeStats?: Stats;
   irradianceStats?: Stats;
   emission?: { state: { count: number; resolution: number; emitters: number }; first: { directions: number; probes: boolean }; second: { directions: number; probes: boolean }; hookErrors: string[]; outside: number };
+  motion?: { valid: number; partial: number; offCentre: number };
   warnings: string[];
   uncaptured: string[];
 }
@@ -394,6 +395,57 @@ for (const p of K65_PROBES) {
       const bad = await run(page, `${p.query}&mutate=${m}`);
       expect(bad.error, detail(bad)).toBeUndefined();
       expect(bad[key]!.over, `mutation ${m} must fail ${key}: ${detail(bad)}`).toBeGreaterThan(0);
+    }
+    expect(errors).toEqual([]);
+  });
+}
+
+// K6.10b: the branches the K6 gate review found untested (docs/archive/handoffs/K6-10-gate-review.md finding 4c), each
+// against its twin, with WGSL-side mutations (k6-core.ts WGSL_PATCHES) that must fail. `mutations` maps each to the stats
+// it must break.
+type K610bKey = "stats" | "receiverStats";
+const K610B_PROBES: { name: string; query: string; keys: K610bKey[]; mutations: Record<string, K610bKey> }[] = [
+  { name: "composite, grey sRGB blend over the scene colour", query: "?probe=integrate&srgb=1", keys: ["stats"], mutations: { "wgsl-composite-srgb": "stats", coverage: "stats" } },
+  { name: "composite, orthographic scene depth", query: "?probe=integrate&depthMode=ortho", keys: ["stats"], mutations: { "wgsl-composite-ortho": "stats" } },
+  { name: "composite, reversed perspective scene depth", query: "?probe=integrate&depthMode=reversed", keys: ["stats"], mutations: { "wgsl-composite-reversed": "stats" } },
+  { name: "composite, depth32float scene depth", query: "?probe=integrate&depthFormat=depth32float", keys: ["stats"], mutations: { "wgsl-composite-depth": "stats" } },
+  {
+    name: "composite, reversed orthographic depth32float, sRGB",
+    query: "?probe=integrate&depthMode=ortho-reversed&depthFormat=depth32float&srgb=1",
+    keys: ["stats"],
+    mutations: { "wgsl-composite-ortho": "stats", "wgsl-composite-reversed": "stats", "wgsl-composite-depth": "stats", "wgsl-composite-srgb": "stats" },
+  },
+  // the temporal resolve with a moving camera: the history read between texels, a per-froxel motion blend
+  { name: "resolve (temporal), the camera moved", query: "?probe=resolve&move=1", keys: ["stats"], mutations: { "wgsl-resolve-reproject": "stats", "wgsl-resolve-motion": "stats", "temporal-clamp": "stats" } },
+];
+
+for (const p of K610B_PROBES) {
+  test(`K6.10b probe: ${p.name} matches its CPU twins; WGSL mutations fail`, async ({ page }) => {
+    test.setTimeout(900_000);
+    const errors = collectErrors(page);
+    const r = await run(page, p.query);
+    expect(r.error, detail(r)).toBeUndefined();
+    expect(r.uncaptured, detail(r)).toEqual([]);
+    expect(r.warnings, detail(r)).toEqual([]);
+    for (const key of p.keys) {
+      const s = r[key]!;
+      expect(s, `${key} missing: ${detail(r)}`).toBeDefined();
+      expect(s.compared, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(512);
+      expect(s.covered, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(minCovered(key, p.query));
+      expect(s.over, `${key}: ${detail(r)}`).toBeLessThanOrEqual(Math.floor(s.compared * 0.001));
+      console.log(`[k6-core] K6.10b ${p.name} ${key} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toFixed(2)} f16 ulp, ${s.over} over`);
+    }
+    if (p.query.includes("move=1")) {
+      // most froxels keep some history (blend < 1), read off the texel centres
+      console.log(`[k6-core] K6.10b ${p.name}: ${JSON.stringify(r.motion)}`);
+      expect(r.motion!.partial, detail(r)).toBeGreaterThan(r.motion!.valid / 2);
+      expect(r.motion!.offCentre, detail(r)).toBeGreaterThan(r.motion!.valid / 4);
+    }
+    for (const [m, key] of Object.entries(p.mutations)) {
+      const bad = await run(page, `${p.query}&mutate=${m}`);
+      expect(bad.error, detail(bad)).toBeUndefined();
+      expect(bad[key]!.over, `mutation ${m} must fail ${key}: ${detail(bad)}`).toBeGreaterThan(Math.floor(bad[key]!.compared * 0.001));
+      console.log(`[k6-core] K6.10b ${p.name} mutation ${m}: ${key} ${bad[key]!.over} / ${bad[key]!.compared} over`);
     }
     expect(errors).toEqual([]);
   });

@@ -579,6 +579,8 @@ export function resolveTwin(o: {
   neighbours: (z: number) => V4[];
   history: ((z: number) => V4 | null) | null;
   blend: number;
+  /** K6.10b: the blend of slice z (a moving camera: the reprojection's motion blend); default `blend`. */
+  blendAt?: (z: number) => number;
   inSlices: (z: number) => boolean;
   mutate?: TwinMutation;
 }): { prefix: V4[]; history: V4[] } {
@@ -598,7 +600,8 @@ export function resolveTwin(o: {
     const n = [...o.neighbours(z)];
     if (z > 0) n.push(o.column[z - 1]!);
     if (z + 1 < D) n.push(o.column[z + 1]!);
-    resolved.push(o.mutate === "temporal-clamp" ? (current.map((c, i) => h[i]! + (c - h[i]!) * o.blend) as V4) : vdbFrameTemporalFroxel(current, h, n, o.blend));
+    const blend = o.blendAt?.(z) ?? o.blend;
+    resolved.push(o.mutate === "temporal-clamp" ? (current.map((c, i) => h[i]! + (c - h[i]!) * blend) as V4) : vdbFrameTemporalFroxel(current, h, n, blend));
   }
   const prefix = vdbFrameScanColumn(resolved, o.mutate === "scan-stop" ? { stop: 0 } : {});
   return { prefix, history: resolved };
