@@ -128,6 +128,24 @@ for (const m of MUTATIONS) {
   });
 }
 
+// K6.10b: the raw pass with an orthographic camera (demo 17's light depth map draws one): the surface twins on
+// orthographic rays; the pass ignoring its orthographic flag (a WGSL patch) and the twin's perspective rays must fail.
+test("K6.10b level set (raw pass), orthographic camera: the teapot matches the surface twins; mutations fail", async ({ page }) => {
+  test.skip(!has("vdb-samples/utahteapot.vdb"), "fixtures/vdb-samples/utahteapot.vdb missing (pnpm fixtures:vdb-samples)");
+  test.setTimeout(900_000);
+  const query = "?scene=teapot&twin=1&backend=core&ortho=1&w=192&h=108";
+  const r = await run(page, query);
+  checkLevelSet(r, 1_000);
+  const t = r.twin!;
+  console.log(`[k6-surface] ${r.adapter}: teapot orthographic IoU ${t.iou.toFixed(5)} (${t.gpuHits}/${t.cpuHits} px), hit max ${t.hitMaxVoxels.toExponential(2)} voxels, normal p99 ${t.normalP99Deg.toExponential(2)}°, depth max ${t.depthMaxAbs.toExponential(2)}, shade max ${t.shadeMaxAbs.toExponential(2)}`);
+  for (const mutate of ["wgsl-ls-ortho", "ray-ortho"]) {
+    const bad = await run(page, `${query}&mutate=${mutate}`);
+    expect(bad.error, detailOf(bad)).toBeUndefined();
+    console.log(`[k6-surface] orthographic mutation ${mutate}: IoU ${bad.twin!.iou.toFixed(5)}, hit max ${bad.twin!.hitMaxVoxels.toExponential(2)} voxels`);
+    expect(bad.twin!.iou < 0.99 || bad.twin!.hitMaxVoxels >= 0.01, `${mutate}: ${detailOf(bad)}`).toBe(true);
+  }
+});
+
 test("K6.6 sprites: the core sprite WGSL matches its f32 twin; each mutation fails", async ({ page }) => {
   test.setTimeout(120_000);
   const r = await run(page, "?scene=sprite-probe&backend=core");
