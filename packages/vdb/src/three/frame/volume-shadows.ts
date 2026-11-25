@@ -1,41 +1,51 @@
 // Portions derived from mjurczyk/openvdb (MIT), commit 75e7345 (v0.26.0):
-//   src/three-openvdb/frame/webgpu/FrameVolumeShadows.js L34–1027 (the light shadow reset, receiver uniforms, cascade
-//   lookup, FrameVolumeShadowNode, the filter install, dispose).
+//   src/three-openvdb/frame/webgpu/FrameVolumeShadows.js L34–1027 (the light shadow reset, FrameVolumeShadowNode, the
+//   filter install, dispose).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Past the pin (K7.1): his 62a6e3e (lookups from the drawn state) and c13f2d5 (the budget counts only lights of the
 // rendered scene; the core's maps).
 // Changes: TypeScript; K6.8: the maps are the core's (`VDBVolumeShadowMap`, drawn by its kernels), three only receives
-// them; every three r187 internal goes through `three-internals.ts`, which self-tests it and throws
-// VDB_ENGINE_MISMATCH. Divergences: DIVERGES.md (K3.6, K6.5 rows).
+// them; K6.8a: the receivers call the core's WGSL (`vdbVolumeShadowWgsl`) with the core's view buffer bound through a
+// storage stand-in, instead of a TSL port of the lookup; every three r187 internal goes through `three-internals.ts`
+// or the `VDBGridNode` attribute self-test, which throw VDB_ENGINE_MISMATCH. Divergences: DIVERGES.md (K3.6, K6.5 rows).
 
 /**
  * K3.6 / K6.5: shadows of `VDBFrameVolume`s on meshes (`frameRenderer.settings.castShadows`, his `FrameVolumeShadows`).
  * Each shadow-casting directional, spot or point light gets a Beer shadow map from the core frame renderer (its
  * `outputs.volumeShadows`); the light's `shadow.filterNode` multiplies three's shadow by the volume transmittance at
- * the receiver, read with the state the map was drawn with (`VDBVolumeShadowMap.drawn`): directional cascades are
- * layers of a 2d-array, a spot map one layer, a point map a cube view.
+ * the receiver.
+ *
+ * K6.8a: the receiver is the core's own WGSL (`vdbVolumeShadow`, `…Rgb`, `…Cube`, `…CubeRgb` of `vdbVolumeShadowWgsl()`)
+ * through a `wgslFn`. Its inputs are the map texture (a 2d-array: directional cascades or a spot map; a point map through a
+ * cube view), the spectral rgb twin, and the map's `view` buffer, the state the map was drawn with (his 62a6e3e), which
+ * the core rewrites each update: three binds that buffer itself through a storage stand-in (the `VDBGridNode` pool-buffer
+ * pattern), read as `array<vec4u>` and unpacked into `VdbVolumeShadowView`. Each light's texture and storage nodes are
+ * made once and only their `value` follows the core (a new stand-in when the core made a new texture or buffer), so a
+ * receiver built at any time binds the core's current objects; while a light has no core map they bind a placeholder
+ * (a zero view: transmittance 1), never a texture or buffer the core retired (K6.10 finding 8).
  *
  * three: receivers need `receiveShadow`, the light `castShadow`, and `renderer.shadowMap.enabled`. The core update runs
  * before the first receiver of each render (the node's `updateBefore`), so the maps are this render's.
  */
 
 import * as THREE from "three";
-import { Node } from "three/webgpu";
+import { CodeNode, Node, type NodeBuilder, type StorageBufferAttribute, type WebGPURenderer } from "three/webgpu";
 import * as TSL from "three/tsl";
-import type { WebGPURenderer } from "three/webgpu";
-import type { VDBTslNode } from "../grid-node.js";
-import { frameMaxShadowMapCascades, frameShadowCoarseMapSize, frameShadowMinOpticalDepth } from "../../tools/frame/shadows.js";
+import { vdbThreeStorageStandIn, type VDBTslNode } from "../grid-node.js";
+import { getDevice } from "../device.js";
+import { frameShadowCoarseMapSize } from "../../tools/frame/shadows.js";
 import { vdbFrameCheckFilterInputs, vdbFrameCheckLightReset, vdbFrameRenderUpdateType, vdbFrameShadowFilters, vdbFrameSharedLightNode } from "./three-internals.js";
 import type { VDBFrameRenderer } from "./renderer.js";
 import { VDBCoreTextureBinding } from "./core-textures.js";
+import { VDB_VOLUME_SHADOW_VIEW, vdbVolumeShadowWgsl } from "../../core/frame/wgsl/shadows.js";
 import type { VDBVolumeShadowMap } from "../../core/frame/types.js";
 
-const { Fn, If, clamp, cubeTexture, dot, exp, float, int, length, max, positionView, positionWorld, renderGroup, select, texture, uniform, vec2, vec3, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
+const { code, cubeTexture, dot, positionView, positionWorld, sampler, storage, texture, vec3, wgslFn } = TSL as unknown as Record<string, VDBTslNode>;
 
 type N = VDBTslNode;
 type RendererLike = WebGPURenderer & { isWebGPURenderer?: boolean };
 type ShadowLight = THREE.DirectionalLight | THREE.SpotLight | THREE.PointLight;
-type RayUniforms = { frameShadowOrigin: N; frameShadowForward: N; frameShadowPerspective: N; frameShadowFar: N };
+type StorageNode = Node & { value: unknown; setName(name: string): unknown; build(builder: NodeBuilder, output?: string): unknown };
 
 const isShadowLight = (light: THREE.Object3D): light is ShadowLight => {
   const l = light as THREE.Light & { isDirectionalLight?: boolean; isSpotLight?: boolean; isPointLight?: boolean };
@@ -47,12 +57,6 @@ const isInScene = (object: THREE.Object3D): boolean => {
   let root = object;
   while (root.parent) root = root.parent;
   return (root as THREE.Scene).isScene === true;
-};
-
-/** Depth of a world position: the distance from the light (perspective) or from the camera plane (orthographic). */
-const shadowDepth = (ray: RayUniforms, worldPosition: N): N => {
-  const offset = worldPosition.sub(ray.frameShadowOrigin);
-  return select(ray.frameShadowPerspective.equal(1), length(offset), dot(offset, ray.frameShadowForward));
 };
 
 // NOTE A light shadow node is built one time; a new filterNode has no effect until it is built again.
@@ -69,98 +73,103 @@ const resetLightShadow = (light: ShadowLight): { dispose(): void } | null => {
   return shadowNode;
 };
 
-// NOTE A uniform that copies a value of the entry one time in each render (the render group).
-// A light shadow node is built one time; its object-group uniforms would keep the value of the first build.
-const renderUniform = (value: unknown, type: string, read: () => unknown): N => uniform(value, type).setGroup(renderGroup).onRenderUpdate(read);
+/** `vec4u` words of the view struct (every field is 16-byte aligned). */
+const VIEW_WORDS = VDB_VOLUME_SHADOW_VIEW.size / 16;
 
-interface Receiver {
-  enabled: N;
-  /** Spot lights: the drawn view-projection (null for cascades and point lights). */
-  viewProjection: N | null;
-  ray: RayUniforms;
-  cascades: { count: N; breaks: N; items: { viewProjection: N; origin: N; far: N }[] } | null;
+/**
+ * WGSL that unpacks the view buffer (bound as `array<vec4u>` at `ref`) into the core's `VdbVolumeShadowView`, generated
+ * from the struct's layout, so a field the core adds is unpacked too (a type this cannot unpack throws).
+ */
+export function vdbFrameShadowViewLoaderWgsl(fnName: string, ref: string): string {
+  const lines = [`fn ${fnName}() -> VdbVolumeShadowView {`, "  var v: VdbVolumeShadowView;"];
+  for (const f of VDB_VOLUME_SHADOW_VIEW.fields.values()) {
+    for (let e = 0; e < f.count; e++) {
+      const at = (f.offset + e * f.stride) / 16;
+      const lhs = f.count > 1 ? `v.${f.name}[${e}]` : `v.${f.name}`;
+      let rhs: string;
+      if (f.type === "mat4x4f") rhs = `mat4x4f(${[0, 1, 2, 3].map((c) => `bitcast<vec4f>(${ref}[${at + c}])`).join(", ")})`;
+      else if (f.type === "vec4f") rhs = `bitcast<vec4f>(${ref}[${at}])`;
+      else if (f.type === "vec4u") rhs = `${ref}[${at}]`;
+      else throw new Error(`vdbFrameShadowViewLoaderWgsl: VdbVolumeShadowView.${f.name} is ${f.type}; only 16-byte vector and mat4x4f fields unpack`);
+      lines.push(`  ${lhs} = ${rhs};`);
+    }
+  }
+  lines.push("  return v;", "}");
+  return lines.join("\n");
 }
 
-/** One shadow light's core map and the state it was drawn with. */
+/** The core's receiver functions and the view struct, one code node shared by every receiver (once per shader). */
+let receiverCode: N | null = null;
+const receiverCodeNode = (): N => (receiverCode ??= code(vdbVolumeShadowWgsl()));
+
+/** One light's view loader: a code node over its storage node, generated per shader with the buffer's reference. */
+class VDBFrameShadowViewNode extends CodeNode {
+  /** Node-valued property: three sets it up and analyzes it as this node's child (the binding). */
+  vdbShadowView: StorageNode;
+  readonly fnName: string;
+
+  constructor(view: StorageNode, fnName: string) {
+    super("", [], "wgsl");
+    this.vdbShadowView = view;
+    this.fnName = fnName;
+  }
+
+  override generate(builder: NodeBuilder): string {
+    const ref = this.vdbShadowView.build(builder, "property");
+    if (typeof ref !== "string") throw new Error("VDBFrameVolumeShadowNode: three built the view storage node to a non-string reference");
+    const text = vdbFrameShadowViewLoaderWgsl(this.fnName, ref);
+    const nodeCode = (builder as unknown as { getCodeFromNode(node: Node, type: string): { code: string } }).getCodeFromNode(this, this.getNodeType(builder));
+    nodeCode.code = text;
+    return text;
+  }
+}
+
+/** The texture and buffer nodes of one light's receivers; made once, their values follow the core. */
+interface EntryNodes {
+  /** Unique per receivers object: names the storage binding and the WGSL functions. */
+  k: number;
+  map: N;
+  rgb: N;
+  view: StorageNode;
+  loader: VDBFrameShadowViewNode;
+  fns: Map<string, (inputs: Record<string, N>) => N>;
+}
+
+/** What a light without a core map binds: a 1² 2d-array, a 1² cube (6 layers) and a zero view (enabled 0). */
+interface Placeholders {
+  device: GPUDevice;
+  array: GPUTexture;
+  cube: GPUTexture;
+  view: GPUBuffer;
+}
+
+/** One shadow light's core map, as its receivers bind it. */
 export interface VDBFrameShadowEntry {
   light: ShadowLight;
   isPoint: boolean;
+  /** The map's size (texels per side) of the last core map; the settings' size before one. */
   size: number;
-  /** The map's texture node (null until the core drew a map: the receivers read no volume shadow). */
-  map: N | null;
-  /** K6.4 spectral: the optical depth rgb twin (`rgbTexture`) node. */
-  spectralMap: N | null;
-  enabled: { value: number };
-  drawn: { origin: THREE.Vector3; forward: THREE.Vector3; perspective: number; far: number; viewProjection: THREE.Matrix4; cascadeCount: number; cascadeBreaks: THREE.Vector4 };
-  cascades: { drawn: { viewProjection: THREE.Matrix4; origin: THREE.Vector3; far: number }; lastDraw: number }[] | null;
+  /** The core map the receivers bind now (null: none yet, or the light has none this frame; they bind placeholders). */
+  coreMap: VDBVolumeShadowMap | null;
+  /** The core update count at the last draw of the map's first piece (his `lastDraw`; tests and the stale harness). */
   lastDraw: number;
-  receiver: Receiver;
   userFilter: ((inputs: unknown) => N) | null;
+  /** The map texture bound now (the core's, or the placeholder). */
   texture: GPUTexture | null;
   binding: VDBCoreTextureBinding;
+  /** K6.4 spectral: the optical depth rgb twin bound now (null: a grey map; the node binds the placeholder). */
   rgbTexture: GPUTexture | null;
   rgbBinding: VDBCoreTextureBinding;
+  /** The view buffer bound now (the core's, or the placeholder). */
+  viewBuffer: GPUBuffer | null;
+  nodes: EntryNodes | null;
 }
 
-// NOTE Receivers read the drawn state: the values of the camera that drew each map or cascade layer.
-// A map that waits for the frame budget is older, but its values match, so its shadow stays in place.
-const createReceiver = (entry: VDBFrameShadowEntry): Receiver => {
-  const { drawn, cascades, isPoint } = entry;
-  return {
-    enabled: renderUniform(0, "int", () => entry.enabled.value),
-    viewProjection: cascades || isPoint ? null : renderUniform(new THREE.Matrix4(), "mat4", () => drawn.viewProjection),
-    ray: {
-      frameShadowOrigin: renderUniform(new THREE.Vector3(), "vec3", () => drawn.origin),
-      frameShadowForward: renderUniform(new THREE.Vector3(), "vec3", () => drawn.forward),
-      frameShadowPerspective: renderUniform(0, "int", () => drawn.perspective),
-      frameShadowFar: renderUniform(1.0, "float", () => drawn.far),
-    },
-    cascades: cascades
-      ? {
-          count: renderUniform(0, "int", () => drawn.cascadeCount),
-          breaks: renderUniform(new THREE.Vector4(), "vec4", () => drawn.cascadeBreaks),
-          items: cascades.map((cascade) => ({
-            viewProjection: renderUniform(new THREE.Matrix4(), "mat4", () => cascade.drawn.viewProjection),
-            origin: renderUniform(new THREE.Vector3(), "vec3", () => cascade.drawn.origin),
-            far: renderUniform(1.0, "float", () => cascade.drawn.far),
-          })),
-        }
-      : null,
-  };
-};
-
-// NOTE Picks the cascade of the receiver by its view depth, as three's CSMShadowNode (twin: vdbFrameShadowCascadeIndex / Uv).
-// Returns the layer uv, the layer, the ray uniforms of the cascade, and whether the receiver is in a cascade.
-const cascadeLookup = (receiver: Receiver, size: number): { uv: N; inside: N; index: N; ray: RayUniforms } => {
-  const { count, breaks, items } = receiver.cascades!;
-  const depth = positionView.z.negate();
-  const breakList = [breaks.x, breaks.y, breaks.z, breaks.w];
-  // NOTE Cascade index: the number of cascade far distances in front of the receiver
-  let index: N = int(0);
-  for (let i = 0; i < frameMaxShadowMapCascades - 1; i++) {
-    index = index.add(select(depth.greaterThan(breakList[i]).and(int(i + 1).lessThan(count)), int(1), int(0)));
-  }
-  const pick = (key: "viewProjection" | "origin" | "far"): N => items.reduce<N>((result, item, i) => (i === 0 ? item[key] : select(index.equal(i), item[key], result)), null);
-  const clip = pick("viewProjection").mul(vec4(positionWorld, 1.0));
-  const tileUv = vec2(clip.x.mul(0.5).add(0.5), float(0.5).sub(clip.y.mul(0.5)));
-  const lastBreak = breakList.reduce<N>((result, value, i) => (i === 0 ? value : select(count.equal(i + 1), value, result)), null);
-  // NOTE Half a texel in from the layer sides (his tiles of one atlas; the same clamp)
-  const inset = float(0.5 / size);
-  return {
-    uv: clamp(tileUv, vec2(inset), vec2(float(1.0).sub(inset))),
-    index,
-    inside: depth.lessThanEqual(lastBreak).and(tileUv.x.greaterThanEqual(0.0)).and(tileUv.x.lessThanEqual(1.0)).and(tileUv.y.greaterThanEqual(0.0)).and(tileUv.y.lessThanEqual(1.0)),
-    ray: { frameShadowOrigin: pick("origin"), frameShadowForward: receiver.ray.frameShadowForward, frameShadowPerspective: int(0), frameShadowFar: pick("far") },
-  };
-};
-
 /**
- * Volume transmittance at a receiver from the light's core Beer shadow map (part of the light's shadow filter;
- * `vdbVolumeShadow` / `vdbVolumeShadowCube` in TSL, twin `vdbFrameVolumeShadowLookup`). The map coordinate comes from
- * the drawn state (his 62a6e3e): cascades are layers of a 2d-array, a spot map one layer, a point map a cube view
- * (three negates x of a cube lookup on WebGPU, so the direction goes in with x negated). K6.4 spectral maps: the rgb twin
- * gives each channel's transmittance (`vdbVolumeShadowRgb`), the channel mean in a ShadowMaterial (his rule).
- * `updateBefore` runs the core update before the first receiver of each render.
+ * Volume transmittance at a receiver from the light's core Beer shadow map: the core's `vdbVolumeShadow` /
+ * `vdbVolumeShadowCube` (K6.4 spectral maps: `…Rgb` / `…CubeRgb`, the channel mean in a ShadowMaterial, his rule) through
+ * a `wgslFn`, with the view the map was drawn with (twin `vdbFrameVolumeShadowLookup`). `updateBefore` runs the core
+ * update before the first receiver of each render.
  */
 export class VDBFrameVolumeShadowNode extends Node {
   static get type(): string {
@@ -179,7 +188,7 @@ export class VDBFrameVolumeShadowNode extends Node {
 
   // NOTE Spectral maps: transmittance of each channel. ShadowMaterial has one shadow mask, so it gets the mean.
   isSpectral(builder: { material?: { isShadowNodeMaterial?: boolean } }): boolean {
-    return this.entry.spectralMap !== null && builder.material?.isShadowNodeMaterial !== true;
+    return this.entry.rgbTexture !== null && builder.material?.isShadowNodeMaterial !== true;
   }
 
   override getNodeType(builder: never): string {
@@ -194,57 +203,15 @@ export class VDBFrameVolumeShadowNode extends Node {
 
   override setup(builder: never): N {
     const { entry } = this;
-    const { map, isPoint, receiver } = entry;
-    // NOTE Built before the core drew the map: no volume shadow; the first map rebuilds the receivers (sync)
-    if (!map) return this.isSpectral(builder) ? vec3(1.0) : float(1.0);
-    const spectralMap = entry.rgbTexture ? entry.spectralMap : null;
-    const spectral = !!spectralMap && this.isSpectral(builder);
-    let { ray } = receiver;
-    let inside: N = receiver.enabled.equal(1);
-    let texel: N;
-    let rgb: N | null = null;
-    if (receiver.cascades) {
-      const lookup = cascadeLookup(receiver, entry.size);
-      ray = lookup.ray;
-      inside = inside.and(lookup.inside);
-      texel = map.sample(lookup.uv).depth(lookup.index).level(0);
-      if (spectralMap) rgb = spectralMap.sample(lookup.uv).depth(lookup.index).level(0);
-    } else if (isPoint) {
-      const d = positionWorld.sub(ray.frameShadowOrigin);
-      texel = map.sample(vec3(d.x.negate(), d.y, d.z)).level(0);
-      if (spectralMap) rgb = spectralMap.sample(vec3(d.x.negate(), d.y, d.z)).level(0);
-    } else {
-      const clip = receiver.viewProjection!.mul(vec4(positionWorld, 1.0));
-      const ndc = clip.xy.div(clip.w);
-      const uv = vec2(ndc.x.mul(0.5).add(0.5), float(0.5).sub(ndc.y.mul(0.5)));
-      inside = inside.and(clip.w.greaterThan(0.0)).and(uv.x.greaterThanEqual(0.0)).and(uv.x.lessThanEqual(1.0)).and(uv.y.greaterThanEqual(0.0)).and(uv.y.lessThanEqual(1.0));
-      texel = map.sample(uv).depth(int(0)).level(0);
-      if (spectralMap) rgb = spectralMap.sample(uv).depth(int(0)).level(0);
-    }
-    return Fn(() => {
-      const result = (spectral ? vec3(1.0) : float(1.0)).toVar();
-      If(inside, () => {
-        const value = texel.toVar();
-        const opticalDepth = value.w;
-        If(opticalDepth.greaterThan(frameShadowMinOpticalDepth), () => {
-          const far = ray.frameShadowFar;
-          const first = value.x.div(opticalDepth).mul(far);
-          const last = value.y.div(opticalDepth).mul(far);
-          const depth = shadowDepth(ray, positionWorld);
-          // NOTE Beer shadow map: optical depth grows linearly from the first to the last density
-          const along = clamp(depth.sub(first).div(max(last.sub(first), 1e-4)), 0.0, 1.0);
-          if (spectral) {
-            result.assign(exp(rgb!.rgb.mul(along).negate()));
-          } else if (rgb) {
-            // NOTE ShadowMaterial with spectral maps: mean transmittance of the channels
-            result.assign(dot(exp(rgb.rgb.mul(along).negate()), vec3(1.0 / 3.0)));
-          } else {
-            result.assign(exp(opticalDepth.mul(along).negate()));
-          }
-        });
-      });
-      return result;
-    })();
+    const nodes = this.shadows.nodesOf(entry);
+    const rgbKind = entry.rgbTexture !== null;
+    const fn = this.shadows.receiverFn(entry, rgbKind);
+    const inputs: Record<string, N> = { map: nodes.map, smp: sampler(nodes.map), world: positionWorld };
+    if (rgbKind) inputs.rgb = nodes.rgb;
+    if (!entry.isPoint) inputs.viewDepth = positionView.z.negate();
+    const value = fn(inputs);
+    // NOTE ShadowMaterial with spectral maps: mean transmittance of the channels
+    return rgbKind && !this.isSpectral(builder) ? dot(value, vec3(1.0 / 3.0)) : value;
   }
 }
 
@@ -255,11 +222,14 @@ type VolumeFilter = ((inputs: N) => N) & { isVDBFrameVolumeShadowFilter?: true }
 export class VDBFrameVolumeShadowReceivers {
   readonly entries = new Map<THREE.Light, VDBFrameShadowEntry>();
   readonly frameRenderer: VDBFrameRenderer;
-  // NOTE Replaced shadow nodes and stand-ins. update() runs mid-render, so the next update() disposes them.
+  // NOTE Replaced shadow nodes, stand-ins and attributes. update() runs mid-render, so the next update() disposes them.
   retired: { dispose(): void }[] = [];
   renderCount = 0;
   #renderId = -1;
   #camera: THREE.Camera | null = null;
+  #renderer: RendererLike | null = null;
+  #names = 0;
+  #placeholders: Placeholders | null = null;
   /** Map pieces drawn in the last update, and how many waited for the budget (not his; tests and timing). */
   readonly lastUpdate = { drawn: 0, waiting: 0 };
 
@@ -284,36 +254,106 @@ export class VDBFrameVolumeShadowReceivers {
       light,
       isPoint,
       size: this.getMapSize(),
-      map: null,
-      spectralMap: null,
-      enabled: { value: 0 },
-      drawn: { origin: new THREE.Vector3(), forward: new THREE.Vector3(0.0, 0.0, -1.0), perspective: 0, far: 1.0, viewProjection: new THREE.Matrix4(), cascadeCount: 0, cascadeBreaks: new THREE.Vector4() },
-      cascades: (light as THREE.DirectionalLight).isDirectionalLight
-        ? Array.from({ length: frameMaxShadowMapCascades }, () => ({ drawn: { viewProjection: new THREE.Matrix4(), origin: new THREE.Vector3(), far: 1.0 }, lastDraw: -1 }))
-        : null,
+      coreMap: null,
       lastDraw: -1,
-      receiver: null as unknown as Receiver,
       userFilter: null,
       texture: null,
       binding: new VDBCoreTextureBinding(isPoint ? "cube" : "2d-array"),
       rgbTexture: null,
       rgbBinding: new VDBCoreTextureBinding(isPoint ? "cube" : "2d-array"),
+      viewBuffer: null,
+      nodes: null,
     };
-    entry.receiver = createReceiver(entry);
     this.entries.set(light, entry);
     return entry;
+  }
+
+  #placeholdersOf(device: GPUDevice): Placeholders {
+    const p = this.#placeholders;
+    if (p && p.device === device) return p;
+    this.#destroyPlaceholders();
+    const make = (layers: number, what: string) =>
+      device.createTexture({ label: `@pmndrs/vdb/three volume shadow placeholder ${what}`, size: [1, 1, layers], format: "rgba16float", usage: 0x04 /* TEXTURE_BINDING */ });
+    // A zero view: info.w (enabled) 0, so every receiver function returns 1 without sampling
+    const view = device.createBuffer({ label: "@pmndrs/vdb/three volume shadow placeholder view", size: VDB_VOLUME_SHADOW_VIEW.size, usage: 0x80 /* STORAGE */ });
+    return (this.#placeholders = { device, array: make(1, "2d-array"), cube: make(6, "cube"), view });
+  }
+
+  #destroyPlaceholders(): void {
+    const p = this.#placeholders;
+    if (!p) return;
+    // NOTE A bind group of this render may still name them: destroy after the task that submits it
+    const destroy = () => {
+      p.array.destroy();
+      p.cube.destroy();
+      p.view.destroy();
+    };
+    setTimeout(destroy, 0);
+    this.#placeholders = null;
+  }
+
+  /**
+   * The light's texture and view nodes (made at its first receiver build, bound to placeholders until the core draws a
+   * map). @internal
+   */
+  nodesOf(entry: VDBFrameShadowEntry): EntryNodes {
+    if (entry.nodes) return entry.nodes;
+    const renderer = this.#renderer;
+    if (!renderer) throw new Error("VDBFrameVolumeShadowReceivers: a receiver was built before update() saw the renderer");
+    const p = this.#placeholdersOf(getDevice(renderer as never));
+    entry.binding.set(entry.texture ?? (entry.isPoint ? p.cube : p.array));
+    entry.rgbBinding.set(entry.rgbTexture ?? (entry.isPoint ? p.cube : p.array));
+    const make = entry.isPoint ? cubeTexture : texture;
+    const k = this.#names++;
+    const view = storage(this.#viewStandIn(entry.viewBuffer ?? p.view, k), "uvec4", VIEW_WORDS).toReadOnly() as StorageNode;
+    view.setName(`vdbShadowView${k}`);
+    entry.nodes = {
+      k,
+      map: make(entry.binding.texture),
+      rgb: make(entry.rgbBinding.texture),
+      view,
+      loader: new VDBFrameShadowViewNode(view, `vdbFrameShadowView${k}`),
+      fns: new Map(),
+    };
+    return entry.nodes;
+  }
+
+  #viewStandIn(buffer: GPUBuffer, k: number): StorageBufferAttribute {
+    return vdbThreeStorageStandIn(this.#renderer!, buffer, `vdbShadowView${k}`);
+  }
+
+  /** The `wgslFn` of a light's receivers (grey or rgb; the point variants take no view depth). @internal */
+  receiverFn(entry: VDBFrameShadowEntry, rgb: boolean): (inputs: Record<string, N>) => N {
+    const nodes = this.nodesOf(entry);
+    const key = rgb ? "rgb" : "grey";
+    let fn = nodes.fns.get(key);
+    if (fn) return fn;
+    const view = `${nodes.loader.fnName}()`;
+    const name = `${nodes.loader.fnName.replace("View", "Receiver")}${rgb ? "Rgb" : ""}`;
+    const map = entry.isPoint ? "texture_cube<f32>" : "texture_2d_array<f32>";
+    const source = entry.isPoint
+      ? rgb
+        ? `fn ${name}(map: ${map}, rgb: ${map}, smp: sampler, world: vec3f) -> vec3f {\n  return vdbVolumeShadowCubeRgb(map, rgb, smp, ${view}, world);\n}`
+        : `fn ${name}(map: ${map}, smp: sampler, world: vec3f) -> f32 {\n  return vdbVolumeShadowCube(map, smp, ${view}, world);\n}`
+      : rgb
+        ? `fn ${name}(map: ${map}, rgb: ${map}, smp: sampler, world: vec3f, viewDepth: f32) -> vec3f {\n  return vdbVolumeShadowRgb(map, rgb, smp, ${view}, world, viewDepth);\n}`
+        : `fn ${name}(map: ${map}, smp: sampler, world: vec3f, viewDepth: f32) -> f32 {\n  return vdbVolumeShadow(map, smp, ${view}, world, viewDepth);\n}`;
+    fn = wgslFn(source, [receiverCodeNode(), nodes.loader]) as (inputs: Record<string, N>) => N;
+    nodes.fns.set(key, fn);
+    return fn;
   }
 
   // NOTE Frees a light's entry and puts back its own filter. Receivers build again without the volume shadow.
   #free(entry: VDBFrameShadowEntry): void {
     const { light } = entry;
     const shadow = light.shadow as THREE.LightShadow & { filterNode?: VolumeFilter | null };
-    // NOTE Receivers that still have the volume shadow node until they build again read no volume shadow
-    entry.enabled.value = 0;
+    // NOTE Receivers that still have the volume shadow node until they build again read the placeholders
+    this.#bind(entry, null);
     if (shadow.filterNode?.isVDBFrameVolumeShadowFilter) shadow.filterNode = entry.userFilter as VolumeFilter | null;
     const old = resetLightShadow(light);
     if (old) this.retired.push(old);
     this.retired.push(entry.binding, entry.rgbBinding);
+    if (entry.nodes) this.retired.push(entry.nodes.view.value as StorageBufferAttribute);
     this.entries.delete(light);
   }
 
@@ -328,6 +368,7 @@ export class VDBFrameVolumeShadowReceivers {
    */
   update(renderer: RendererLike, scene: THREE.Object3D): void {
     this.#disposeRetired();
+    this.#renderer = renderer;
     if (!this.frameRenderer.settings.castShadows) {
       this.entries.forEach((entry) => this.#free(entry));
       return;
@@ -383,71 +424,65 @@ export class VDBFrameVolumeShadowReceivers {
   }
 
   /**
-   * After a core update, each entry reads its core map: the drawn view into the receiver uniforms (they read the state
-   * the map was drawn with), the map texture through a stand-in, the budget counters. The first map (or a new size)
-   * rebuilds the light's receivers.
+   * Points a light's nodes at a core map (null: the placeholders). The texture and storage nodes keep their identity;
+   * a new core texture or buffer gets a new stand-in as the node's `value`, and the old attribute is disposed at the next
+   * update. Returns whether anything changed (the caller rebuilds the receivers: see `sync`).
+   */
+  #bind(entry: VDBFrameShadowEntry, m: VDBVolumeShadowMap | null): boolean {
+    entry.coreMap = m;
+    const nodes = entry.nodes;
+    const p = nodes ? this.#placeholders : null;
+    const texture = m?.texture ?? null;
+    const rgb = m?.rgbTexture ?? null;
+    const view = m?.view ?? null;
+    const changed = texture !== entry.texture || rgb !== entry.rgbTexture || view !== entry.viewBuffer;
+    if (texture !== entry.texture) {
+      entry.texture = texture;
+      if (nodes && p) this.#setTexture(entry.binding, nodes.map, texture ?? (entry.isPoint ? p.cube : p.array));
+    }
+    if (rgb !== entry.rgbTexture) {
+      entry.rgbTexture = rgb;
+      if (nodes && p) this.#setTexture(entry.rgbBinding, nodes.rgb, rgb ?? (entry.isPoint ? p.cube : p.array));
+    }
+    if (view !== entry.viewBuffer) {
+      entry.viewBuffer = view;
+      if (nodes && p) {
+        const old = nodes.view.value as StorageBufferAttribute;
+        nodes.view.value = this.#viewStandIn(view ?? p.view, nodes.k);
+        this.retired.push(old);
+      }
+    }
+    return changed;
+  }
+
+  // NOTE VDBCoreTextureBinding.set disposes the old stand-in at once; three keeps the GPU texture it bound (an
+  // ExternalTexture's dispose never destroys it) and rebinds the node's new value at the next draw
+  #setTexture(binding: VDBCoreTextureBinding, node: N, gpu: GPUTexture): void {
+    if (binding.set(gpu)) node.value = binding.texture;
+  }
+
+  /**
+   * After a core update, each entry binds its core map (texture, rgb twin, view buffer) and reads the budget counters.
+   * The map size, the cascades and the drawn views live in the view buffer, so only a new core object (the first map, a
+   * new size, a spectral switch, a map that went away or came back) touches the receivers: their nodes get the new
+   * stand-ins and the light's receivers rebuild. The rebuild is needed: three r187 re-reads the object-group bindings
+   * (textures, storage buffers) of a plain material only on a full refresh, which a node `value` swap does not cause, so
+   * a receiver drawn with a shared refresh would keep the old bind group, and with it a texture the core retires
+   * (K6.10 finding 8). They rebuild at their next draw (the next render: this one may still draw with the old objects,
+   * which the core keeps alive for two more updates).
    */
   sync(maps: ReadonlyMap<number | string, VDBVolumeShadowMap>, stats: { drawn: number; waiting: number }): void {
     this.renderCount++;
     this.lastUpdate.drawn = stats.drawn;
     this.lastUpdate.waiting = stats.waiting;
     this.entries.forEach((entry) => {
-      const m = maps.get(entry.light.id);
-      if (!m) {
-        entry.enabled.value = 0;
-        return;
+      const m = maps.get(entry.light.id) ?? null;
+      if (this.#bind(entry, m) && entry.nodes) {
+        const old = resetLightShadow(entry.light);
+        if (old) this.retired.push(old);
       }
-      entry.enabled.value = m.enabled ? 1 : 0;
-      if (m.texture !== entry.texture) {
-        const rebuild = entry.texture === null || m.size !== entry.size;
-        entry.texture = m.texture;
-        entry.binding.set(m.texture);
-        const standIn = entry.binding.texture!;
-        entry.map = entry.isPoint ? cubeTexture(standIn) : texture(standIn);
-        entry.size = m.size;
-        if (rebuild) {
-          const old = resetLightShadow(entry.light);
-          if (old) this.retired.push(old);
-        }
-      }
-      // K6.4: a spectral map's rgb twin; the receivers return rgb (or the channel mean in a ShadowMaterial), so a change of
-      // kind rebuilds them
-      const rgb = m.rgbTexture ?? null;
-      if (rgb !== entry.rgbTexture) {
-        const rebuild = !!rgb !== !!entry.rgbTexture;
-        entry.rgbTexture = rgb;
-        if (rgb) {
-          entry.rgbBinding.set(rgb);
-          const standIn = entry.rgbBinding.texture!;
-          entry.spectralMap = entry.isPoint ? cubeTexture(standIn) : texture(standIn);
-        } else {
-          entry.spectralMap = null;
-        }
-        if (rebuild) {
-          const old = resetLightShadow(entry.light);
-          if (old) this.retired.push(old);
-        }
-      }
-      const d = m.drawn;
-      const { drawn } = entry;
-      if (entry.cascades) {
-        drawn.cascadeCount = d.cascadeCount;
-        drawn.cascadeBreaks.fromArray(d.breaks as unknown as number[]);
-        drawn.forward.fromArray(d.forward as unknown as number[]);
-        for (let i = 0; i < d.cascadeCount; i++) {
-          const c = entry.cascades[i]!;
-          c.drawn.viewProjection.fromArray(d.viewProjection[i]!);
-          c.drawn.origin.fromArray(d.origin[i] as unknown as number[]);
-          c.drawn.far = d.far[i]!;
-          c.lastDraw = m.lastDraw[i + 1] ?? c.lastDraw;
-        }
-      } else {
-        if (d.viewProjection[0]) drawn.viewProjection.fromArray(d.viewProjection[0]);
-        if (d.origin[0]) drawn.origin.fromArray(d.origin[0] as unknown as number[]);
-        drawn.forward.fromArray(d.forward as unknown as number[]);
-        drawn.perspective = d.perspective ? 1 : 0;
-        drawn.far = d.far[0] ?? drawn.far;
-      }
+      if (!m) return;
+      entry.size = m.size;
       entry.lastDraw = m.lastDraw[0] ?? entry.lastDraw;
     });
   }
@@ -456,7 +491,9 @@ export class VDBFrameVolumeShadowReceivers {
   dispose(): void {
     this.entries.forEach((entry) => this.#free(entry));
     this.#disposeRetired();
+    this.#destroyPlaceholders();
     this.#renderId = -1;
     this.#camera = null;
+    this.#renderer = null;
   }
 }

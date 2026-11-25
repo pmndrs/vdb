@@ -300,7 +300,12 @@ export class VDBFrameShadowMaps {
           usage: TEXTURE_USAGE.STORAGE_BINDING | TEXTURE_USAGE.TEXTURE_BINDING | TEXTURE_USAGE.COPY_SRC,
         })
       : null;
-    const viewBuffer = this.#device.createBuffer({ label: `${this.#label} volume shadow view ${String(id)}`, size: VDB_VOLUME_SHADOW_VIEW.size, usage: BUFFER_USAGE.UNIFORM | BUFFER_USAGE.COPY_DST });
+    // K6.8a: also STORAGE, so an engine that binds uniform data only through storage buffers (`./three`) can bind it as is
+    const viewBuffer = this.#device.createBuffer({
+      label: `${this.#label} volume shadow view ${String(id)}`,
+      size: VDB_VOLUME_SHADOW_VIEW.size,
+      usage: BUFFER_USAGE.UNIFORM | BUFFER_USAGE.STORAGE | BUFFER_USAGE.COPY_DST,
+    });
     const drawn = { viewProjection: [] as Float32Array[], origin: [] as V3[], far: [] as number[], forward: [0, 0, -1] as V3, perspective: kind !== "directional", breaks: [0, 0, 0, 0], cascadeCount: 0 };
     e = {
       id,

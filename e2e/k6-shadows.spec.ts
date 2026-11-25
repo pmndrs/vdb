@@ -37,6 +37,7 @@ interface Result {
   lightOff?: { groundPixels: number; nonBlack: number };
   backend?: { requested: string; core: boolean; maps: number; probes: boolean };
   coverage?: string;
+  mutate?: { kind: string; identical: boolean; maxDiff: number; awayShadowed: number; mapsAway: number };
 }
 
 async function run(page: Page, query: string): Promise<Result> {
@@ -89,6 +90,13 @@ const SHADOW_CASES: { name: string; query: string; cascades: number }[] = [
   { name: "spot", query: "?case=shadow&light=spot", cascades: 0 },
   { name: "sun, sparse", query: "?case=shadow&source=sparse", cascades: 1 },
   { name: "sun, 'frame' lighting", query: "?case=shadow&lighting=frame", cascades: 1 },
+  // K6.8a: every receiver WGSL variant through three (cube, rgb, cube rgb; a ShadowMaterial takes the rgb mean, a lit
+  // material the rgb), and finding 8 (a map taken away and back, or resized, with receivers built before)
+  { name: "point", query: "?case=shadow&light=point", cascades: 0 },
+  { name: "sun, spectral", query: "?case=shadow&spectral=1", cascades: 1 },
+  { name: "point, spectral, lit ground", query: "?case=shadow&light=point&spectral=1&ground=standard", cascades: 0 },
+  { name: "spot, light hidden and back", query: "?case=shadow&light=spot&mutate=toggle", cascades: 0 },
+  { name: "spot, map resized and back", query: "?case=shadow&light=spot&mutate=resize", cascades: 0 },
 ];
 
 for (const c of SHADOW_CASES) {
@@ -109,6 +117,11 @@ for (const c of SHADOW_CASES) {
     expect(r.entry, detailOf(r)).toMatchObject({ size: 512 });
     if (c.cascades > 0) expect(r.entry!.cascades, detailOf(r)).toBe(c.cascades);
     if (c.cascades < 0) expect(r.entry!.cascades, detailOf(r)).toBeGreaterThanOrEqual(1);
+    if (c.query.includes("mutate=")) {
+      // K6.10 finding 8: the frame after the map came back equals the first (and expectClean saw no uncaptured error)
+      expect(r.mutate, detailOf(r)).toMatchObject({ identical: true });
+      if (c.query.includes("mutate=toggle")) expect(r.mutate!.mapsAway, detailOf(r)).toBe(0);
+    }
     expect(errors).toEqual([]);
   });
 }

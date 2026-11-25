@@ -384,6 +384,26 @@ function warnOwnDevice(backend: BackendLike): void {
   );
 }
 
+/**
+ * @internal K6.8a: a three `StorageBufferAttribute` whose GPU buffer is `buffer`, a buffer someone else owns (a core
+ * frame renderer's volume shadow view): the `VDBGridNode` pool-buffer pattern for any storage buffer. three binds it as
+ * made, never creates one for it and never destroys it (the destroy guard); the attribute self-test runs once per
+ * backend first. Bind it with `storage(attribute, type, count).toReadOnly()`; swap the storage node's `value` to rebind,
+ * and `dispose()` the old attribute (the guard swaps a throwaway in). `buffer` needs `STORAGE` usage.
+ *
+ * @throws VDBError `VDB_ENGINE_MISMATCH` when three's internals differ (see `threeInternals`).
+ */
+export function vdbThreeStorageStandIn(renderer: object, buffer: GPUBuffer, name: string): StorageBufferAttribute {
+  const three = renderer as RendererLike;
+  threeInternals.check(three);
+  threeInternals.selfTest(three);
+  const attribute = new StorageBufferAttribute(new Uint32Array(4), 4);
+  attribute.name = buffer.label || name;
+  threeInternals.bind(three.backend, attribute, buffer);
+  threeInternals.guardDestroy(three.backend, attribute);
+  return attribute;
+}
+
 type HelperKind = "sampleWorld" | "sampleIndex" | "readValue";
 
 const HELPER_WGSL: Readonly<Record<HelperKind, string>> = {
