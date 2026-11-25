@@ -411,7 +411,7 @@ export function volumeFroxelSpectralTwin(frame: TwinFrame, r: TwinVolume, cell: 
   const shadowNoise = vdbFrameNoise(frame.jitter, [fragCoord[0] + 17, fragCoord[1] + 31]);
   const albedo = albedoAt(r, local, readLod);
   const diffusion = r.multipleScattering > 0;
-  const octaves: V4 = frame.octaves ?? vdbFrameOctavesOff;
+  const octaves: V4 = mutate === "octaves" ? vdbFrameOctavesOff : (frame.octaves ?? vdbFrameOctavesOff);
   const iso = (fz: V3, bz: V3, fw: V3): V3 => [0, 1, 2].map((c) => vdbFrameIsotropicDiffusion(fz[c]!, bz[c]!, fw[c]!)) as V3;
   const total = (y: V3) => vdbFrameSpectralShadowTotal(y, octaves, albedo);
   const none = () => ({ x: [1, 1, 1] as V3, y: [1, 1, 1] as V3, z: [0, 0, 0] as V3, w: [0, 0, 0] as V3 });
@@ -473,7 +473,7 @@ export function volumeFroxelSpectralTwin(frame: TwinFrame, r: TwinVolume, cell: 
     const maxDistance = isDirectional ? 1e6 : len(toLight);
     const lightDirection = isDirectional ? ([l.position[0], l.position[1], l.position[2]] as V3) : norm(toLightWorld);
     const s = march(local, direction, maxDistance);
-    if (frame.twoSided) {
+    if (frame.twoSided && mutate !== "two-sided") {
       const back = march(local, scale(direction, -1), 1e6);
       s.y = [0, 1, 2].map((c) => vdbFrameTwoSidedDiffusion(s.x[c]!, s.z[c]!, s.w[c]!, back.z[c]!)) as V3;
     }

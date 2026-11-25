@@ -1720,8 +1720,9 @@ async function probeResolveSpectral(device: GPUDevice): Promise<void> {
   for (let i = 0; i < W * H * D; i++) {
     const z = Math.floor(i / (W * H));
     // per-channel alphas (blue the densest, like a positive Ångström exponent); deep slices pass the stop
-    const base = r() < 0.15 ? 0 : z > 4 ? 0.5 + r() * 0.3 : r() * 0.35;
-    const a = [base * (0.6 + r() * 0.2), base, Math.min(base * (1.2 + r() * 0.3), 0.99)];
+    // (dense enough that every channel's T passes 0.001 in most columns: the spectral stop needs all three)
+    const base = r() < 0.15 ? 0 : z > 4 ? 0.65 + r() * 0.3 : r() * 0.35;
+    const a = [base * (0.88 + r() * 0.1), base, Math.min(base * (1.05 + r() * 0.1), 0.99)];
     const L = [r() * 2, r() * 2, r() * 2];
     for (let c = 0; c < 3; c++) {
       scatter[i * 4 + c] = roundHalf(L[c]! * a[c]!);

@@ -282,7 +282,8 @@ for (const p of K64_PROBES) {
     for (const key of p.keys) {
       const s = r[key]!;
       expect(s, `${key} missing: ${detail(r)}`).toBeDefined();
-      expect(s.compared, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(512);
+      // render(): one value per pixel of the 24 x 16 froxel grid
+      expect(s.compared, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(key === "renderStats" ? 384 : 512);
       expect(s.over, `${key}: ${detail(r)}`).toBeLessThanOrEqual(Math.floor(s.compared * 0.001));
       console.log(`[k6-core] K6.4 ${p.name} ${key} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toFixed(2)} f16 ulp, ${s.over} over`);
     }
