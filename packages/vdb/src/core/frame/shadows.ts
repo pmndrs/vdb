@@ -61,6 +61,8 @@ interface Entry {
   id: number | string;
   kind: Kind;
   size: number;
+  /** K6.4: the optical depth rgb twin of the map (spectral), else null. */
+  rgb: GPUTexture | null;
   texture: GPUTexture;
   viewBuffer: GPUBuffer;
   item: Item;
@@ -83,6 +85,9 @@ interface Dispatch {
   record: { inverse: ArrayLike<number>; camera: [number, number, number, number]; forward: [number, number, number, number]; info: [number, number, number, number] };
 }
 
+/** K6.4: 1 for a spectral map (it has the rgb twin). */
+const spectralFlag = (e: Entry) => (e.rgb ? 1 : 0);
+
 /** What `update` needs from the renderer. */
 export interface VDBFrameShadowInputs {
   readonly lights: readonly VDBFrameLight[];
@@ -98,6 +103,8 @@ export interface VDBFrameShadowInputs {
   readonly grid: { min: V3; size: V3 } | null;
   /** The grid's last-cascade version (his castVersion). */
   readonly castVersion: number;
+  /** K6.4: spectral maps (the shadow grid holds extinction rgb; maps get the optical depth rgb layers). */
+  readonly spectral?: boolean;
 }
 
 const changed = (item: Item, signature: unknown[]): boolean => {
@@ -176,7 +183,7 @@ export class VDBFrameShadowMaps {
       if (!light.shadow || seen.has(light.id)) continue;
       seen.add(light.id);
       const size = o.coarse ? frameShadowCoarseMapSize : Math.max(1, Math.round(light.shadow.size));
-      active.push({ entry: this.#entry(light.id, light.kind, size), light });
+      active.push({ entry: this.#entry(light.id, light.kind, size, !!o.spectral), light });
     }
     for (const e of [...this.#entries.values()]) if (!seen.has(e.id)) this.#free(e);
     for (const e of this.#entries.values()) e.enabled = false;
@@ -225,13 +232,14 @@ export class VDBFrameShadowMaps {
     pass.setBindGroup(0, group0);
     const layout = built.layouts[1]!;
     this.#dispatches.forEach((d, i) => {
-      pass.setBindGroup(1, this.#bind(layout, d.entry.texture, grid), [i * VDB_FRAME_SHADOW_PIECE_STRIDE]);
+      pass.setBindGroup(1, this.#bind(layout, d.entry, grid), [i * VDB_FRAME_SHADOW_PIECE_STRIDE]);
       const groups = Math.ceil(d.entry.size / 8);
       pass.dispatchWorkgroups(groups, groups, d.layers);
     });
   }
 
-  #bind(layout: GPUBindGroupLayout, map: GPUTexture, grid: GPUTexture): GPUBindGroup {
+  #bind(layout: GPUBindGroupLayout, entry: Entry, grid: GPUTexture): GPUBindGroup {
+    const map = entry.texture;
     const keys = [layout, grid, this.#pieceBuffer!];
     const hit = this.#groups.get(map);
     if (hit && hit.keys.every((k, i) => k === keys[i])) return hit.group;
@@ -243,15 +251,16 @@ export class VDBFrameShadowMaps {
         { binding: b.piece, resource: { buffer: this.#pieceBuffer!, size: VDB_FRAME_SHADOW_PIECE.size } },
         { binding: b.grid, resource: grid.createView({ dimension: "3d" }) },
         { binding: b.map, resource: map.createView({ dimension: "2d-array" }) },
+        ...(entry.rgb ? [{ binding: b.rgb, resource: entry.rgb.createView({ dimension: "2d-array" as const }) }] : []),
       ],
     });
     this.#groups.set(map, { keys, group });
     return group;
   }
 
-  #entry(id: number | string, kind: Kind, size: number): Entry {
+  #entry(id: number | string, kind: Kind, size: number, spectral: boolean): Entry {
     let e = this.#entries.get(id);
-    if (e && e.kind === kind && e.size === size) return e;
+    if (e && e.kind === kind && e.size === size && !!e.rgb === spectral) return e;
     if (e) this.#free(e);
     const texture = this.#device.createTexture({
       label: `${this.#label} volume shadow ${kind} ${String(id)}`,
@@ -259,12 +268,22 @@ export class VDBFrameShadowMaps {
       format: "rgba16float",
       usage: TEXTURE_USAGE.STORAGE_BINDING | TEXTURE_USAGE.TEXTURE_BINDING | TEXTURE_USAGE.COPY_SRC,
     });
+    // K6.4 spectral: the optical depth rgb twin (the same layers; a point map's twin is a cube too)
+    const rgb = spectral
+      ? this.#device.createTexture({
+          label: `${this.#label} volume shadow ${kind} ${String(id)} rgb`,
+          size: [size, size, LAYERS[kind]],
+          format: "rgba16float",
+          usage: TEXTURE_USAGE.STORAGE_BINDING | TEXTURE_USAGE.TEXTURE_BINDING | TEXTURE_USAGE.COPY_SRC,
+        })
+      : null;
     const viewBuffer = this.#device.createBuffer({ label: `${this.#label} volume shadow view ${String(id)}`, size: VDB_VOLUME_SHADOW_VIEW.size, usage: BUFFER_USAGE.UNIFORM | BUFFER_USAGE.COPY_DST });
     const drawn = { viewProjection: [] as Float32Array[], origin: [] as V3[], far: [] as number[], forward: [0, 0, -1] as V3, perspective: kind !== "directional", breaks: [0, 0, 0, 0], cascadeCount: 0 };
     e = {
       id,
       kind,
       size,
+      rgb,
       texture,
       viewBuffer,
       item: { signature: [], lastDraw: -1 },
@@ -287,7 +306,7 @@ export class VDBFrameShadowMaps {
       everDrawn: false,
       enabled: false,
       revision: 0,
-      map: { light: id, kind, texture, layers: LAYERS[kind], size, view: viewBuffer, drawn: drawn as VDBVolumeShadowDrawn, enabled: false, revision: 0, lastDraw: [] },
+      map: { light: id, kind, texture, rgbTexture: rgb, layers: LAYERS[kind], size, view: viewBuffer, drawn: drawn as VDBVolumeShadowDrawn, enabled: false, revision: 0, lastDraw: [] },
     };
     this.#entries.set(id, e);
     this.maps.set(id, e.map);
@@ -297,6 +316,7 @@ export class VDBFrameShadowMaps {
 
   #free(e: Entry): void {
     this.#retire.retire(e.texture);
+    this.#retire.retire(e.rgb);
     this.#retire.retire(e.viewBuffer);
     this.#entries.delete(e.id);
     this.maps.delete(e.id);
@@ -443,6 +463,7 @@ export class VDBFrameShadowMaps {
       w.set(P, base, "camera", d.record.camera);
       w.set(P, base, "forward", d.record.forward);
       w.set(P, base, "info", d.record.info);
+      w.set(P, base, "spectral", [spectralFlag(d.entry), 0, 0, 0]);
     });
     this.#device.queue.writeBuffer(this.#pieceBuffer, 0, w.buffer, 0, this.#dispatches.length * VDB_FRAME_SHADOW_PIECE_STRIDE);
   }
@@ -481,6 +502,7 @@ export class VDBFrameShadowMaps {
       w.set(V, 0, "forward", [...drawn.forward, drawn.perspective ? 1 : 0]);
       w.set(V, 0, "breaks", drawn.breaks.slice(0, 4));
       w.set(V, 0, "info", [KIND_CODE[e.kind], drawn.cascadeCount, e.size, enabled ? 1 : 0]);
+      w.set(V, 0, "spectral", [spectralFlag(e), 0, 0, 0]);
       this.#device.queue.writeBuffer(e.viewBuffer, 0, w.buffer);
       e.map.drawn = drawn;
       e.map.enabled = enabled;

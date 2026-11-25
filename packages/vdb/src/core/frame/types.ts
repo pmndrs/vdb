@@ -85,8 +85,13 @@ export interface VDBVolumeShadowDrawn {
 export interface VDBVolumeShadowMap {
   readonly light: number | string;
   readonly kind: "directional" | "spot" | "point";
-  /** rgba16float 2d with `layers` layers: (τ·first, τ·last, 0, τ), depths ÷ far. */
+  /** rgba16float 2d with `layers` layers: (τ·first, τ·last, 0, τ), depths ÷ far (K6.4 spectral: τ the channel mean). */
   readonly texture: GPUTexture;
+  /**
+   * K6.4 `settings.spectral`: the map's twin with the optical depth of each channel (τ rgb, 0), same layers, else null;
+   * receivers `vdbVolumeShadowRgb` / `vdbVolumeShadowCubeRgb`.
+   */
+  readonly rgbTexture: GPUTexture | null;
   readonly layers: number;
   readonly size: number;
   /** The drawn view as a uniform buffer (`VdbVolumeShadowView`, rewritten each update). */
@@ -255,9 +260,9 @@ export interface VDBFrameVolumeParams {
   baseColor: VDBFrameVec3;
   scatterColor: VDBFrameVec3;
   extinction: number;
-  /** Spectral (K6.4). */
+  /** K6.4 (`settings.spectral`): the extinction scale of each channel (red, green, blue). */
   extinctionScale: VDBFrameVec3;
-  /** Spectral (K6.4). */
+  /** K6.4 (`settings.spectral`): Ångström exponent α; each channel's extinction × extinctionScale × (λ / 550 nm)^−α. */
   angstromExponent: number;
   densityScale: number;
   normalizeDensity: boolean;

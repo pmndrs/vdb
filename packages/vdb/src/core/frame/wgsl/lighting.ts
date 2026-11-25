@@ -29,16 +29,18 @@
 
 import type { VDBVolumeChannels } from "../../source/types.js";
 import { frameChunksWgsl } from "./chunks.js";
-import { VDB_FRAME_SLICE_WGSL, vdbFrameSourceFunctionsWgsl } from "./gather.js";
+import { VDB_FRAME_SLICE_WGSL, vdbFrameSliceWgsl, vdbFrameSourceFunctionsWgsl } from "./gather.js";
 import { vdbFrameMultiScaleWgsl } from "../../compute/multi-scale.js";
 import { vdbFrameOccluderWgsl } from "./occluders.js";
 
-/** Group-1 bindings of the shadow grid density kernel. */
-export const GRID_DENSITY_BINDINGS = { volumes: 0, group: 1, grid: 2, partials: 3 } as const;
-/** Group-1 bindings of the transmittance kernel. */
-export const TRANSMITTANCE_BINDINGS = { grid: 0, transmittance: 1 } as const;
-/** Group-1 bindings of the 'frame' gather kernel. */
-export const FRAME_GATHER_BINDINGS = { volumes: 0, group: 1, scatter: 2, partials: 3, transmittance: 4, environmentGrid: 5, emissionLut: 6 } as const;
+/** Group-1 bindings of the shadow grid density kernel (K6.4 spectral: the absorption stack beside the extinction one). */
+export const GRID_DENSITY_BINDINGS = { volumes: 0, group: 1, grid: 2, partials: 3, absorption: 4 } as const;
+/** Group-1 bindings of the transmittance kernel (K6.4 spectral: the absorption stack). */
+export const TRANSMITTANCE_BINDINGS = { grid: 0, transmittance: 1, absorption: 2 } as const;
+/** Group-1 bindings of the 'frame' gather kernel (K6.4 spectral: the second scatter texture). */
+export const FRAME_GATHER_BINDINGS = { volumes: 0, group: 1, scatter: 2, partials: 3, transmittance: 4, environmentGrid: 5, emissionLut: 6, scatterAlpha: 7 } as const;
+/** K6.4: words per voxel of the spectral shadow grid's multi-group partials (extinction rgb, absorption rgb). */
+export const VDB_FRAME_SPECTRAL_GRID_WORDS = 3;
 
 /** Values per froxel the 'frame' gather sums (4 × vec4f), packed as 8 `pack2x16float` words in the partials. */
 export const VDB_FRAME_SUM_WORDS = 8;
@@ -52,8 +54,78 @@ const GRID_CELL = `  let r = u32(vdbFrame.gridLayout.y);
   let uvw = (vec3f(cell) + 0.5) / f32(r);
   let world = vdbFrame.gridMin[cascade].xyz + uvw * vdbFrame.gridSize[cascade].xyz;`;
 
+/**
+ * K6.4: the spectral shadow density pass (his FrameShadowDensityMaterial spectral branch, L111–121): two stacks, the
+ * extinction (spectrum × extinction, rgb) and the absorption of each channel (extinction × (1 − albedo)); multi-group
+ * partials hold 3 words per voxel at texel z, z + Z and z + 2Z of a partials texture 3× as deep (Z the stack depth).
+ */
+function vdbFrameSpectralGridDensityWgsl(o: { multi: boolean; channels: VDBVolumeChannels }): string {
+  const b = GRID_DENSITY_BINDINGS;
+  const store = o.multi
+    ? `  let role = vdbFrameGroup.casters.z;
+  let layer = vec3u(0u, 0u, textureDimensions(vdbFrameShadowGrid).z);
+  if ((role & 1u) == 0u) {
+    let w0 = unpack2x16float(textureLoad(vdbFrameGridPartials, texel).x);
+    let w1 = unpack2x16float(textureLoad(vdbFrameGridPartials, texel + layer).x);
+    let w2 = unpack2x16float(textureLoad(vdbFrameGridPartials, texel + 2u * layer).x);
+    sumE += vec3f(w0, w1.x);
+    sumA += vec3f(w1.y, w2);
+  }
+  if ((role & 2u) != 0u) {
+    textureStore(vdbFrameShadowGrid, texel, vec4f(sumE, 0.0));
+    textureStore(vdbFrameAbsorptionGrid, texel, vec4f(sumA, 0.0));
+  } else {
+    textureStore(vdbFrameGridPartials, texel, vec4u(pack2x16float(sumE.xy), 0u, 0u, 0u));
+    textureStore(vdbFrameGridPartials, texel + layer, vec4u(pack2x16float(vec2f(sumE.z, sumA.x)), 0u, 0u, 0u));
+    textureStore(vdbFrameGridPartials, texel + 2u * layer, vec4u(pack2x16float(sumA.yz), 0u, 0u, 0u));
+  }`
+    : `  textureStore(vdbFrameShadowGrid, texel, vec4f(sumE, 0.0));
+  textureStore(vdbFrameAbsorptionGrid, texel, vec4f(sumA, 0.0));`;
+  return `${frameChunksWgsl(["constants", "mat3", "froxel", "lod", "shadow"])}
+@group(1) @binding(${b.volumes}) var<uniform> vdbFrameVolumes: VdbFrameVolumes;
+@group(1) @binding(${b.group}) var<uniform> vdbFrameGroup: VdbFrameGroup;
+@group(1) @binding(${b.grid}) var vdbFrameShadowGrid: texture_storage_3d<rgba16float, write>;
+@group(1) @binding(${b.absorption}) var vdbFrameAbsorptionGrid: texture_storage_3d<rgba16float, write>;
+${o.multi ? `@group(1) @binding(${b.partials}) var vdbFrameGridPartials: texture_storage_3d<r32uint, read_write>;\n` : ""}
+${vdbFrameSourceFunctionsWgsl(o.channels)}
+// His spectral shadow density pass at one voxel: the summed extinction and absorption of each channel of the group's
+// casters whose box holds the voxel centre, read at the voxel's lod (absorbance scales the shadow, not the look).
+@compute @workgroup_size(4, 4, 4)
+fn vdbFrameGridDensityCs(@builtin(global_invocation_id) gid: vec3u) {
+${GRID_CELL}
+  let voxel = vdbFrame.gridVoxel[cascade].xyz;
+  let voxelSize = max(voxel.x, max(voxel.y, voxel.z));
+  var sumE = vec3f(0.0);
+  var sumA = vec3f(0.0);
+  let casters = vdbFrameGroup.casters;
+  for (var i = 0u; i < casters.y; i++) {
+    let vi = casters.x + i;
+    let local = (vdbFrameVolumes.v[vi].worldToLocal * vec4f(world, 1.0)).xyz;
+    let a = abs(local);
+    if (max(a.x, max(a.y, a.z)) > 0.5) {
+      continue;
+    }
+    let texels = vdbSrcTexels(vdbFrameVolumes.v[vi].slices.z);
+    let maxTexels = max(texels.x, max(texels.y, texels.z));
+    let lod = vdbFrameLod(voxelSize / vdbFrameVolumes.v[vi].density.z, maxTexels);
+    let readLod = select(0.0, lod, vdbFrameVolumes.v[vi].march.y != 0u);
+    let extinction = vdbFrameExtinction(vi, local, readLod) * vdbFrameVolumes.v[vi].density.w;
+    if (extinction <= 0.0) {
+      continue;
+    }
+    let spectral = vdbFrameVolumes.v[vi].extinctionSpectrum.xyz * extinction;
+    sumE += spectral;
+    sumA += spectral * (vec3f(1.0) - clamp(vdbFrameAlbedo(vi, local, readLod), vec3f(0.0), vec3f(1.0)));
+  }
+  let texel = vec3u(vdbFrame.shadowOrigin[cascade].xyz) + cell;
+${store}
+}
+`;
+}
+
 /** The shadow grid density kernel (after the source module, the source WGSL and `vdbFrameUniformsWgsl()`). */
-export function vdbFrameGridDensityWgsl(o: { multi: boolean; channels: VDBVolumeChannels }): string {
+export function vdbFrameGridDensityWgsl(o: { multi: boolean; channels: VDBVolumeChannels; spectral?: boolean }): string {
+  if (o.spectral) return vdbFrameSpectralGridDensityWgsl(o);
   const b = GRID_DENSITY_BINDINGS;
   const store = o.multi
     ? `  let role = vdbFrameGroup.casters.z;
@@ -248,8 +320,171 @@ fn vdbFrameGridMipCs(@builtin(global_invocation_id) gid: vec3u) {
 `;
 }
 
+/**
+ * K6.4: the spectral grid sample and march (his FrameTransmittanceMaterial buildSpectralNodes: gridSample, march): the
+ * grey march with the depths of each channel, stopping when every channel is past march depth 6. Needs the
+ * `vdbFrameShadowGrid` (extinction rgb) and `vdbFrameAbsorptionGrid` (absorption rgb) stacks.
+ */
+const SPECTRAL_GRID_MARCH_WGSL = `struct VdbFrameSpectralSample {
+  e: vec3f,
+  a: vec3f,
+};
+// (extinction, absorption) of each channel of the finest cascade at the position, 0 outside the grid
+fn vdbFrameSpectralGridSample(world: vec3f) -> VdbFrameSpectralSample {
+  let c = vdbFrameFindCascade(world, 0u);
+  if (c < 0) {
+    return VdbFrameSpectralSample(vec3f(0.0), vec3f(0.0));
+  }
+  let cascade = u32(c);
+  let origin = vdbFrame.shadowOrigin[cascade].xyz;
+  let uvw = vdbFrameGridUvw(cascade, world);
+  return VdbFrameSpectralSample(vdbFrameStackSample(vdbFrameShadowGrid, origin, uvw).xyz, vdbFrameStackSample(vdbFrameAbsorptionGrid, origin, uvw).xyz);
+}
+fn vdbFrameSpectralGridMarch(origin: vec3f, direction: vec3f, maxDistance: f32, jitter: f32) -> VdbFrameSpectralMarch {
+  let ms = vdbFrame.lighting.x;
+  let octaves = vdbFrame.octaves;
+  var d = VdbFrameSpectralDepths(vec3f(0.0), vec3f(0.0), vec3f(0.0));
+  var traveled = 0.0;
+  var probe = origin;
+  for (var i = 0u; i < 1024u; i++) {
+    let c = vdbFrameFindCascade(probe, 0u);
+    if (c < 0 || traveled >= maxDistance || vdbFrameMinComponent(vdbFrameSpectralShadowMarchDepth(d, ms, octaves)) > 6.0) {
+      break;
+    }
+    let perUnit = abs(direction) / vdbFrame.gridVoxel[u32(c)].xyz;
+    let stepLength = min(1.0 / max(perUnit.x, max(perUnit.y, perUnit.z)), maxDistance - traveled);
+    let s = vdbFrameSpectralGridSample(probe + direction * stepLength * jitter);
+    let st = vdbFrameSpectralShadowStep(s.e, s.a, ms);
+    d.x += st.x * stepLength;
+    d.y += st.y * stepLength;
+    d.z += st.z * stepLength;
+    probe += direction * stepLength;
+    traveled += stepLength;
+  }
+  let t = vdbFrameSpectralShadowTransmittance(d, ms, octaves);
+  return VdbFrameSpectralMarch(t.x, t.y, d.z, d.y);
+}
+`;
+
+/**
+ * K6.4: the spectral transmittance kernel (his buildSpectralNodes, one pass per slot group): one dispatch over the
+ * cascades × the slot groups in use (`VdbFrameUniforms.spectral.y`). Group 0 holds (sky up, sky down) and slot 0, group g
+ * slots 2g − 1 and 2g; a slot entry is (total, direct) of each channel, packed into 3 targets per group and cascade at
+ * `transmittanceOrigin[3 (g C + c) + k]`. 'two-sided' and the K6.5b occluder maps as the grey kernel, per channel.
+ */
+function vdbFrameSpectralTransmittanceWgsl(): string {
+  const b = TRANSMITTANCE_BINDINGS;
+  return `${frameChunksWgsl(["constants", "noise", "shadow", "spectral", "grid"])}
+@group(1) @binding(${b.grid}) var vdbFrameShadowGrid: texture_3d<f32>;
+@group(1) @binding(${b.absorption}) var vdbFrameAbsorptionGrid: texture_3d<f32>;
+@group(1) @binding(${b.transmittance}) var vdbFrameTransmittanceOut: texture_storage_3d<rgba16float, write>;
+${vdbFrameOccluderWgsl()}
+${SPECTRAL_GRID_MARCH_WGSL}
+// The unit direction to light slot i and its march length (w < 0: no slot); slot = scene slots: the environment light
+fn vdbFrameSlotDirection(i: u32, world: vec3f) -> vec4f {
+  let slots = u32(vdbFrame.gridLayout.w);
+  let envSlot = vdbFrame.environment.x > 0.5;
+  if (i >= 6u || i >= slots + select(0u, 1u, envSlot)) {
+    return vec4f(0.0, 1.0, 0.0, -1.0);
+  }
+  if (i == slots) {
+    if (vdbFrameEnv.info.z != 0u && vdbFrameEnv.info.x != 0u) {
+      return vec4f(normalize(vdbFrameEnv.direction[0].xyz), 1e20);
+    }
+    return vec4f(0.0, 1.0, 0.0, -1.0);
+  }
+  let light = vdbFrameLights.position[i];
+  let toLight = light.xyz - world;
+  let isDirection = light.w < 1.5;
+  return vec4f(select(normalize(toLight), normalize(light.xyz), isDirection), select(length(toLight), 1e20, isDirection));
+}
+
+@compute @workgroup_size(4, 4, 4)
+fn vdbFrameTransmittanceCs(@builtin(global_invocation_id) gid: vec3u) {
+  let r = u32(vdbFrame.gridLayout.y);
+  let cascades = u32(vdbFrame.gridLayout.x);
+  let groups = u32(vdbFrame.spectral.y);
+  if (gid.x >= r || gid.y >= r || gid.z >= r * cascades * groups) {
+    return;
+  }
+  let layer = gid.z / r;
+  let cascade = layer % cascades;
+  let group = layer / cascades;
+  let cell = vec3u(gid.xy, gid.z - layer * r);
+  let uvw = (vec3f(cell) + 0.5) / f32(r);
+  let world = vdbFrame.gridMin[cascade].xyz + uvw * vdbFrame.gridSize[cascade].xyz;
+  var t0 = vec4f(1.0);
+  var t1 = vec4f(1.0);
+  var t2 = vec4f(1.0);
+  let voxel = vdbFrame.gridVoxel[cascade].xyz;
+  var near = 0.0;
+  for (var i = 0u; i < 8u; i++) {
+    let corner = vec3f(f32(i & 1u), f32((i >> 1u) & 1u), f32((i >> 2u) & 1u)) - 0.5;
+    near += dot(vdbFrameSpectralGridSample(world + corner * voxel).e, vec3f(1.0));
+  }
+  if (near > 0.0) {
+    let ms = vdbFrame.lighting.x;
+    let twoSided = vdbFrame.lighting.y > 0.5;
+    let jitter = vdbFrameNoise(vdbFrame.jitterFade.x, vdbFrameGridFragCoord(cascade, cell));
+    let sky = normalize(vdbFrameLights.sky.xyz);
+    let isSky = group == 0u;
+    // the two entries' slots (group 0: entry a is the sky, b slot 0)
+    let slotA = select(2u * group - 1u, 0u, isSky);
+    let slotB = select(2u * group, 0u, isSky);
+    let a = select(vdbFrameSlotDirection(slotA, world), vec4f(sky, 1e20), isSky);
+    let bDir = vdbFrameSlotDirection(slotB, world);
+    // marches 0, 1: the entries toward the light (or sky up); 2, 3: away from it (sky down; 'two-sided' backs)
+    var directions = array<vec4f, 4>(a, bDir, vec4f(-a.xyz, select(-1.0, 1e20, a.w >= 0.0 && (isSky || twoSided))), vec4f(-bDir.xyz, select(-1.0, 1e20, bDir.w >= 0.0 && twoSided)));
+    var results: array<VdbFrameSpectralMarch, 4>;
+    for (var m = 0u; m < 4u; m++) {
+      results[m] = vdbFrameSpectralUnmarched();
+      let d = directions[m];
+      if (d.w < 0.0) {
+        continue;
+      }
+      results[m] = vdbFrameSpectralGridMarch(world, d.xyz, d.w, jitter);
+    }
+    // the slot entries: two-sided totals, then (scene slots) the host occluder visibility of the scattered part
+    for (var e = 0u; e < 2u; e++) {
+      if ((e == 0u && isSky) || directions[e].w < 0.0) {
+        continue;
+      }
+      let slot = select(slotA, slotB, e == 1u);
+      if (twoSided) {
+        results[e].y = vdbFrameTwoSidedDiffusion3(results[e].x, results[e].z, results[e].w, results[e + 2u].z);
+      }
+      if (slot < u32(vdbFrame.gridLayout.w) && vdbFrame.octaves.x <= 0.0) {
+        let visibility = vdbFrameOccluderVisibility(world, slot);
+        if (visibility < 1.0) {
+          results[e].y = results[e].x + (results[e].y - results[e].x) * visibility;
+        }
+      }
+    }
+    var ax = results[0].y;
+    var ay = results[0].x;
+    if (isSky) {
+      let up = results[0];
+      let down = results[2];
+      ax = select(up.y, vdbFrameIsotropicDiffusion3(up.z, down.z, up.w), ms > 0.0);
+      ay = select(down.y, vdbFrameIsotropicDiffusion3(down.z, up.z, down.w), ms > 0.0);
+    }
+    let bx = results[1].y;
+    let by = results[1].x;
+    t0 = vec4f(ax, ay.x);
+    t1 = vec4f(ay.y, ay.z, bx.x, bx.y);
+    t2 = vec4f(bx.z, by);
+  }
+  let base = 3u * (group * cascades + cascade);
+  textureStore(vdbFrameTransmittanceOut, vec3u(vdbFrame.transmittanceOrigin[base].xyz) + cell, t0);
+  textureStore(vdbFrameTransmittanceOut, vec3u(vdbFrame.transmittanceOrigin[base + 1u].xyz) + cell, t1);
+  textureStore(vdbFrameTransmittanceOut, vec3u(vdbFrame.transmittanceOrigin[base + 2u].xyz) + cell, t2);
+}
+`;
+}
+
 /** The transmittance kernel (after `vdbFrameUniformsWgsl()`; source-free). K6.3: `scattering` picks the slot term. */
-export function vdbFrameTransmittanceWgsl(o: { scattering?: VDBFrameScatteringKernel } = {}): string {
+export function vdbFrameTransmittanceWgsl(o: { scattering?: VDBFrameScatteringKernel; spectral?: boolean } = {}): string {
+  if (o.spectral) return vdbFrameSpectralTransmittanceWgsl();
   const b = TRANSMITTANCE_BINDINGS;
   const scattering = o.scattering ?? "none";
   const msb = TRANSMITTANCE_MULTI_SCALE_BINDINGS;
@@ -424,8 +659,305 @@ ${slotTerm}      // K6.5b: a host occluder map scales the scene slot's scattered
 `;
 }
 
+/**
+ * K6.4: the spectral 'frame' gather (his FrameDensityMaterial / FrameLightingMaterial spectral branches): per volume the
+ * spectral density sums (albedo × extinction rgb, weight = channel mean; emission and visible t × weight; extinction
+ * rgb), then the lighting at the summed visible position samples the slot groups (3 targets each) there. Writes the
+ * scatter (radiance × α of each channel, green α) and scatterAlpha (red α, blue α, 0, green α). Multi-group partials:
+ * the 12 sums as 6 words.
+ */
+function vdbFrameSpectralLightingGatherWgsl(o: { multi: boolean; channels: VDBVolumeChannels; hook?: string | null }): string {
+  const b = FRAME_GATHER_BINDINGS;
+  const write = `  textureStore(vdbFrameScatter, cell, out.scatter);
+  textureStore(vdbFrameScatterAlpha, cell, out.alpha);`;
+  const store = o.multi
+    ? `  let role = vdbFrameGroup.range.z;
+  let isFirst = (role & 1u) != 0u;
+  let isLast = (role & 2u) != 0u;
+  if (!inside) {
+    if (isLast) {
+      textureStore(vdbFrameScatter, cell, vec4f(0.0));
+      textureStore(vdbFrameScatterAlpha, cell, vec4f(0.0));
+    }
+    return;
+  }
+  let depth = u32(vdbFrame.grid.z);
+  var words: array<u32, 6>;
+  if (!isFirst) {
+    for (var k = 0u; k < 6u; k++) {
+      words[k] = textureLoad(vdbFramePartials, vec3u(cell.xy, cell.z + k * depth)).x;
+    }
+    sums.a += vec4f(unpack2x16float(words[0]), unpack2x16float(words[1]));
+    sums.e += vec4f(unpack2x16float(words[2]), unpack2x16float(words[3]));
+    sums.x += vec4f(unpack2x16float(words[4]), unpack2x16float(words[5]));
+  }
+  if (isLast) {
+    let out = vdbFrameSpectralLightFroxel(sums, f);
+${write}
+  } else {
+    words = array<u32, 6>(pack2x16float(sums.a.xy), pack2x16float(sums.a.zw), pack2x16float(sums.e.xy), pack2x16float(sums.e.zw), pack2x16float(sums.x.xy), pack2x16float(sums.x.zw));
+    for (var k = 0u; k < 6u; k++) {
+      textureStore(vdbFramePartials, vec3u(cell.xy, cell.z + k * depth), vec4u(words[k], 0u, 0u, 0u));
+    }
+  }`
+    : `  var out = VdbFrameSpectralOut(vec4f(0.0), vec4f(0.0));
+  if (inside) {
+    out = vdbFrameSpectralLightFroxel(sums, f);
+  }
+${write}`;
+
+  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "octaves", "spectral", "sh", "envSh", "grid"])}
+@group(1) @binding(${b.volumes}) var<uniform> vdbFrameVolumes: VdbFrameVolumes;
+@group(1) @binding(${b.group}) var<uniform> vdbFrameGroup: VdbFrameGroup;
+@group(1) @binding(${b.scatter}) var vdbFrameScatter: texture_storage_3d<rgba16float, write>;
+@group(1) @binding(${b.scatterAlpha}) var vdbFrameScatterAlpha: texture_storage_3d<rgba16float, write>;
+${o.multi ? `@group(1) @binding(${b.partials}) var vdbFramePartials: texture_storage_3d<r32uint, read_write>;\n` : ""}@group(1) @binding(${b.transmittance}) var vdbFrameTransmittanceStack: texture_3d<f32>;
+@group(1) @binding(${b.environmentGrid}) var vdbFrameEnvGrid: texture_3d<f32>;
+${vdbFrameOccluderWgsl()}
+${vdbFrameSourceFunctionsWgsl(o.channels, { lutBinding: b.emissionLut, hook: o.hook ?? null })}
+${vdbFrameSliceWgsl(true)}
+// His spectral density targets as sums: (albedo·extinction rgb, weight), (emission·weight, visible t·weight), (extinction rgb, 0)
+struct VdbFrameSums {
+  a: vec4f,
+  e: vec4f,
+  x: vec4f,
+};
+struct VdbFrameSpectralOut {
+  scatter: vec4f,
+  alpha: vec4f,
+};
+
+// sampleShadows of one slot group's 3 targets at a world position, 1 outside the grid (or without shadows), blended
+// toward the next cascade within 10% of a cascade's sides
+fn vdbFrameSpectralGroupAt(world: vec3f, group: u32) -> array<vec4f, 3> {
+  var out = array<vec4f, 3>(vec4f(1.0), vec4f(1.0), vec4f(1.0));
+  if (vdbFrame.lighting.z < 0.5) {
+    return out;
+  }
+  let found = vdbFrameFindCascade(world, 0u);
+  if (found < 0) {
+    return out;
+  }
+  let cascades = u32(vdbFrame.gridLayout.x);
+  let cascade = u32(found);
+  let uvw = vdbFrameGridUvw(cascade, world);
+  for (var k = 0u; k < 3u; k++) {
+    out[k] = vdbFrameStackSample(vdbFrameTransmittanceStack, vdbFrame.transmittanceOrigin[3u * (group * cascades + cascade) + k].xyz, uvw);
+  }
+  let side = min(uvw, vec3f(1.0) - uvw);
+  let blend = 1.0 - smoothstep(0.0, 0.1, min(side.x, min(side.y, side.z)));
+  if (blend > 0.0) {
+    let next = vdbFrameFindCascade(world, cascade + 1u);
+    if (next >= 0) {
+      let n = u32(next);
+      let nextUvw = vdbFrameGridUvw(n, world);
+      for (var k = 0u; k < 3u; k++) {
+        out[k] = mix(out[k], vdbFrameStackSample(vdbFrameTransmittanceStack, vdbFrame.transmittanceOrigin[3u * (group * cascades + n) + k].xyz, nextUvw), vec4f(blend));
+      }
+    }
+  }
+  return out;
+}
+
+// frameUnpackSpectralGroup: entry a (sky: x up, y down; a slot: x total, y direct) or b of a group's 3 targets
+fn vdbFrameSpectralEntry(m: array<vec4f, 3>, second: bool) -> VdbFrameSpectralShadow {
+  if (second) {
+    return VdbFrameSpectralShadow(vec3f(m[1].z, m[1].w, m[2].x), m[2].yzw);
+  }
+  return VdbFrameSpectralShadow(m[0].xyz, vec3f(m[0].w, m[1].x, m[1].y));
+}
+
+// K6.2b: the environment of his density pass (0 none, 1 'outward', 2 the environment grid)
+fn vdbFrameEnvDensityMode() -> u32 {
+  if (vdbFrameEnv.info.z == 0u) {
+    return 0u;
+  }
+  let useShadows = vdbFrame.lighting.z > 0.5;
+  let count = vdbFrameEnv.info.x;
+  if (useShadows && vdbFrame.environment.z > 0.5 && count > u32(vdbFrame.environment.y)) {
+    return 2u;
+  }
+  if (useShadows && vdbFrame.environment.x > 0.5 && count > 0u) {
+    return 0u;
+  }
+  return 1u;
+}
+
+// His spectral density pass for one volume in one froxel; zero when the weight is not > 0
+fn vdbFrameDensitySums(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSums {
+  var out: VdbFrameSums;
+  let s = vdbFrameSliceOf(vi, cell, f);
+  let extinction = vdbFrameVolumes.v[vi].extinctionSpectrum.xyz * s.extinction;
+  let weight = vdbFrameMeanComponent(extinction);
+  if (!(weight > 0.0)) {
+    return out;
+  }
+  let visibleT = select(0.5, s.visibleT, s.visibleT >= 0.0);
+  let local = mix(s.localNear, s.localFar, vec3f(visibleT));
+  let albedo = vdbFrameAlbedo(vi, local, s.readLod);
+  var emission = vdbFrameEmission(vi, local, s.readLod) + vdbFrameVolumes.v[vi].scatterOpacity.xyz;
+  let world = (vdbFrame.cameraWorld * vec4f(mix(f.viewNear, f.viewFar, vec3f(visibleT)), 1.0)).xyz;
+  let octaves = vdbFrame.octaves;
+  let envMode = vdbFrameEnvDensityMode();
+  if (envMode == 1u) {
+    // along the outward direction from the volume centre; its shadow between the sky down and up totals of each channel
+    let sky = vdbFrameSpectralEntry(vdbFrameSpectralGroupAt(world, 0u), false);
+    let skyDirection = normalize(vdbFrameLights.sky.xyz);
+    var outward = skyDirection;
+    if (length(local) > 1e-4) {
+      outward = normalize(vdbFrameMat3(vdbFrame.cameraWorld) * (vdbFrameMat3(vdbFrameVolumes.v[vi].localToView) * local));
+    }
+    let skyBlend = dot(outward, skyDirection) * 0.5 + 0.5;
+    let upTotal = vdbFrameSpectralShadowTotal(sky.x, octaves, albedo);
+    let downTotal = vdbFrameSpectralShadowTotal(sky.y, octaves, albedo);
+    let envShadow = mix(downTotal, upTotal, vec3f(skyBlend));
+    if (vdbFrame.lighting.w > 0.5) {
+      let inward = mix(upTotal, downTotal, vec3f(skyBlend));
+      emission += albedo * ((vdbFrameEnvIrradiance(outward) * envShadow + vdbFrameEnvIrradiance(-outward) * inward) * 0.5) * (1.0 / VDB_FRAME_PI);
+    } else {
+      emission += albedo * vdbFrameEnvIrradiance(outward) * envShadow * (1.0 / VDB_FRAME_PI);
+    }
+  } else if (envMode == 2u) {
+    let cascade = u32(vdbFrame.gridLayout.x) - 1u;
+    let uvw = vdbFrameGridUvw(cascade, world);
+    var environment = vec3f(0.0);
+    if (vdbFrameInsideGrid(uvw)) {
+      environment = vdbFrameStackSample(vdbFrameEnvGrid, vec3f(0.0), uvw).xyz;
+    } else {
+      for (var i = u32(vdbFrame.environment.y); i < vdbFrameEnv.info.x; i++) {
+        environment += vdbFrameEnv.color[i].xyz;
+      }
+      environment = max(environment, vec3f(0.0)) * vdbFrameSpectralShadowTotal(vec3f(1.0), octaves, albedo);
+    }
+    emission += albedo * environment * (1.0 / VDB_FRAME_PI);
+  }
+  out.a = vec4f(albedo * extinction, weight);
+  out.e = vec4f(emission * weight, visibleT * weight);
+  out.x = vec4f(extinction, 0.0);
+  return out;
+}
+
+// three's getDistanceAttenuation
+fn vdbFrameDistanceAttenuation(distance: f32, cutoff: f32, decay: f32) -> f32 {
+  let falloff = 1.0 / max(pow(distance, decay), 0.01);
+  if (cutoff > 0.0) {
+    let x = clamp(1.0 - pow(distance / cutoff, 4.0), 0.0, 1.0);
+    return falloff * x * x;
+  }
+  return falloff;
+}
+
+// His spectral lighting pass on the summed density: the slot groups sampled at the summed visible position
+fn vdbFrameSpectralLightFroxel(sums: VdbFrameSums, f: VdbFrameFroxel) -> VdbFrameSpectralOut {
+  let weight = sums.a.w;
+  if (!(weight > 0.0)) {
+    return VdbFrameSpectralOut(vec4f(0.0), vec4f(0.0));
+  }
+  let extinction = sums.x.xyz;
+  let visibleT = clamp(sums.e.w / weight, 0.0, 1.0);
+  let world = (vdbFrame.cameraWorld * vec4f(mix(f.viewNear, f.viewFar, vec3f(visibleT)), 1.0)).xyz;
+  let ray = normalize(vdbFrameMat3(vdbFrame.cameraWorld) * (f.viewFar - f.viewNear));
+  let albedo = sums.a.xyz / max(extinction, vec3f(1e-8));
+  let emission = sums.e.xyz / weight;
+  let octaves = vdbFrame.octaves;
+  let groups = u32(vdbFrame.spectral.y);
+  // the slot entries (total, direct) of slots 0..5 and the sky (up, down) totals; 1 for groups not in use
+  var slots: array<VdbFrameSpectralShadow, 6>;
+  var skyMaps = array<vec4f, 3>(vec4f(1.0), vec4f(1.0), vec4f(1.0));
+  for (var g = 0u; g < 4u; g++) {
+    var maps = array<vec4f, 3>(vec4f(1.0), vec4f(1.0), vec4f(1.0));
+    if (g < groups) {
+      maps = vdbFrameSpectralGroupAt(world, g);
+    }
+    if (g == 0u) {
+      skyMaps = maps;
+      slots[0] = vdbFrameSpectralEntry(maps, true);
+    } else {
+      slots[2u * g - 1u] = vdbFrameSpectralEntry(maps, false);
+      if (2u * g < 6u) {
+        slots[2u * g] = vdbFrameSpectralEntry(maps, true);
+      }
+    }
+  }
+  let sky = vdbFrameSpectralEntry(skyMaps, false);
+  let skyDirection = normalize(vdbFrameLights.sky.xyz);
+  let skyUp = vdbFrameSpectralShadowTotal(sky.x, octaves, albedo) * 0.5;
+  let skyDown = vdbFrameSpectralShadowTotal(sky.y, octaves, albedo) * 0.5;
+  var irradiance = vdbFrameLights.ambient.xyz;
+  irradiance += vdbFrameShIrradiance(skyDirection) * skyUp;
+  irradiance += vdbFrameShIrradiance(-skyDirection) * skyDown;
+  irradiance += vdbFrameLights.hemiSkySum.xyz * skyUp;
+  irradiance += vdbFrameLights.hemiGroundSum.xyz * skyDown;
+  let shadowLights = u32(vdbFrame.gridLayout.w);
+  for (var i = 0u; i < vdbFrameLights.counts.x; i++) {
+    let position = vdbFrameLights.position[i];
+    let color = vdbFrameLights.color[i];
+    let spot = vdbFrameLights.spot[i];
+    let falloff = vdbFrameLights.falloff[i];
+    let lightVector = position.xyz - world;
+    let spotAttenuation = select(1.0, smoothstep(spot.w, color.w, dot(normalize(lightVector), spot.xyz)), position.w > 2.5);
+    let distanceAttenuation = select(1.0, vdbFrameDistanceAttenuation(length(lightVector), falloff.x, falloff.y), position.w > 1.5);
+    let direction = select(normalize(lightVector), position.xyz, position.w < 1.5);
+    let cosTheta = dot(ray, direction);
+    let hasSlot = i < shadowLights && i < 6u;
+    // K6.5b: the host occluder visibility at the lit position: a slot's direct part (its scattered part was occluded in
+    // the transmittance; octaves: the whole light), a light without a slot whole
+    let visibility = vdbFrameOccluderVisibility(world, i);
+    var light: vec3f;
+    if (hasSlot && octaves.x <= 0.0) {
+      let entry = slots[min(i, 5u)];
+      light = vdbFrameSpectralShadowedLight(vdbFrame.framePhase, vdbFrame.framePhaseSpectrum.xyz, octaves, cosTheta, VdbFrameSpectralShadow(entry.y * visibility, entry.x - entry.y * (1.0 - visibility)), albedo);
+    } else {
+      var shadow = VdbFrameSpectralShadow(vec3f(1.0), vec3f(1.0));
+      if (hasSlot) {
+        let entry = slots[min(i, 5u)];
+        shadow = VdbFrameSpectralShadow(entry.y, entry.x);
+      }
+      light = vdbFrameSpectralShadowedLight(vdbFrame.framePhase, vdbFrame.framePhaseSpectrum.xyz, octaves, cosTheta, shadow, albedo) * visibility;
+    }
+    irradiance += color.rgb * light * spotAttenuation * distanceAttenuation;
+  }
+  // K6.2b: the dominant 'directional' environment light in its slot (isotropic, no phase)
+  if (vdbFrame.lighting.z > 0.5 && vdbFrame.environment.x > 0.5 && vdbFrameEnv.info.z != 0u && vdbFrameEnv.info.x > 0u) {
+    irradiance += vdbFrameEnv.color[0].xyz * vdbFrameSpectralShadowTotal(slots[min(shadowLights, 5u)].x, octaves, albedo);
+  }
+  let radiance = albedo * irradiance * (1.0 / VDB_FRAME_PI) + emission;
+  let alpha = vec3f(1.0) - exp(-extinction * length(f.viewFar - f.viewNear));
+  return VdbFrameSpectralOut(vec4f(radiance * alpha, alpha.y), vec4f(alpha.x, alpha.z, 0.0, alpha.y));
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn vdbFrameGatherCs(@builtin(global_invocation_id) gid: vec3u) {
+  let box = vdbFrame.dispatchBox;
+  if (gid.x >= box.z || gid.y >= box.w || f32(gid.z) >= vdbFrame.grid.z) {
+    return;
+  }
+  let cell = vec3u(box.x + gid.x, box.y + gid.y, gid.z);
+  let area = vdbFrame.areaRect;
+  let areaSlices = vdbFrame.areaSlices;
+  let p = vec2f(cell.xy);
+  let z = f32(cell.z);
+  let inside = p.x >= area.x && p.y >= area.y && p.x < area.z && p.y < area.w && z >= areaSlices.x && z < areaSlices.y;
+  var sums: VdbFrameSums;
+  var f: VdbFrameFroxel;
+  if (inside) {
+    f = vdbFrameFroxelAt(cell);
+    let group = vdbFrameGroup.range;
+    for (var i = 0u; i < group.y; i++) {
+      let r = vdbFrameDensitySums(group.x + i, cell, f);
+      sums.a += r.a;
+      sums.e += r.e;
+      sums.x += r.x;
+    }
+  }
+${store}
+}
+`;
+}
+
 /** The 'frame' gather kernel (after the source module, the source WGSL and `vdbFrameUniformsWgsl()`). */
-export function vdbFrameLightingGatherWgsl(o: { multi: boolean; channels: VDBVolumeChannels; hook?: string | null }): string {
+export function vdbFrameLightingGatherWgsl(o: { multi: boolean; channels: VDBVolumeChannels; hook?: string | null; spectral?: boolean }): string {
+  if (o.spectral) return vdbFrameSpectralLightingGatherWgsl(o);
   const b = FRAME_GATHER_BINDINGS;
   const store = o.multi
     ? `  let role = vdbFrameGroup.range.z;

@@ -34,6 +34,8 @@ export const VDB_FRAME_SHADOW_PIECE = vdbUniformStruct("VdbFrameShadowPiece", [
   { name: "forward", type: "vec4f" },
   // first layer, size (texels per side), kind (0 camera, 2 cube: 6 layers from the first), march steps
   { name: "info", type: "vec4u" },
+  // K6.4: spectral (1: also write the optical depth rgb map), spare
+  { name: "spectral", type: "vec4u" },
 ]);
 
 /** Dynamic-offset stride of the piece records. */
@@ -51,10 +53,12 @@ export const VDB_VOLUME_SHADOW_VIEW = vdbUniformStruct("VdbVolumeShadowView", [
   { name: "breaks", type: "vec4f" },
   // kind (0 directional cascades, 1 spot, 2 point), cascade count, size, enabled (0: transmittance 1)
   { name: "info", type: "vec4u" },
+  // K6.4: spectral (1: the map has an optical depth rgb twin; 0: the rgb receivers return the grey value), spare
+  { name: "spectral", type: "vec4u" },
 ]);
 
-/** Group-1 bindings of the shadow map kernel. */
-export const VOLUME_SHADOW_BINDINGS = { piece: 0, grid: 1, map: 2 } as const;
+/** Group-1 bindings of the shadow map kernel (K6.4 spectral: the optical depth rgb map). */
+export const VOLUME_SHADOW_BINDINGS = { piece: 0, grid: 1, map: 2, rgb: 3 } as const;
 
 /** The receiver functions' WGSL (the `VdbVolumeShadowView` struct and the Beer depth maths) without the struct. */
 const RECEIVER_FUNCTIONS = `// The depth of a world point for layer l of a drawn map: distance from the origin (perspective) or along forward
@@ -73,11 +77,16 @@ fn vdbVolumeShadowBeer(texel: vec4f, depth: f32, far: f32) -> f32 {
   let along = clamp((depth - first) / max(last - first, 1e-4), 0.0, 1.0);
   return exp(-opticalDepth * along);
 }
-// Directional (cascades by the receiver's view depth) and spot maps: the volume transmittance at a world point,
-// read with the view the map was drawn with; 1 outside the map, or when the map is disabled
-fn vdbVolumeShadow(map: texture_2d_array<f32>, smp: sampler, view: VdbVolumeShadowView, world: vec3f, viewDepth: f32) -> f32 {
+// The layer and uv of a world point in a directional (cascades by the receiver's view depth) or spot map, read with the
+// view the map was drawn with; layer < 0: outside the map (or the map is disabled)
+struct VdbVolumeShadowTexel {
+  layer: i32,
+  uv: vec2f,
+};
+fn vdbVolumeShadowTexelOf(view: VdbVolumeShadowView, world: vec3f, viewDepth: f32) -> VdbVolumeShadowTexel {
+  var out = VdbVolumeShadowTexel(-1, vec2f(0.0));
   if (view.info.w == 0u) {
-    return 1.0;
+    return out;
   }
   var layer = 0u;
   var uv: vec2f;
@@ -92,7 +101,7 @@ fn vdbVolumeShadow(map: texture_2d_array<f32>, smp: sampler, view: VdbVolumeShad
     let tile = vec2f(clip.x * 0.5 + 0.5, 0.5 - clip.y * 0.5);
     let lastBreak = view.breaks[min(max(count, 1u) - 1u, 3u)];
     if (!(viewDepth <= lastBreak && all(tile >= vec2f(0.0)) && all(tile <= vec2f(1.0)))) {
-      return 1.0;
+      return out;
     }
     let inset = 0.5 / f32(view.info.z);
     uv = clamp(tile, vec2f(inset), vec2f(1.0 - inset));
@@ -101,11 +110,51 @@ fn vdbVolumeShadow(map: texture_2d_array<f32>, smp: sampler, view: VdbVolumeShad
     let ndc = clip.xy / clip.w;
     uv = vec2f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
     if (!(clip.w > 0.0 && all(uv >= vec2f(0.0)) && all(uv <= vec2f(1.0)))) {
-      return 1.0;
+      return out;
     }
   }
-  let texel = textureSampleLevel(map, smp, uv, layer, 0.0);
+  return VdbVolumeShadowTexel(i32(layer), uv);
+}
+// Directional (cascades by the receiver's view depth) and spot maps: the volume transmittance at a world point,
+// read with the view the map was drawn with; 1 outside the map, or when the map is disabled
+fn vdbVolumeShadow(map: texture_2d_array<f32>, smp: sampler, view: VdbVolumeShadowView, world: vec3f, viewDepth: f32) -> f32 {
+  let t = vdbVolumeShadowTexelOf(view, world, viewDepth);
+  if (t.layer < 0) {
+    return 1.0;
+  }
+  let layer = u32(t.layer);
+  let texel = textureSampleLevel(map, smp, t.uv, layer, 0.0);
   return vdbVolumeShadowBeer(texel, vdbVolumeShadowDepthOf(view, layer, world), view.origin[layer].w);
+}
+// K6.4: the position along the Beer texel's first-to-last span at a receiver depth (0 before, 1 after); -1: no shadow
+fn vdbVolumeShadowAlong(texel: vec4f, depth: f32, far: f32) -> f32 {
+  let opticalDepth = texel.w;
+  if (!(opticalDepth > 1e-4)) {
+    return -1.0;
+  }
+  let first = texel.x / opticalDepth * far;
+  let last = texel.y / opticalDepth * far;
+  return clamp((depth - first) / max(last - first, 1e-4), 0.0, 1.0);
+}
+// K6.4 spectral maps: the transmittance of each channel (his spectral receivers: exp(-optical depth rgb x along)) from the
+// map's rgb twin (VDBVolumeShadowMap.rgbTexture); a grey map (bind it twice) gives its grey value in every channel
+fn vdbVolumeShadowRgb(map: texture_2d_array<f32>, rgb: texture_2d_array<f32>, smp: sampler, view: VdbVolumeShadowView, world: vec3f, viewDepth: f32) -> vec3f {
+  let t = vdbVolumeShadowTexelOf(view, world, viewDepth);
+  if (t.layer < 0) {
+    return vec3f(1.0);
+  }
+  let layer = u32(t.layer);
+  let texel = textureSampleLevel(map, smp, t.uv, layer, 0.0);
+  let far = view.origin[layer].w;
+  let depth = vdbVolumeShadowDepthOf(view, layer, world);
+  if (view.spectral.x == 0u) {
+    return vec3f(vdbVolumeShadowBeer(texel, depth, far));
+  }
+  let along = vdbVolumeShadowAlong(texel, depth, far);
+  if (along < 0.0) {
+    return vec3f(1.0);
+  }
+  return exp(-textureSampleLevel(rgb, smp, t.uv, layer, 0.0).xyz * along);
 }
 // Point maps (a cube view of the 6 faces): the transmittance along the direction from the drawn light position
 fn vdbVolumeShadowCube(map: texture_cube<f32>, smp: sampler, view: VdbVolumeShadowView, world: vec3f) -> f32 {
@@ -115,6 +164,22 @@ fn vdbVolumeShadowCube(map: texture_cube<f32>, smp: sampler, view: VdbVolumeShad
   let offset = world - view.origin[0].xyz;
   let texel = textureSampleLevel(map, smp, offset, 0.0);
   return vdbVolumeShadowBeer(texel, length(offset), view.origin[0].w);
+}
+// K6.4 spectral point maps: rgb is a cube view of the map's rgb twin (a grey map: pass its own cube view twice)
+fn vdbVolumeShadowCubeRgb(map: texture_cube<f32>, rgb: texture_cube<f32>, smp: sampler, view: VdbVolumeShadowView, world: vec3f) -> vec3f {
+  if (view.info.w == 0u) {
+    return vec3f(1.0);
+  }
+  let offset = world - view.origin[0].xyz;
+  let texel = textureSampleLevel(map, smp, offset, 0.0);
+  if (view.spectral.x == 0u) {
+    return vec3f(vdbVolumeShadowBeer(texel, length(offset), view.origin[0].w));
+  }
+  let along = vdbVolumeShadowAlong(texel, length(offset), view.origin[0].w);
+  if (along < 0.0) {
+    return vec3f(1.0);
+  }
+  return exp(-textureSampleLevel(rgb, smp, offset, 0.0).xyz * along);
 }
 `;
 
@@ -133,12 +198,14 @@ export function vdbVolumeShadowWgsl(): string {
 }
 
 /** The shadow map kernel (after `vdbFrameUniformsWgsl()`; source-free: it reads the shadow grid stack). */
-export function vdbFrameVolumeShadowWgsl(): string {
+export function vdbFrameVolumeShadowWgsl(o: { spectral?: boolean } = {}): string {
   const b = VOLUME_SHADOW_BINDINGS;
+  const spectral = !!o.spectral;
   return `${VDB_FRAME_SHADOW_PIECE.wgsl}
 @group(1) @binding(${b.piece}) var<uniform> vdbFrameShadowPiece: VdbFrameShadowPiece;
 @group(1) @binding(${b.grid}) var vdbFrameShadowGrid: texture_3d<f32>;
-@group(1) @binding(${b.map}) var vdbFrameShadowMapOut: texture_storage_2d_array<rgba16float, write>;
+@group(1) @binding(${b.map}) var vdbFrameShadowMapOut: texture_storage_2d_array<rgba16float, write>;${spectral ? `
+@group(1) @binding(${b.rgb}) var vdbFrameShadowRgbOut: texture_storage_2d_array<rgba16float, write>;` : ""}
 
 const VDB_FRAME_SHADOW_MAX_OPTICAL_DEPTH: f32 = 8.0;
 
@@ -187,7 +254,7 @@ fn vdbFrameVolumeShadowCs(@builtin(global_invocation_id) gid: vec3u) {
       origin = near - direction * dot(near - vdbFrameShadowPiece.camera.xyz, direction);
     }
   }
-  var opticalDepth = 0.0;
+  var opticalDepth = ${spectral ? "vec3f(0.0)" : "0.0"};
   var first = 0.0;
   var last = 0.0;
   let count = u32(vdbFrame.gridLayout.x);
@@ -208,13 +275,13 @@ fn vdbFrameVolumeShadowCs(@builtin(global_invocation_id) gid: vec3u) {
       var firstT = -1.0;
       var lastT = -1.0;
       for (var i = 0u; i < steps; i++) {
-        if (opticalDepth > VDB_FRAME_SHADOW_MAX_OPTICAL_DEPTH) {
+        if (${spectral ? "min(opticalDepth.x, min(opticalDepth.y, opticalDepth.z))" : "opticalDepth"} > VDB_FRAME_SHADOW_MAX_OPTICAL_DEPTH) {
           break;
         }
         let t = tStart + f32(i) * stepLength;
         let p = origin + direction * (t + stepLength * 0.5);
-        let extinction = vdbFrameStackSample(vdbFrameShadowGrid, vdbFrame.shadowOrigin[cascade].xyz, vdbFrameGridUvw(cascade, p)).x;
-        if (extinction > 0.0) {
+        let extinction = vdbFrameStackSample(vdbFrameShadowGrid, vdbFrame.shadowOrigin[cascade].xyz, vdbFrameGridUvw(cascade, p)).${spectral ? "xyz" : "x"};
+        if (${spectral ? "dot(extinction, vec3f(1.0))" : "extinction"} > 0.0) {
           if (firstT < 0.0) {
             firstT = t;
           }
@@ -222,33 +289,50 @@ fn vdbFrameVolumeShadowCs(@builtin(global_invocation_id) gid: vec3u) {
           opticalDepth += extinction * stepLength;
         }
       }
-      if (opticalDepth > 0.0) {
+      if (${spectral ? "dot(opticalDepth, vec3f(1.0))" : "opticalDepth"} > 0.0) {
         let far = vdbFrameShadowPiece.forward.w;
         first = vdbFrameShadowPieceDepth(origin + direction * firstT) / far;
         last = vdbFrameShadowPieceDepth(origin + direction * lastT) / far;
       }
     }
   }
-  textureStore(vdbFrameShadowMapOut, gid.xy, layer, vec4f(first * opticalDepth, last * opticalDepth, 0.0, opticalDepth));
+${spectral
+    ? `  // his spectral map: (first, last) x the channel mean, and (optical depth rgb, 0) in the rgb twin
+  let mean = dot(opticalDepth, vec3f(1.0 / 3.0));
+  textureStore(vdbFrameShadowMapOut, gid.xy, layer, vec4f(first * mean, last * mean, 0.0, mean));
+  textureStore(vdbFrameShadowRgbOut, gid.xy, layer, vec4f(opticalDepth, 0.0));`
+    : "  textureStore(vdbFrameShadowMapOut, gid.xy, layer, vec4f(first * opticalDepth, last * opticalDepth, 0.0, opticalDepth));"}
 }
 `;
 }
 
-/** The `?probe=shadow` receiver kernel (harness): `vdbVolumeShadow` / `vdbVolumeShadowCube` on rows of (world, view depth). */
-export function vdbVolumeShadowProbeWgsl(cube: boolean): string {
+/**
+ * The `?probe=shadow` receiver kernel (harness): `vdbVolumeShadow` / `vdbVolumeShadowCube` on rows of (world, view depth);
+ * K6.4 `spectral`: `vdbVolumeShadowRgb` / `vdbVolumeShadowCubeRgb` with the rgb twin at binding 4 (rows become rgb, depth).
+ */
+export function vdbVolumeShadowProbeWgsl(cube: boolean, spectral = false): string {
+  const type = cube ? "texture_cube<f32>" : "texture_2d_array<f32>";
+  const call = spectral
+    ? cube
+      ? "vec4f(vdbVolumeShadowCubeRgb(vdbProbeMap, vdbProbeRgb, vdbProbeSampler, vdbProbeView, row.xyz), row.w)"
+      : "vec4f(vdbVolumeShadowRgb(vdbProbeMap, vdbProbeRgb, vdbProbeSampler, vdbProbeView, row.xyz, row.w), row.w)"
+    : cube
+      ? "vec4f(vdbVolumeShadowCube(vdbProbeMap, vdbProbeSampler, vdbProbeView, row.xyz), row.yzw)"
+      : "vec4f(vdbVolumeShadow(vdbProbeMap, vdbProbeSampler, vdbProbeView, row.xyz, row.w), row.yzw)";
   return `${vdbVolumeShadowWgsl()}
 @group(0) @binding(0) var<uniform> vdbProbeView: VdbVolumeShadowView;
-@group(0) @binding(1) var vdbProbeMap: ${cube ? "texture_cube<f32>" : "texture_2d_array<f32>"};
+@group(0) @binding(1) var vdbProbeMap: ${type};
 @group(0) @binding(2) var vdbProbeSampler: sampler;
 @group(0) @binding(3) var<storage, read_write> vdbProbeRows: array<vec4f>;
-
+${spectral ? `@group(0) @binding(4) var vdbProbeRgb: ${type};
+` : ""}
 @compute @workgroup_size(64, 1, 1)
 fn vdbVolumeShadowProbeCs(@builtin(global_invocation_id) gid: vec3u) {
   if (gid.x >= arrayLength(&vdbProbeRows)) {
     return;
   }
   let row = vdbProbeRows[gid.x];
-  vdbProbeRows[gid.x] = vec4f(${cube ? "vdbVolumeShadowCube(vdbProbeMap, vdbProbeSampler, vdbProbeView, row.xyz)" : "vdbVolumeShadow(vdbProbeMap, vdbProbeSampler, vdbProbeView, row.xyz, row.w)"}, row.yzw);
+  vdbProbeRows[gid.x] = ${call};
 }
 `;
 }

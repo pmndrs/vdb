@@ -32,8 +32,97 @@ export const ENV_PREFILTER_BINDINGS = { source: 0, work: 1 } as const;
 export const ENV_BLUR_BINDINGS = { work: 0, map: 1 } as const;
 /** Group-1 bindings of the reduce kernel. */
 export const ENV_REDUCE_BINDINGS = { work: 0, map: 1, environment: 2 } as const;
-/** Group-1 bindings of the environment grid kernel. */
-export const ENV_GRID_BINDINGS = { grid: 0, out: 1 } as const;
+/** Group-1 bindings of the environment grid kernel (K6.4 spectral: the absorption stack). */
+export const ENV_GRID_BINDINGS = { grid: 0, out: 1, absorption: 2 } as const;
+
+/**
+ * K6.4: the spectral environment grid kernel (his FrameEnvironmentGridMaterial spectral branch, L104–197): marches of
+ * each channel through the extinction and absorption stacks of the last cascade, the voxel's albedo of each channel for
+ * the octaves; diffusion: the two-sided total of each channel. Writes rgb (the same rgba16float grid as grey).
+ */
+function vdbFrameSpectralEnvironmentGridWgsl(): string {
+  const b = ENV_GRID_BINDINGS;
+  return `${frameChunksWgsl(["constants", "shadow", "spectral", "grid"])}
+@group(1) @binding(${b.grid}) var vdbFrameShadowGrid: texture_3d<f32>;
+@group(1) @binding(${b.absorption}) var vdbFrameAbsorptionGrid: texture_3d<f32>;
+@group(1) @binding(${b.out}) var vdbFrameEnvGridOut: texture_storage_3d<rgba16float, write>;
+
+// the depths of each channel of one-voxel steps from world along direction, staying in the cascade
+fn vdbFrameEnvGridMarch(cascade: u32, world: vec3f, direction: vec3f, ms: f32) -> VdbFrameSpectralDepths {
+  let voxel = vdbFrame.gridVoxel[cascade].xyz;
+  let perUnit = abs(direction) / voxel;
+  let stepLength = 1.0 / max(perUnit.x, max(perUnit.y, perUnit.z));
+  let origin = vdbFrame.shadowOrigin[cascade].xyz;
+  var probe = world + direction * stepLength * 0.5;
+  var d = VdbFrameSpectralDepths(vec3f(0.0), vec3f(0.0), vec3f(0.0));
+  for (var i = 0u; i < 1024u; i++) {
+    let uvw = vdbFrameGridUvw(cascade, probe);
+    if (any(uvw < vec3f(0.0)) || any(uvw > vec3f(1.0)) || vdbFrameMinComponent(vdbFrameSpectralShadowMarchDepth(d, ms, vdbFrame.octaves)) > 6.0) {
+      break;
+    }
+    let st = vdbFrameSpectralShadowStep(vdbFrameStackSample(vdbFrameShadowGrid, origin, uvw).xyz, vdbFrameStackSample(vdbFrameAbsorptionGrid, origin, uvw).xyz, ms);
+    d.x += st.x * stepLength;
+    d.y += st.y * stepLength;
+    d.z += st.z * stepLength;
+    probe += direction * stepLength;
+  }
+  return d;
+}
+
+@compute @workgroup_size(4, 4, 4)
+fn vdbFrameEnvironmentGridCs(@builtin(global_invocation_id) gid: vec3u) {
+  let r = u32(vdbFrame.gridLayout.y);
+  if (gid.x >= r || gid.y >= r || gid.z >= r) {
+    return;
+  }
+  let cascade = u32(vdbFrame.gridLayout.x) - 1u;
+  let world = vdbFrame.gridMin[cascade].xyz + (vec3f(gid) + 0.5) / f32(r) * vdbFrame.gridSize[cascade].xyz;
+  let voxel = vdbFrame.gridVoxel[cascade].xyz;
+  let origin = vdbFrame.shadowOrigin[cascade].xyz;
+  let first = u32(vdbFrame.environment.y);
+  let count = select(0u, vdbFrameEnv.info.x, vdbFrameEnv.info.z != 0u);
+  var unshadowed = vec3f(0.0);
+  for (var i = first; i < count; i++) {
+    unshadowed += vdbFrameEnv.color[i].xyz;
+  }
+  var near = 0.0;
+  for (var i = 0u; i < 8u; i++) {
+    let corner = vec3f(f32(i & 1u), f32((i >> 1u) & 1u), f32((i >> 2u) & 1u)) - 0.5;
+    near += dot(vdbFrameStackSample(vdbFrameShadowGrid, origin, vdbFrameGridUvw(cascade, world + corner * voxel)).xyz, vec3f(1.0));
+  }
+  let octaves = vdbFrame.octaves;
+  var result = vec4f(max(unshadowed, vec3f(0.0)) * vdbFrameSpectralShadowTotal(vec3f(1.0), octaves, vec3f(1.0)), 1.0);
+  if (near > 0.0) {
+    let ms = vdbFrame.lighting.x;
+    let uvw = vdbFrameGridUvw(cascade, world);
+    let albedo = vdbFrameSpectralGridAlbedo(vdbFrameStackSample(vdbFrameShadowGrid, origin, uvw).xyz, vdbFrameStackSample(vdbFrameAbsorptionGrid, origin, uvw).xyz);
+    var irradiance = vec3f(0.0);
+    for (var i = first; i < count; i++) {
+      let direction = vdbFrameEnv.direction[i].xyz;
+      var front = VdbFrameSpectralDepths(vec3f(0.0), vec3f(0.0), vec3f(0.0));
+      var back = front;
+      for (var k = 0u; k < select(1u, 2u, ms > 0.0); k++) {
+        let depths = vdbFrameEnvGridMarch(cascade, world, select(direction, -direction, k == 1u), ms);
+        if (k == 0u) {
+          front = depths;
+        } else {
+          back = depths;
+        }
+      }
+      var total: vec3f;
+      if (ms > 0.0) {
+        total = vdbFrameIsotropicDiffusion3(front.z, back.z, front.y);
+      } else {
+        total = vdbFrameSpectralShadowTotal(vdbFrameSpectralShadowTransmittance(front, ms, octaves).y, octaves, albedo);
+      }
+      irradiance += vdbFrameEnv.color[i].xyz * total;
+    }
+    result = vec4f(max(irradiance, vec3f(0.0)), 1.0);
+  }
+  textureStore(vdbFrameEnvGridOut, gid, result);
+}
+`;
+}
 
 const f = (x: number) => (Number.isInteger(x) ? `${x}.0` : `${x}`);
 // an f32 literal: 9 significant digits round-trip every f32
@@ -549,7 +638,8 @@ fn vdbFrameEnvReduceCs(@builtin(local_invocation_index) t: u32) {
  * The environment grid kernel (after `vdbFrameUniformsWgsl(…, { environment: true })`; source-free): his grey
  * environment grid pass at each voxel of the last cascade, from the environment lights without a shadow slot.
  */
-export function vdbFrameEnvironmentGridWgsl(): string {
+export function vdbFrameEnvironmentGridWgsl(o: { spectral?: boolean } = {}): string {
+  if (o.spectral) return vdbFrameSpectralEnvironmentGridWgsl();
   const b = ENV_GRID_BINDINGS;
   return `${frameChunksWgsl(["constants", "shadow", "octaveTotal", "grid"])}
 @group(1) @binding(${b.grid}) var vdbFrameShadowGrid: texture_3d<f32>;

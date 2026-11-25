@@ -424,3 +424,16 @@ From v1; details in docs/archive/handoffs/.
 - Two `vdbCreateLevelSetPassGpu` instances with the same formats share one pipeline (the cache key has no label): use a
   second instance for a light's depth map (one `record()` per instance per encoder); its pass needs a colour attachment
   of the pass's `colorFormat` beside the depth (no depth-only variant yet).
+- K6.4 spectral composite (core `render()` and `./three`'s core material) needs the scene colour and draws without
+  blending: one hardware alpha cannot carry three transmittances. `render()` throws `VDB_BAD_OPTION` without
+  `targets.sceneColor` when `outputs.froxels.integratedAlpha` is set.
+- Spectral volume shadow maps keep their optical depth rgb in a second texture (`VDBVolumeShadowMap.rgbTexture`), not in
+  extra layers: a cube view needs exactly 6 layers, and three's cube stand-in views the whole texture.
+- The frame WGSL name test flags a function and a variable of one name: the spectral absorption stack's binding is
+  `vdbFrameAbsorptionGrid` (`vdbFrameShadowAbsorption` is a function).
+- Spectral transmittance targets sit at `transmittanceOrigin[3 (g · count + c) + k]` with `count` the LIVE cascade count
+  (not the allocated one); probes and twins must index the stack layout the same way.
+- Spectral kernels write 3 storage textures (default limit 4): stack new outputs along z (as the spectral history) rather
+  than adding a binding.
+- The k6-core compile probe with grey and spectral variants together exceeds Playwright's 15 min on SwiftShader: they are
+  separate runs (`?probe=compile` and `?probe=compile&spectral=1`).

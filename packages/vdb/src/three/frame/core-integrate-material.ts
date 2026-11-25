@@ -19,6 +19,7 @@ import * as TSL from "three/tsl";
 import type { VDBTslNode } from "../grid-node.js";
 import {
   VDB_FRAME_COMPOSITE_COLOR_FN_WGSL,
+  VDB_FRAME_COMPOSITE_SPECTRAL_FN_WGSL,
   VDB_FRAME_INTEGRATE_TAPS_WGSL,
   VDB_FRAME_SLICE_COORD_WGSL,
   VDB_FRAME_SRGB_EOTF_WGSL,
@@ -33,6 +34,8 @@ const tapsFn = wgslFn(VDB_FRAME_INTEGRATE_TAPS_WGSL);
 const oetfFn = wgslFn(VDB_FRAME_SRGB_OETF_WGSL);
 const eotfFn = wgslFn(VDB_FRAME_SRGB_EOTF_WGSL);
 const compositeFn = wgslFn(VDB_FRAME_COMPOSITE_COLOR_FN_WGSL, [oetfFn, eotfFn]);
+// K6.4: the spectral composite (over the scene colour, per channel)
+const compositeSpectralFn = wgslFn(VDB_FRAME_COMPOSITE_SPECTRAL_FN_WGSL, [oetfFn, eotfFn]);
 
 /** A 1³ zero placeholder until the first core update binds the prefix. */
 function placeholder(): THREE.Data3DTexture {
@@ -47,6 +50,8 @@ function placeholder(): THREE.Data3DTexture {
 export class VDBFrameCoreIntegrateMaterial extends NodeMaterial {
   /** The prefix texture node: its `value` is the stand-in of `outputs.froxels.integrated`. */
   readonly prefix: VDBTslNode = texture3D(placeholder());
+  /** K6.4: the alpha prefix (`outputs.froxels.integratedAlpha`: red, blue opacity) of spectral media. */
+  readonly alphaPrefix: VDBTslNode = texture3D(placeholder());
   readonly frameGrid = uniform(new THREE.Vector3(1, 1, 1));
   readonly frameRange = uniform(new THREE.Vector2(0.1, 1.0));
   readonly frameScreenRect = uniform(new THREE.Vector4(-1, -1, 1, 1));
@@ -55,6 +60,8 @@ export class VDBFrameCoreIntegrateMaterial extends NodeMaterial {
   readonly frameCameraOrthographic = uniform(0, "int");
   srgbBlending: boolean | null = null;
   srgbClamp: boolean | null = null;
+  /** K6.4: spectral media composite themselves over the scene colour (no hardware blending). */
+  spectral = false;
 
   constructor() {
     super();
@@ -78,14 +85,26 @@ export class VDBFrameCoreIntegrateMaterial extends NodeMaterial {
     this.frameCameraOrthographic.value = camera.isOrthographicCamera ? 1 : 0;
   }
 
+  /** K6.4: the spectral composite (the alpha prefix, his NoBlending) or the grey one. */
+  setSpectral(spectral: boolean): void {
+    if (spectral === this.spectral) return;
+    this.spectral = spectral;
+    this.#rebuild();
+  }
+
   /** As `VDBFrameIntegrateMaterial.setSrgbBlending` (his rules). */
   setSrgbBlending(srgbBlending: boolean, srgbClamp: boolean): void {
     if (srgbBlending === this.srgbBlending && srgbClamp === this.srgbClamp) return;
     this.srgbBlending = srgbBlending;
     this.srgbClamp = srgbClamp;
+    this.#rebuild();
+  }
+
+  #rebuild(): void {
+    const srgbBlending = !!this.srgbBlending;
     this.fragmentNode = this.createFragmentNode();
     this.needsUpdate = true;
-    if (srgbBlending) {
+    if (srgbBlending || this.spectral) {
       this.blending = THREE.NoBlending;
     } else {
       this.blending = THREE.CustomBlending;
@@ -113,6 +132,7 @@ export class VDBFrameCoreIntegrateMaterial extends NodeMaterial {
     const srgb = !!this.srgbBlending;
     const clampColors = !!this.srgbClamp;
     const sceneDepth = this.createSceneDepth();
+    if (this.spectral) return this.createSpectralFragmentNode(srgb, clampColors, sceneDepth);
     return Fn(() => {
       const grid = this.frameGrid;
       const depth = sceneDepth().toVar();
@@ -128,6 +148,33 @@ export class VDBFrameCoreIntegrateMaterial extends NodeMaterial {
       });
       const background: VDBTslNode = srgb ? (viewportTexture() as VDBTslNode) : vec4(0.0);
       return compositeFn({ r, sceneColor: background, srgb: uint(srgb ? 1 : 0), clampColors: uint(clampColors ? 1 : 0) });
+    })();
+  }
+
+  // K6.4 (vdbFrameIntegrate spectral): the two-tap formula for each channel (red and blue opacity from the alpha prefix),
+  // then his spectral composite over the scene colour
+  private createSpectralFragmentNode(srgb: boolean, clampColors: boolean, sceneDepth: VDBTslNode): VDBTslNode {
+    return Fn(() => {
+      const grid = this.frameGrid;
+      const depth = sceneDepth().toVar();
+      const uv = vec2(screenUV.x, float(1.0).sub(screenUV.y));
+      const kc = sliceCoordFn({ viewDepth: depth, range: this.frameRange, depth: grid.z }).toVar();
+      const xy = clamp(uv.mul(grid.xy), vec2(0.5), grid.xy.sub(0.5)).div(grid.xy).toVar();
+      const layers = grid.z.add(1.0);
+      const za = vec3(xy, kc.x.add(0.5).div(layers));
+      const zb = vec3(xy, kc.x.add(1.5).div(layers));
+      const a = this.prefix.sample(za).level(float(0.0)).toVar();
+      const b = this.prefix.sample(zb).level(float(0.0)).toVar();
+      const aa = this.alphaPrefix.sample(za).level(float(0.0)).toVar();
+      const ba = this.alphaPrefix.sample(zb).level(float(0.0)).toVar();
+      const r = tapsFn({ a: vec4(a.x, 0.0, 0.0, aa.x), b: vec4(b.x, 0.0, 0.0, ba.x), c: kc.y }).toVar();
+      const g = tapsFn({ a: vec4(a.y, 0.0, 0.0, a.w), b: vec4(b.y, 0.0, 0.0, b.w), c: kc.y }).toVar();
+      const bl = tapsFn({ a: vec4(a.z, 0.0, 0.0, aa.y), b: vec4(b.z, 0.0, 0.0, ba.y), c: kc.y }).toVar();
+      const transmittance = vec3(r.w, g.w, bl.w).toVar();
+      If(transmittance.x.greaterThanEqual(1.0).and(transmittance.y.greaterThanEqual(1.0)).and(transmittance.z.greaterThanEqual(1.0)), () => {
+        Discard();
+      });
+      return compositeSpectralFn({ radiance: vec3(r.x, g.x, bl.x), transmittance, sceneColor: viewportTexture() as VDBTslNode, srgb: uint(srgb ? 1 : 0), clampColors: uint(clampColors ? 1 : 0) });
     })();
   }
 }

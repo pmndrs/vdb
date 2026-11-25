@@ -89,7 +89,7 @@ import { vdbFrameMlpFromNeural, type VDBFrameMlp } from "../../tools/frame/mlp.j
 import type { VDBFrameSettings } from "../../core/frame/settings.js";
 import { vdbFrameNeuralWeights } from "../../tools/frame/neural-weights.js";
 import { VDBFrameShadowDensityMaterial } from "./shadow-density-material.js";
-import { getFrameExtinctionSpectrum, getFrameSpectralGroups } from "./spectrum.js";
+import { getFrameAngstromExponent, getFrameExtinctionSpectrum, getFrameSpectralGroups } from "./spectrum.js";
 import { VDBFrameTemporalMaterial } from "./temporal-material.js";
 import { VDBFrameTransmittanceMaterial, frameNeuralMipLevels, frameShadowLightSlots } from "./transmittance-material.js";
 import { VDBFrameVolumeShadows } from "./volume-shadows.js";
@@ -488,6 +488,8 @@ export class VDBFrameRenderer {
   private coreDevice: GPUDevice | null = null;
   private coreMaterial: VDBFrameCoreIntegrateMaterial | null = null;
   private readonly corePrefix = new VDBCoreTextureBinding();
+  /** K6.4: the stand-in of the core's spectral alpha prefix (`outputs.froxels.integratedAlpha`). */
+  private readonly coreAlphaPrefix = new VDBCoreTextureBinding();
   private coreSources = new WeakMap<object, VDBDenseSource>();
   /** K6.5: blackbody hook LUT rows per table and soot exponent (one array each: the core keys LUTs by identity). */
   private coreLutRows = new WeakMap<object, Map<number, Float32Array>>();
@@ -2288,6 +2290,10 @@ export class VDBFrameRenderer {
     const cam = camera as THREE.PerspectiveCamera;
     if (u?.recorded && u.outputs.froxels) {
       if (this.corePrefix.set(u.outputs.froxels.integrated)) material.prefix.value = this.corePrefix.texture;
+      // K6.4: spectral media composite with the alpha prefix (their own blend over three's viewport texture)
+      const alpha = u.outputs.froxels.integratedAlpha;
+      if (alpha && this.coreAlphaPrefix.set(alpha)) material.alphaPrefix.value = this.coreAlphaPrefix.texture;
+      material.setSpectral(!!alpha);
       material.setLayout(u.outputs.froxels.layout, cam);
       material.setSrgbBlending(this.settings.srgbBlending && renderer.outputColorSpace === THREE.SRGBColorSpace, renderer.toneMapping === THREE.NoToneMapping);
     }
@@ -2471,7 +2477,8 @@ export class VDBFrameRenderer {
       scatterColor: [v.scatterColor.r, v.scatterColor.g, v.scatterColor.b],
       extinction: v.extinction,
       extinctionScale: [v.extinctionScale.x, v.extinctionScale.y, v.extinctionScale.z],
-      angstromExponent: typeof v.angstromExponent === "number" ? v.angstromExponent : 0,
+      // K6.4: a preset name ('smoke', 'air', …) or a number (his getFrameAngstromExponent)
+      angstromExponent: getFrameAngstromExponent(v.angstromExponent),
       densityScale: v.densityScale,
       normalizeDensity: v.normalizeDensity,
       densityMean: v.densityMean,
@@ -2656,6 +2663,7 @@ export class VDBFrameRenderer {
     this.coreEnvironment.dispose();
     this.coreDevice = null;
     this.corePrefix.dispose();
+    this.coreAlphaPrefix.dispose();
     this.coreMaterial?.dispose();
     this.coreVolumes = new Map();
     this.disposeCoreSparse();

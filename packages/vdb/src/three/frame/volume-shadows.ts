@@ -206,6 +206,9 @@ export interface VDBFrameShadowEntry {
   /** K6.5 `backend: 'core'`: the core map texture the receivers read (null until the core drew one), and its stand-in. */
   coreTexture: GPUTexture | null;
   coreBinding: VDBCoreTextureBinding | null;
+  /** K6.4 `backend: 'core'` with spectral: the map's optical depth rgb twin (`rgbTexture`) and its stand-in. */
+  coreRgbTexture: GPUTexture | null;
+  coreRgbBinding: VDBCoreTextureBinding | null;
 }
 
 // NOTE Receivers read the drawn state: the values of the camera that drew each map or cascade tile.
@@ -317,7 +320,7 @@ export class VDBFrameVolumeShadowNode extends Node {
   }
 
   override setup(builder: never): N {
-    if (this.shadows.core) return this.setupCore();
+    if (this.shadows.core) return this.setupCore(builder);
     const { entry } = this;
     const { map, spectralMap, isPoint, receiver } = entry;
     const spectral = this.isSpectral(builder);
@@ -377,33 +380,40 @@ export class VDBFrameVolumeShadowNode extends Node {
   /**
    * K6.5 `backend: 'core'`: the receiver of a core map (`vdbVolumeShadow` / `vdbVolumeShadowCube` in TSL, twin
    * `vdbFrameVolumeShadowLookup`): cascades are layers of a 2d-array, a spot map one layer, a point map a cube view
-   * (three negates x of a cube lookup on WebGPU, so the direction goes in with x negated). Grey (spectral is K6.4).
+   * (three negates x of a cube lookup on WebGPU, so the direction goes in with x negated). K6.4 spectral maps: the rgb
+   * twin gives each channel's transmittance (`vdbVolumeShadowRgb`), the channel mean in a ShadowMaterial (his rule).
    */
-  setupCore(): N {
+  setupCore(builder: never): N {
     const { entry } = this;
     const { map, isPoint, receiver } = entry;
     // NOTE Built before the core drew the map: no volume shadow; the first map rebuilds the receivers (syncCore)
-    if (!entry.coreTexture) return float(1.0);
+    if (!entry.coreTexture) return this.isSpectral(builder) ? vec3(1.0) : float(1.0);
+    const spectralMap = entry.coreRgbTexture ? entry.spectralMap : null;
+    const spectral = !!spectralMap && this.isSpectral(builder);
     let { rayUniforms } = receiver;
     let inside: N = receiver.enabled.equal(1);
     let texel: N;
+    let rgb: N | null = null;
     if (receiver.cascades) {
       const lookup = getCascadeLookup(receiver, entry.size, true);
       rayUniforms = lookup.rayUniforms;
       inside = inside.and(lookup.inside);
       texel = map.sample(lookup.uv).depth(lookup.index).level(0);
+      if (spectralMap) rgb = spectralMap.sample(lookup.uv).depth(lookup.index).level(0);
     } else if (isPoint) {
       const d = positionWorld.sub(rayUniforms.frameShadowOrigin);
       texel = map.sample(vec3(d.x.negate(), d.y, d.z)).level(0);
+      if (spectralMap) rgb = spectralMap.sample(vec3(d.x.negate(), d.y, d.z)).level(0);
     } else {
       const clip = receiver.viewProjection!.mul(vec4(positionWorld, 1.0));
       const ndc = clip.xy.div(clip.w);
       const uv = vec2(ndc.x.mul(0.5).add(0.5), float(0.5).sub(ndc.y.mul(0.5)));
       inside = inside.and(clip.w.greaterThan(0.0)).and(uv.x.greaterThanEqual(0.0)).and(uv.x.lessThanEqual(1.0)).and(uv.y.greaterThanEqual(0.0)).and(uv.y.lessThanEqual(1.0));
       texel = map.sample(uv).depth(int(0)).level(0);
+      if (spectralMap) rgb = spectralMap.sample(uv).depth(int(0)).level(0);
     }
     return Fn(() => {
-      const result = float(1.0).toVar();
+      const result = (spectral ? vec3(1.0) : float(1.0)).toVar();
       If(inside, () => {
         const value = texel.toVar();
         const opticalDepth = value.w;
@@ -413,7 +423,14 @@ export class VDBFrameVolumeShadowNode extends Node {
           const last = value.y.div(opticalDepth).mul(far);
           const depth = frameShadowDepth(rayUniforms, positionWorld);
           const along = clamp(depth.sub(first).div(max(last.sub(first), 1e-4)), 0.0, 1.0);
-          result.assign(exp(opticalDepth.mul(along).negate()));
+          if (spectral) {
+            result.assign(exp(rgb!.rgb.mul(along).negate()));
+          } else if (rgb) {
+            // NOTE ShadowMaterial with spectral maps: mean transmittance of the channels
+            result.assign(dot(exp(rgb.rgb.mul(along).negate()), vec3(1.0 / 3.0)));
+          } else {
+            result.assign(exp(opticalDepth.mul(along).negate()));
+          }
         });
       });
       return result;
@@ -570,6 +587,8 @@ export class VDBFrameVolumeShadows {
         userFilter: null,
         coreTexture: null,
         coreBinding: core ? new VDBCoreTextureBinding(isPoint ? "cube" : "2d-array") : null,
+        coreRgbTexture: null,
+        coreRgbBinding: core ? new VDBCoreTextureBinding(isPoint ? "cube" : "2d-array") : null,
       };
 
       entry.receiver = createReceiverUniforms(entry);
@@ -625,6 +644,7 @@ export class VDBFrameVolumeShadows {
 
     this.retire(resetLightShadow(light), targets);
     if (entry.coreBinding) this.retired.push(entry.coreBinding);
+    if (entry.coreRgbBinding) this.retired.push(entry.coreRgbBinding);
     this.entries.delete(light);
   }
 
@@ -1083,6 +1103,21 @@ export class VDBFrameVolumeShadows {
         const standIn = entry.coreBinding.texture!;
         entry.map = entry.isPoint ? cubeTexture(standIn) : texture(standIn);
         entry.size = m.size;
+        if (rebuild) this.retire(resetLightShadow(entry.light), []);
+      }
+      // K6.4: a spectral map's rgb twin; the receivers return rgb (or the channel mean in a ShadowMaterial), so a change of
+      // kind rebuilds them
+      const rgb = m.rgbTexture ?? null;
+      if (rgb !== entry.coreRgbTexture && entry.coreRgbBinding) {
+        const rebuild = !!rgb !== !!entry.coreRgbTexture;
+        entry.coreRgbTexture = rgb;
+        if (rgb) {
+          entry.coreRgbBinding.set(rgb);
+          const standIn = entry.coreRgbBinding.texture!;
+          entry.spectralMap = entry.isPoint ? cubeTexture(standIn) : texture(standIn);
+        } else {
+          entry.spectralMap = null;
+        }
         if (rebuild) this.retire(resetLightShadow(entry.light), []);
       }
       const d = m.drawn;

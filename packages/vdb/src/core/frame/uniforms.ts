@@ -3,8 +3,8 @@
  * generates both the WGSL struct text and the TypeScript packer, so the two cannot disagree (a unit
  * test checks the offsets against WGSL's uniform layout rules).
  *
- * Spectral (K6.4) adds fields to the reserved slots (`extinctionSpectrum`, the `reserved*` vectors)
- * without moving any offset.
+ * Spectral (K6.4) uses `VdbFrameUniforms.spectral` (the former reserved vector), the volume's `extinctionSpectrum` and
+ * the transmittance origins of 3 targets per slot group (the array grew from 16 to 48 entries, at the end of its block).
  */
 
 /** Field types the generator supports. Arrays take only 16-byte-aligned element types (uniform rule). */
@@ -126,6 +126,8 @@ export const VDB_FRAME_MAX_HEMISPHERE_LIGHTS = 4;
 export const VDB_FRAME_MAX_CASCADES = 4;
 /** Light slots of the 'frame' transmittance (his `frameShadowLightSlots`). */
 export const VDB_FRAME_SHADOW_SLOTS = 6;
+/** K6.4: spectral slot groups (his `frameSpectralGroupCount`): group 0 sky + slot 0, group g slots 2g − 1, 2g. */
+export const VDB_FRAME_SPECTRAL_GROUPS = 4;
 /** K6.5b: host occluder maps bound per kernel (fixed slots; placeholders fill the empty ones). */
 export const VDB_FRAME_MAX_OCCLUDERS = 4;
 /** K6.5b: layers per occluder map (cascades or a cube's 6 faces). */
@@ -156,9 +158,10 @@ export const VDB_FRAME_UNIFORMS = vdbUniformStruct("VdbFrameUniforms", [
   { name: "screen", type: "vec4f" },
   // composite: the camera's near and far (three's depth → view Z), spare
   { name: "camera", type: "vec4f" },
-  // K6.3: octaves (count, a, b, c); reserved for K6.3/K6.4 (two-sided, spectral)
+  // K6.3: octaves (count, a, b, c)
   { name: "octaves", type: "vec4f" },
-  { name: "reserved", type: "vec4f" },
+  // K6.4: spectral (0/1), spectral slot groups in use (1–4; the transmittance stack holds 3 per group and cascade), spare
+  { name: "spectral", type: "vec4f" },
   // K6.2 'frame' lighting: the world shadow grid cascades (his createGridUniforms; xyz, w unused)
   { name: "gridMin", type: "vec4f", count: VDB_FRAME_MAX_CASCADES },
   { name: "gridSize", type: "vec4f", count: VDB_FRAME_MAX_CASCADES },
@@ -167,8 +170,9 @@ export const VDB_FRAME_UNIFORMS = vdbUniformStruct("VdbFrameUniforms", [
   { name: "gridLayout", type: "vec4f" },
   // texel origin of cascade c in the shadow grid stack (a stacked 3D texture, design §3.2)
   { name: "shadowOrigin", type: "vec4f", count: VDB_FRAME_MAX_CASCADES },
-  // texel origin of transmittance target k of cascade c, at [4c + k], in the transmittance stack
-  { name: "transmittanceOrigin", type: "vec4f", count: 4 * VDB_FRAME_MAX_CASCADES },
+  // texel origin of transmittance target k of cascade c, at [4c + k], in the transmittance stack; K6.4 spectral: target k
+  // of slot group g of cascade c at [3 (g C + c) + k] (C the cascade count)
+  { name: "transmittanceOrigin", type: "vec4f", count: 3 * VDB_FRAME_SPECTRAL_GROUPS * VDB_FRAME_MAX_CASCADES },
   // multiple scattering (1 − g or 0), two-sided (0/1; K6.3), use shadows (0/1), diffusion (0/1)
   { name: "lighting", type: "vec4f" },
   // the renderer's 'frame' phase (forward g, back g, back weight, Lorenz-Mie mode) and its spectrum (red, blue g scale, flag)

@@ -134,6 +134,7 @@ import {
   vdbFrameCubeFaceDirection,
   vdbFrameCubeFaceUv,
   vdbFrameVolumeShadowLookup,
+  vdbFrameVolumeShadowLookupRgb,
   vdbMat4Vec4,
   vdbFrameOccluderVisibility,
   vdbFrameEmissionLutRow,
@@ -145,6 +146,20 @@ import {
   vdbFrameEmissionIrradiance,
   vdbFrameEmissionLookupWith,
   vdbFrameEnvironmentGridVoxel3d,
+  vdbFrameExtinctionSpectrum,
+  vdbFrameIntegratePrefixSpectral,
+  vdbFrameCompositeSpectral,
+  vdbFrameScanColumnSpectral,
+  vdbFrameSpectralGridDensityVoxel,
+  vdbFrameSpectralTransmittanceVoxel3d,
+  vdbFrameSpectralEnvironmentGridVoxel3d,
+  vdbFrameSpectralStackGroups,
+  vdbFrameSpectralDensitySums,
+  vdbFrameSpectralEnvironmentDensityTerm,
+  vdbFrameSpectralLightingFroxel,
+  vdbFrameUnpackSpectralGroup,
+  vdbFrameSpectralGroups,
+  vdbFrameTemporalFroxel,
   vdbFrameEnvironmentAreaTexel,
   vdbFrameEnvironmentCubeTexel,
   vdbFrameEnvironmentBlurTexel,
@@ -175,6 +190,7 @@ import {
   emissionAt,
   extinctionAt,
   gatherTwin,
+  gatherSpectralTwin,
   integrateTwin,
   resolveTwin,
   vdbFrameReproject,
@@ -219,6 +235,8 @@ interface Result {
   mipStats?: Stats;
   /** `?probe=frame`: live cascades, redraw counters after a second identical update. */
   frame?: { cascades: number; redraw: unknown };
+  /** K6.4 `&spectral=1`: the slot groups the twin expects and the groups the renderer's stack holds. */
+  spectral?: { groups: number; gpuGroups: number };
   compile?: { variants: number; errors: string[]; seconds: Record<string, number> };
   /** K6.5 `?probe=shadow`: the receivers vs their twin (`stats` is the map); redraw counts. */
   receiverStats?: Stats;
@@ -264,6 +282,13 @@ const MS_SETTINGS = { multipleScattering: MS_MODE, ...OCTAVE_SETTINGS, multiScal
 const MS_OCTAVES = vdbFrameScatteringOctaves(MS_SETTINGS) as VDBFrameVec4;
 /** K6.5b `?occluders=1`: synthetic host depth maps for the directional, point and spot probe lights (frame and gather probes). */
 const OCCLUDERS = params.get("occluders") === "1";
+/**
+ * K6.4 `?spectral=1`: spectral media in the gather, frame, resolve, integrate and shadow probes. The probe volumes get an
+ * Ångström exponent and a per-channel extinction scale (A: 1.8, B: scale (1.3, 1, 0.6) and 0.3).
+ */
+const SPECTRAL = params.get("spectral") === "1";
+const SPECTRAL_A: Partial<VDBFrameVolumeParams> = SPECTRAL ? { angstromExponent: 1.8, baseColor: [0.85, 0.7, 0.55] } : {};
+const SPECTRAL_B: Partial<VDBFrameVolumeParams> = SPECTRAL ? { extinctionScale: [1.3, 1, 0.6], angstromExponent: 0.3 } : {};
 const root = document.getElementById("demo-root")!;
 const result: Result = { done: false, warnings: [], uncaptured: [], probe: PROBE, mutate: MUTATE };
 window.__VDB_K6_CORE__ = result;
@@ -774,14 +799,16 @@ async function probeGather(device: GPUDevice): Promise<void> {
     environmentLighting: (ENV_MODE ?? "directional") as "directional" | "spherical-harmonics" | "outward",
     environmentSamples: 6,
     environmentShOrder: 1,
+    spectral: SPECTRAL,
   };
   const renderer = vdbCreateFrameRenderer(device, { settings, composite: { colorFormat: "rgba16float", depthFormat: "depth32float" } });
   // K6.2b `?env=`: the synthetic sky (rotated and reflected); every environment light is marched in each volume
   const envSource = ENV_MODE ? synthEnvironment(device, "equirect", "rgba16float") : null;
   const environment = envSource ? { id: 1, revision: 0, texture: envSource.texture, projection: "equirect" as const, rotation: Float32Array.from(probeEnvRotation()), intensity: 0.6 } : null;
   // A skips empty space (hdda; the dense source never skips); B wraps with an offset, so it never skips
-  const pA: Partial<VDBFrameVolumeParams> = { matrixWorld: compose([0, 0, 0], 0.4, [2, 1.6, 2.2]), extinction: 4, shadowSteps: 12, mipmaps: mips, phaseG: 0.6, hdda: true };
+  const pA: Partial<VDBFrameVolumeParams> = { matrixWorld: compose([0, 0, 0], 0.4, [2, 1.6, 2.2]), extinction: 4, shadowSteps: 12, mipmaps: mips, phaseG: 0.6, hdda: true, ...SPECTRAL_A };
   const pB: Partial<VDBFrameVolumeParams> = {
+    ...SPECTRAL_B,
     matrixWorld: compose([0.7, 0.25, -0.3], -0.3, [1.8, 1.5, 1.7]),
     extinction: 3,
     baseColor: [0.9, 0.8, 0.7],
@@ -820,6 +847,9 @@ async function probeGather(device: GPUDevice): Promise<void> {
   if (!u.recorded) throw new Error("update recorded nothing");
   const tex = vdbFrameRendererTextures(renderer)!;
   const scatter = halves(await readTexture(device, tex.scatter, [GW, GH, GD], 8));
+  // K6.4: the second scatter texture (red alpha, blue alpha, 0, green alpha)
+  const scatterAlpha = tex.spectral ? halves(await readTexture(device, tex.spectral.scatterAlpha, [GW, GH, GD], 8)) : null;
+  if (SPECTRAL && !scatterAlpha) throw new Error("spectral: no scatterAlpha texture");
   const env = environment ? parseEnvironment(await readBuffer(device, vdbFrameRendererEnvironment(renderer).buffer, VDB_FRAME_ENVIRONMENT.size)) : null;
   if (env) result.environment = { runs: [], count: env.count, mode: env.mode, valid: env.valid ? 1 : 0, directions: env.directions, colors: env.colors };
 
@@ -833,9 +863,11 @@ async function probeGather(device: GPUDevice): Promise<void> {
   const near = Math.max(Math.min(...clipped.map((v) => v.c.viewNear)), 0.1);
   const far = Math.min(Math.max(...clipped.map((v) => v.c.viewFar)), 100);
   const range: [number, number] = [near, Math.max(far, near * 1.0001)];
-  const records: TwinVolume[] = clipped.map(({ h, sampler, p, c }) =>
-    twinRecord(h, sampler, c, vdbFrameFroxelRect(c.localToView, projection, GW, GH)!, vdbFrameVolumeSlices(c.viewNear, c.viewFar, range, GD), p.phaseG ?? 0.8, ms),
-  );
+  const records: TwinVolume[] = clipped.map(({ h, sampler, p, c }) => ({
+    ...twinRecord(h, sampler, c, vdbFrameFroxelRect(c.localToView, projection, GW, GH)!, vdbFrameVolumeSlices(c.viewNear, c.viewFar, range, GD), p.phaseG ?? 0.8, ms),
+    // K6.4: the renderer's spectrum packing (his getFrameExtinctionSpectrum)
+    extinctionSpectrum: vdbFrameExtinctionSpectrum([...p.extinctionScale], p.angstromExponent),
+  }));
   // record order = source-group order: A's source first (one group: add order)
   const ordered = records;
   const twinFrame: TwinFrame = {
@@ -863,6 +895,12 @@ async function probeGather(device: GPUDevice): Promise<void> {
       for (let x = 0; x < GW; x++) {
         const i = ((z * GH + y) * GW + x) * 4;
         const gpu = [scatter[i]!, scatter[i + 1]!, scatter[i + 2]!, scatter[i + 3]!];
+        if (scatterAlpha) {
+          // K6.4: both scatter textures vs the spectral twin
+          const cpu = gatherSpectralTwin(twinFrame, ordered, [x, y, z], mix, MUTATE);
+          compare(stats, [x, y, z], [...gpu, scatterAlpha[i]!, scatterAlpha[i + 1]!, scatterAlpha[i + 2]!, scatterAlpha[i + 3]!], [...cpu.scatter, ...cpu.alpha], 2, 2 ** -20);
+          continue;
+        }
         const cpu = gatherTwin(twinFrame, ordered, [x, y, z], mix, MUTATE);
         compare(stats, [x, y, z], gpu, cpu, 2, 2 ** -20);
       }
@@ -872,16 +910,37 @@ async function probeGather(device: GPUDevice): Promise<void> {
   // two-tap twin on the read-back prefix (boundary D at an infinite depth)
   const color = device.createTexture({ size: [GW, GH], format: "rgba16float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
   const depthTex = device.createTexture({ size: [GW, GH], format: "depth32float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+  // K6.4: spectral composites over a scene colour (a constant grey)
+  const SCENE_COLOR: VDBFrameVec4 = [0.25, 0.35, 0.45, 1];
+  const sceneColor = device.createTexture({ size: [GW, GH], format: "rgba16float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
   enc = device.createCommandEncoder();
-  enc.beginRenderPass({ colorAttachments: [{ view: color.createView(), loadOp: "clear", clearValue: [0, 0, 0, 0], storeOp: "store" }], depthStencilAttachment: { view: depthTex.createView(), depthLoadOp: "clear", depthClearValue: 1, depthStoreOp: "store" } }).end();
-  renderer.render(enc, { color: color.createView(), size: [GW, GH], depth: depthTex.createView() });
+  enc.beginRenderPass({ colorAttachments: [{ view: color.createView(), loadOp: "clear", clearValue: SPECTRAL ? SCENE_COLOR : [0, 0, 0, 0], storeOp: "store" }], depthStencilAttachment: { view: depthTex.createView(), depthLoadOp: "clear", depthClearValue: 1, depthStoreOp: "store" } }).end();
+  enc.beginRenderPass({ colorAttachments: [{ view: sceneColor.createView(), loadOp: "clear", clearValue: SCENE_COLOR, storeOp: "store" }] }).end();
+  renderer.render(enc, { color: color.createView(), size: [GW, GH], depth: depthTex.createView(), ...(SPECTRAL ? { sceneColor: sceneColor.createView() } : {}) });
   device.queue.submit([enc.finish()]);
   const composite = halves(await readTexture(device, color, [GW, GH, 1], 8));
   const prefix = halves(await readTexture(device, tex.integrated, [GW, GH, GD + 1], 8));
-  const rstats = newStats("2 f16 ulp (render() over an empty depth vs the two-tap twin on the read-back prefix)");
+  const prefixAlpha = tex.spectral ? halves(await readTexture(device, tex.spectral.integratedAlpha, [GW, GH, GD + 1], tex.spectral.alphaFormat === "rg16float" ? 4 : 8)) : null;
+  const alphaChannels = tex.spectral?.alphaFormat === "rg16float" ? 2 : 4;
+  const rstats = newStats(`2 f16 ulp (render() over an empty depth vs the two-tap twin on the read-back prefix${SPECTRAL ? "; spectral: over a scene colour" : ""})`);
   for (let py = 0; py < GH; py++)
     for (let x = 0; x < GW; x++) {
       const y = GH - 1 - py;
+      if (prefixAlpha) {
+        const at = (k: number): [VDBFrameVec4, [number, number]] => {
+          const j = ((k * GH + y) * GW + x) * 4;
+          const ja = ((k * GH + y) * GW + x) * alphaChannels;
+          return [[prefix[j]!, prefix[j + 1]!, prefix[j + 2]!, prefix[j + 3]!], [prefixAlpha[ja]!, prefixAlpha[ja + 1]!]];
+        };
+        const [A, Aa] = at(GD);
+        // an infinite depth: the last boundary (c = 1 into slice D - 1, so the taps are boundaries D - 1 and D)
+        const [P, Pa] = at(GD - 1);
+        const r = vdbFrameIntegratePrefixSpectral(P, MUTATE === "spectral-alpha" ? [P[3], P[3]] : Pa, A, MUTATE === "spectral-alpha" ? [A[3], A[3]] : Aa, 1);
+        const i = (py * GW + x) * 4;
+        const cpu = Math.min(...r.transmittance) >= 1 ? SCENE_COLOR : vdbFrameCompositeSpectral(r.radiance, r.transmittance, SCENE_COLOR, false);
+        compare(rstats, [x, py], [composite[i]!, composite[i + 1]!, composite[i + 2]!, composite[i + 3]!], cpu);
+        continue;
+      }
       const cpu = integrateTwin((k) => {
         const j = ((k * GH + y) * GW + x) * 4;
         return [prefix[j]!, prefix[j + 1]!, prefix[j + 2]!, prefix[j + 3]!];
@@ -890,6 +949,7 @@ async function probeGather(device: GPUDevice): Promise<void> {
       compare(rstats, [x, py], [composite[i]!, composite[i + 1]!, composite[i + 2]!, composite[i + 3]!], cpu[3] > 0 ? cpu : [0, 0, 0, 0]);
     }
   result.renderStats = rstats;
+  sceneColor.destroy();
   if (occ) result.occluders = { maps: occ.inputs.length, transmittance: 0, density: 0, lighting: 0, gather: gatherCount.n };
   renderer.dispose();
   scene.dispose();
@@ -905,6 +965,7 @@ async function probeGather(device: GPUDevice): Promise<void> {
  * skip the grid and the transmittance (his redraw signatures).
  */
 async function probeFrame(device: GPUDevice): Promise<void> {
+  if (SPECTRAL) return probeFrameSpectral(device);
   const groups = Number(params.get("groups") ?? 1);
   const cascades = Number(params.get("cascades") ?? 1);
   // K6.3: diffusion (1 − g) for every truthy mode but octaves
@@ -1255,6 +1316,316 @@ async function probeFrame(device: GPUDevice): Promise<void> {
   occ?.dispose();
 }
 
+/**
+ * K6.4 `?probe=frame&spectral=1`: spectral 'frame' lighting on the probe scene (A: Ångström 1.8, B: scale (1.3, 1, 0.6)
+ * and 0.3, C a caster that is not drawn: scale (0.8, 1, 1.4) and 1): the extinction and absorption stacks vs
+ * `vdbFrameSpectralGridDensityVoxel`, every slot group's transmittance targets vs `vdbFrameSpectralTransmittanceVoxel3d`
+ * on the read-back stacks, the environment grid vs `vdbFrameSpectralEnvironmentGridVoxel3d`, and the fused gather's two
+ * scatter textures vs `vdbFrameSpectralDensitySums` + `vdbFrameSpectralLightingFroxel` on the read-back transmittance.
+ */
+async function probeFrameSpectral(device: GPUDevice): Promise<void> {
+  const groups = Number(params.get("groups") ?? 1);
+  const cascades = Number(params.get("cascades") ?? 1);
+  const ms = !!MS_MODE && MS_MODE !== "octaves";
+  const kind = params.get("source") === "sparse" ? "sparse" : "dense";
+  const [GW, GH, GD] = [24, 16, 12];
+  const R = 16;
+  const scene = await probeScene(device, { kind, groups, mips: true, extra: true });
+  const g = 0.6;
+  const backG = -0.3;
+  const backWeight = 0.2;
+  const exponent = Number(params.get("exponent") ?? 0.5);
+  const settings = {
+    lighting: "frame" as const,
+    width: GW,
+    height: GH,
+    depth: GD,
+    subSteps: 16,
+    temporal: false,
+    jitter: false,
+    ...MS_SETTINGS,
+    phase: PHASE_NAME,
+    phaseG: g,
+    phaseBackG: backG,
+    phaseBackWeight: backWeight,
+    phaseGExponent: exponent,
+    fadeRadius: 9,
+    srgbBlending: false,
+    shadowResolution: R,
+    shadowCascades: cascades,
+    shadowDistance: 2.5,
+    environmentLighting: (ENV_MODE ?? "directional") as "directional" | "spherical-harmonics" | "outward",
+    environmentSamples: 8,
+    environmentShOrder: 2,
+    spectral: true,
+  };
+  const renderer = vdbCreateFrameRenderer(device, { settings });
+  const envSource = ENV_MODE ? synthEnvironment(device, "equirect", "rgba16float") : null;
+  const environment = envSource ? { id: 1, revision: 0, texture: envSource.texture, projection: "equirect" as const, rotation: Float32Array.from(probeEnvRotation()), intensity: 0.6 } : null;
+  const pA: Partial<VDBFrameVolumeParams> = { matrixWorld: compose([0, 0, 0], 0.4, [2, 1.6, 2.2]), extinction: 4, absorbance: 0.7, mipmaps: true, hdda: true, ...SPECTRAL_A };
+  const pB: Partial<VDBFrameVolumeParams> = {
+    ...SPECTRAL_B,
+    matrixWorld: compose([0.7, 0.25, -0.3], -0.3, [1.8, 1.5, 1.7]),
+    extinction: 3,
+    baseColor: [0.9, 0.8, 0.7],
+    mipmaps: true,
+    emissiveIntensity: 0.5,
+    temperatureRange: [500, 3000],
+    scatterColor: [0.01, 0.02, 0.03],
+    densityCutoff: 0.05,
+    wrap3D: "mirror",
+    offset3D: [0.1, 0, -0.05],
+  };
+  const pC: Partial<VDBFrameVolumeParams> = {
+    matrixWorld: compose(cascades > 1 ? [1.6, 1.2, 2.4] : [0.6, 1.6, 0.4], 0.2, cascades > 1 ? [4, 2.4, 5] : [1.4, 0.5, 1.2]),
+    extinction: 5,
+    mipmaps: true,
+    extinctionScale: [0.8, 1, 1.4],
+    angstromExponent: 1,
+    baseColor: [0.6, 0.9, 0.95],
+  };
+  const a = renderer.addVolume(scene.slots[0]!, pA);
+  const b = renderer.addVolume(scene.slots[1]!, pB);
+  const c = renderer.addVolume(scene.slots[2]!, pC);
+  c.visible = false;
+  const eyeWorld = lookAt([3.2, 1.6, 4.4], [0.2, 0, 0]);
+  const view = vdbMat4Invert(eyeWorld);
+  const projection = perspective(0.75, GW / GH, 0.1, 100);
+  const lights = PROBE_LIGHTS;
+  const occ = await probeOccluders(device);
+  const occluders = occ?.inputs ?? [];
+  const frame = (frameId: number) => ({ frameId, camera: { view, projection, near: 0.1, far: 100, id: 1 }, viewport: { drawingBuffer: [GW, GH] as [number, number], canvas: [GW, GH] as [number, number] }, lights, environment, occluders });
+  let enc = device.createCommandEncoder();
+  const u = renderer.update(enc, frame(0));
+  device.queue.submit([enc.finish()]);
+  if (!u.recorded) throw new Error("update recorded nothing");
+  const grid = vdbFrameRendererGrid(renderer)!;
+  const tex = vdbFrameRendererTextures(renderer)!;
+  const gt = grid.textures;
+  if (!gt.absorption || !tex.spectral) throw new Error("spectral: no absorption stack or scatterAlpha");
+  const shadowStack: VDBFrameTexture3d = { data: halves(await readTexture(device, gt.shadow, gt.shadowLayout.size, 8)), size: gt.shadowLayout.size, channels: 4 };
+  const absorptionStack: VDBFrameTexture3d = { data: halves(await readTexture(device, gt.absorption, gt.shadowLayout.size, 8)), size: gt.shadowLayout.size, channels: 4 };
+  const transStack: VDBFrameTexture3d = { data: halves(await readTexture(device, gt.transmittance, gt.transmittanceLayout.size, 8)), size: gt.transmittanceLayout.size, channels: 4 };
+  const scatter = halves(await readTexture(device, tex.scatter, [GW, GH, GD], 8));
+  const scatterAlpha = halves(await readTexture(device, tex.spectral.scatterAlpha, [GW, GH, GD], 8));
+  const env = parseEnvironment(await readBuffer(device, vdbFrameRendererEnvironment(renderer).buffer, VDB_FRAME_ENVIRONMENT.size));
+  const envGridTex: VDBFrameTexture3d = { data: halves(await readTexture(device, gt.environment, [R, R, R], 8)), size: [R, R, R], channels: 4 };
+  enc = device.createCommandEncoder();
+  renderer.update(enc, frame(1));
+  device.queue.submit([enc.finish()]);
+  result.frame = { cascades: grid.count, redraw: JSON.parse(JSON.stringify(renderer.redrawStats)) };
+
+  const layout: VDBFrameGridLayout = {
+    count: grid.count,
+    resolution: R,
+    columns: vdbFrameAtlasLayout(R, R, R * cascades).columns,
+    atlasSize: [1, 1],
+    gridMin: grid.gridMin as VDBFrameVec3[],
+    gridSize: grid.gridSize as VDBFrameVec3[],
+    gridVoxel: grid.gridVoxel as VDBFrameVec3[],
+  };
+  const clip = vdbFrameClipCamera(view, projection, { coordinateSystem: "webgpu" });
+  const handles = [a, b, c];
+  const clips = handles.map((h) => vdbFrameClipVolume(clip, h.params.matrixWorld));
+  const visibleClips = clips.slice(0, 2).map((x) => x!);
+  const near = Math.max(Math.min(...visibleClips.map((v) => v.viewNear)), 0.1);
+  const far = Math.min(Math.max(...visibleClips.map((v) => v.viewFar)), 100);
+  const range: [number, number] = [near, Math.max(far, near * 1.0001)];
+  const spectrumOf = (h: VDBFrameVolumeGpu): VDBFrameVec3 => (MUTATE === "spectrum" ? [1, 1, 1] : vdbFrameExtinctionSpectrum([...h.params.extinctionScale], h.params.angstromExponent));
+  const records = handles.map((h, i) => {
+    const cl = clips[i] ?? { localToView: vdbMat4Multiply(view, h.params.matrixWorld), viewToLocal: vdbMat4Invert(vdbMat4Multiply(view, h.params.matrixWorld)), worldToLocal: vdbMat4Invert(h.params.matrixWorld), viewNear: 0, viewFar: 0 };
+    const rect = i < 2 ? vdbFrameFroxelRect(cl.localToView, projection, GW, GH)! : ([0, 0, 0, 0] as [number, number, number, number]);
+    return { ...twinRecord(h, scene.samplers[i]!, cl, rect, i < 2 ? vdbFrameVolumeSlices(cl.viewNear, cl.viewFar, range, GD) : { first: 0, count: 0 }, 0.8), extinctionSpectrum: spectrumOf(h) };
+  });
+  const readLod = (r: TwinVolume, lod: number) => (r.mipmaps ? lod : 0);
+  const at = (t: VDBFrameTexture3d, p: readonly number[]) => {
+    const i = (p[0]! + (p[1]! + p[2]! * t.size[1]) * t.size[0]) * 4;
+    return [t.data[i]!, t.data[i + 1]!, t.data[i + 2]!, t.data[i + 3]!];
+  };
+
+  // (a) the spectral shadow grid: extinction rgb and absorption rgb stacks
+  const gstats = newStats("2 f16 ulp (rgba16float spectral extinction and absorption stacks vs vdbFrameSpectralGridDensityVoxel)");
+  const casters = records.map((r) => ({
+    worldToLocal: r.worldToLocal,
+    maxTexels: Math.max(...r.volume.texels),
+    worldScale: r.worldScale,
+    mipmaps: r.mipmaps,
+    absorbance: r.absorbance,
+    extinctionSpectrum: r.extinctionSpectrum,
+    extinctionAt: (local: VDBFrameVec3, lod: number) => extinctionAt(r, local, lod),
+    // ?mutate=spectral-absorption: the grey (luminance) albedo in every channel
+    albedoAt: (local: VDBFrameVec3, lod: number): VDBFrameVec3 => {
+      const al = albedoAt(r, local, lod);
+      if (MUTATE !== "spectral-absorption") return al;
+      const lum = 0.2126 * al[0] + 0.7152 * al[1] + 0.0722 * al[2];
+      return [lum, lum, lum];
+    },
+  }));
+  for (let cc = 0; cc < layout.count; cc++) {
+    const voxel = layout.gridVoxel[cc]!;
+    for (let z = 0; z < R; z++)
+      for (let y = 0; y < R; y++)
+        for (let x = 0; x < R; x++) {
+          const world = vdbFrameGridVoxelWorld(layout, cc, [x, y, z]);
+          const e = vdbFrameSpectralGridDensityVoxel(world, Math.max(...voxel), casters);
+          const o = gt.shadowLayout.origins[cc]!;
+          const p = [o[0] + x, o[1] + y, o[2] + z];
+          compare(gstats, [cc, x, y, z], [...at(shadowStack, p).slice(0, 3), ...at(absorptionStack, p).slice(0, 3)], [...e.extinction, ...e.absorption], 2, 2 ** -20);
+        }
+  }
+  result.gridStats = gstats;
+
+  // (b) every slot group's transmittance targets from the read-back stacks
+  const phaseFields = { phase: PHASE_NAME, phaseG: g, phaseBackG: backG, phaseBackWeight: backWeight, phaseGExponent: exponent };
+  const msValue = ms ? vdbFrameMultipleScatteringValue(MS_MODE, phaseFields) : 0;
+  const slotLights = lightRecords(lights).slice(0, 6).map((l) => l.position);
+  const sceneSlots = slotLights.length;
+  const envFlags = {
+    useShadows: grid.count > 0,
+    slot: !!environment && settings.environmentLighting === "directional" && sceneSlots < 6 && !ms && env.valid,
+    grid: !!environment && settings.environmentLighting !== "outward" && grid.count > 0,
+    diffusion: ms,
+  };
+  const envSlotUsed = envFlags.slot && env.count > 0;
+  if (envSlotUsed) slotLights.push([...env.directions[0]!, 1]);
+  const slotGroups = vdbFrameSpectralGroups(sceneSlots + (envFlags.slot ? 1 : 0));
+  result.spectral = { groups: slotGroups, gpuGroups: gt.groups };
+  const counts = { transmittance: { n: 0 }, density: { n: 0 }, lighting: { n: 0 } };
+  const transmittanceOccluder = occ && MUTATE !== "occluder" && MUTATE !== "occluder-scattered" ? occluderTwin(occ, counts.transmittance) : null;
+  const lightingOccluder = occ && MUTATE !== "occluder" ? occluderTwin(occ, counts.lighting) : null;
+  const gridAt = (cc: number, uvw: VDBFrameVec3) => {
+    const o = gt.shadowLayout.origins[cc]!;
+    return { extinction: vdbFrameStackSample(shadowStack, o, R, uvw).slice(0, 3) as VDBFrameVec3, absorption: vdbFrameStackSample(absorptionStack, o, R, uvw).slice(0, 3) as VDBFrameVec3 };
+  };
+  const targetOrigin = (cc: number, group: number, k: number) => gt.transmittanceLayout.origins[3 * (group * layout.count + cc) + k]!;
+  const tstats = newStats(`2 f16 ulp (rgba16float spectral transmittance, ${slotGroups} slot group(s), vs vdbFrameSpectralTransmittanceVoxel3d on the read-back stacks)`);
+  for (let group = 0; group < slotGroups; group++)
+    for (let cc = 0; cc < layout.count; cc++)
+      for (let z = 0; z < R; z++)
+        for (let y = 0; y < R; y++)
+          for (let x = 0; x < R; x++) {
+            // ?mutate=spectral-pack: the twin of the next group in this group's targets
+            const twinGroup = MUTATE === "spectral-pack" ? (group + 1) % Math.max(slotGroups, 2) : group;
+            const t = vdbFrameSpectralTransmittanceVoxel3d(gridAt, layout, cc, [x, y, z], slotLights, [0, 1, 0], MUTATE === "diffusion" ? 0 : msValue, -1, twinGroup, {
+              octaves: MUTATE === "octaves" ? [0, 0, 0, 0] : MS_OCTAVES,
+              twoSided: MS_MODE === "two-sided" && MUTATE !== "two-sided",
+              visibility: transmittanceOccluder,
+              sceneSlots,
+            });
+            for (let k = 0; k < 3; k++) {
+              const o = targetOrigin(cc, group, k);
+              compare(tstats, [group, cc, k, x, y, z], at(transStack, [o[0] + x, o[1] + y, o[2] + z]), t[k]!, 2, 2 ** -20);
+            }
+          }
+  result.transmittanceStats = tstats;
+
+  // (b') the environment grid from the read-back stacks and buffer
+  if (envFlags.grid && env.valid) {
+    const first = envFlags.slot ? 1 : 0;
+    const gridLights = env.directions.map((direction, i) => ({ direction, color: env.colors[i]! })).slice(MUTATE === "env-grid" ? first + 1 : first);
+    const es = newStats("2 f16 ulp (rgba16float spectral environment grid vs vdbFrameSpectralEnvironmentGridVoxel3d on the read-back stacks)");
+    for (let z = 0; z < R; z++)
+      for (let y = 0; y < R; y++)
+        for (let x = 0; x < R; x++) {
+          const cpu = vdbFrameSpectralEnvironmentGridVoxel3d(gridAt, layout, [x, y, z], gridLights, msValue, MUTATE === "octaves" ? [0, 0, 0, 0] : MS_OCTAVES);
+          compare(es, [x, y, z], at(envGridTex, [x, y, z]), cpu, 2, 2 ** -20);
+        }
+    result.environmentGridStats = es;
+  }
+
+  // (c) the fused spectral gather from the read-back transmittance
+  const groupsAt = (world: VDBFrameVec3) => vdbFrameSpectralStackGroups((cc, group, k, uvw) => vdbFrameStackSample(transStack, targetOrigin(cc, group, k), R, uvw), layout, world, slotGroups);
+  const phase = vdbFramePhaseVector(phaseFields) as VDBFrameVec4;
+  if (MUTATE === "mie") phase[3] = 0;
+  const phaseSpectrum = vdbFramePhaseSpectrum(phaseFields) as VDBFrameVec3;
+  const octaves: VDBFrameVec4 = MUTATE === "octaves" ? [0, 0, 0, 0] : MS_OCTAVES;
+  const sorted = lightRecords(lights);
+  const projectionInverse = vdbMat4Invert(projection);
+  const columns = vdbFrameAtlasLayout(GW, GH, GD).columns;
+  const stats = newStats(`2 f16 ulp (rgba16float scatter + scatterAlpha vs his spectral density + lighting twins; ${kind} source, ${groups} group(s), ${layout.count} cascade(s))`);
+  for (let z = 0; z < GD; z++)
+    for (let y = 0; y < GH; y++)
+      for (let x = 0; x < GW; x++) {
+        const tile: [number, number] = [z % columns, Math.floor(z / columns)];
+        const fragCoord: [number, number] = [tile[0] * GW + x + 0.5, tile[1] * GH + y + 0.5];
+        const sums: [VDBFrameVec4, VDBFrameVec4, VDBFrameVec4] = [
+          [0, 0, 0, 0],
+          [0, 0, 0, 0],
+          [0, 0, 0, 0],
+        ];
+        for (const r of records.slice(0, 2)) {
+          if (x < r.rect[0] || y < r.rect[1] || x >= r.rect[2] || y >= r.rect[3] || z < r.first || z >= r.first + r.count) continue;
+          const d = vdbFrameSpectralDensitySums(fragCoord, {
+            froxelGrid: [GW, GH, GD],
+            columns,
+            range,
+            projectionInverse,
+            cameraWorld: eyeWorld,
+            viewToLocal: r.viewToLocal,
+            maxTexels: Math.max(...r.volume.texels),
+            mipLevels: r.mipmaps ? r.levels : 0,
+            worldScale: r.worldScale,
+            subSteps: settings.subSteps,
+            jitter: -1,
+            fadeRadius: settings.fadeRadius,
+            opacity: r.opacity,
+            baseColor: r.baseColor,
+            scatterColor: r.scatterColor,
+            extinctionSpectrum: r.extinctionSpectrum,
+            extinctionAt: (local, lod) => extinctionAt(r, local, readLod(r, lod), MUTATE),
+            albedoAt: (local, lod) => albedoAt(r, local, readLod(r, lod)),
+            emissionAt: (local, lod) => emissionAt(r, local, readLod(r, lod)),
+            environmentAt: environment
+              ? (world, local, albedo) => {
+                  const outward = MUTATE !== "env-outward" && Math.hypot(...local) > 1e-4 ? normalizeV(mat3Of(eyeWorld, mat3Of(r.localToView, local))) : ([0, 1, 0] as VDBFrameVec3);
+                  const last = layout.count - 1;
+                  const envGridAt = () => {
+                    if (last < 0) return null;
+                    const uvw = vdbFrameGridUvw(layout, last, world);
+                    return vdbFrameInsideGrid(R, uvw) ? (vdbFrameStackSample(envGridTex, [0, 0, 0], R, uvw).slice(0, 3) as VDBFrameVec3) : null;
+                  };
+                  const g0 = groupsAt(world)[0]!;
+                  const sky = vdbFrameUnpackSpectralGroup(g0[0]!, g0[1]!, g0[2]!).a;
+                  return vdbFrameSpectralEnvironmentDensityTerm(env, envFlags, outward, [0, 1, 0], sky, albedo, envGridAt, octaves);
+                }
+              : null,
+          });
+          if (!d) continue;
+          for (let ch = 0; ch < 4; ch++) {
+            sums[0][ch] = sums[0][ch]! + d.a[ch]!;
+            sums[1][ch] = sums[1][ch]! + d.e[ch]!;
+            sums[2][ch] = sums[2][ch]! + d.x[ch]!;
+          }
+        }
+        const f = vdbFrameFroxel([GW, GH, GD], columns, range, projectionInverse, fragCoord);
+        const [c0, c1] = vdbFrameSpectralLightingFroxel(sums, f.viewNear, f.viewFar, eyeWorld, {
+          ambient: [0.05, 0.06, 0.08],
+          hemiSky: [0.3, 0.4, 0.6],
+          hemiGround: [0.2, 0.15, 0.1],
+          skyDirection: [0, 1, 0],
+          ...(MUTATE === "sky" ? {} : { lightProbe: PROBE_SH }),
+          lights: sorted.map((l) => ({ position: l.position, color: [l.color[0], l.color[1], l.color[2]] as VDBFrameVec3, spot: l.spot, penumbra: l.color[3], falloff: l.falloff })),
+          shadowLightCount: MUTATE === "slots" ? 0 : sceneSlots,
+          phase,
+          phaseSpectrum,
+          octaves,
+          environmentColors: envFlags.useShadows && envSlotUsed && MUTATE !== "env-slot" ? [env.colors[0]!] : [],
+          environmentShadowSlot: sceneSlots,
+          groupsAt: layout.count > 0 ? groupsAt : null,
+          occluderAt: lightingOccluder,
+        });
+        const i = ((z * GH + y) * GW + x) * 4;
+        compare(stats, [x, y, z], [scatter[i]!, scatter[i + 1]!, scatter[i + 2]!, scatter[i + 3]!, scatterAlpha[i]!, scatterAlpha[i + 1]!, scatterAlpha[i + 2]!, scatterAlpha[i + 3]!], [...c0, ...c1], 2, 2 ** -20);
+      }
+  result.stats = stats;
+  result.environment = { runs: [{ ...vdbFrameRendererEnvironment(renderer).runs }], count: env.count, mode: env.mode, valid: env.valid ? 1 : 0, directions: env.directions, colors: env.colors };
+  if (occ) result.occluders = { maps: occ.inputs.length, transmittance: counts.transmittance.n, density: counts.density.n, lighting: counts.lighting.n, gather: 0 };
+  renderer.dispose();
+  scene.dispose();
+  envSource?.texture.destroy();
+  occ?.dispose();
+}
+
 const normalizeV = (v: readonly number[]): VDBFrameVec3 => {
   const l = Math.hypot(v[0]!, v[1]!, v[2]!);
   return [v[0]! / l, v[1]! / l, v[2]! / l];
@@ -1331,7 +1702,276 @@ function frameUniforms(device: GPUDevice, values: Record<string, number | ArrayL
   return { frame, lights };
 }
 
+/**
+ * K6.4 `?probe=resolve&spectral=1` (`&temporal=1`): the spectral resolve on a synthetic scatter and alpha scatter (per
+ * channel alphas; a stacked history) vs `vdbFrameTemporalFroxel` on each texture + `vdbFrameScanColumnSpectral`. Checks the
+ * prefix, the alpha prefix (rg16float with `&tier1=1` on a device that has texture-formats-tier1) and both history halves.
+ */
+async function probeResolveSpectral(device: GPUDevice): Promise<void> {
+  const temporal = params.get("temporal") === "1";
+  const alphaFormat = device.features.has("texture-formats-tier1") ? "rg16float" : "rgba16float";
+  const [W, H, D] = [20, 14, 16];
+  const r = rng(13);
+  const area = [3, 2, 17, 12];
+  const slices = [2, 14];
+  const scatter = new Float64Array(W * H * D * 4);
+  const scatterAlpha = new Float64Array(W * H * D * 4);
+  const history = new Float64Array(W * H * 2 * D * 4);
+  for (let i = 0; i < W * H * D; i++) {
+    const z = Math.floor(i / (W * H));
+    // per-channel alphas (blue the densest, like a positive Ångström exponent); deep slices pass the stop
+    const base = r() < 0.15 ? 0 : z > 4 ? 0.5 + r() * 0.3 : r() * 0.35;
+    const a = [base * (0.6 + r() * 0.2), base, Math.min(base * (1.2 + r() * 0.3), 0.99)];
+    const L = [r() * 2, r() * 2, r() * 2];
+    for (let c = 0; c < 3; c++) {
+      scatter[i * 4 + c] = roundHalf(L[c]! * a[c]!);
+      history[i * 4 + c] = roundHalf(r() * 1.5);
+    }
+    scatter[i * 4 + 3] = roundHalf(a[1]!);
+    scatterAlpha[i * 4] = roundHalf(a[0]!);
+    scatterAlpha[i * 4 + 1] = roundHalf(a[2]!);
+    scatterAlpha[i * 4 + 3] = roundHalf(a[1]!);
+    history[i * 4 + 3] = roundHalf(r());
+    // the alpha half of the stacked history (z + D)
+    const j = (i + W * H * D) * 4;
+    for (let c = 0; c < 4; c++) history[j + c] = roundHalf(c === 2 ? 0 : r());
+  }
+  for (let z = 0; z < D; z++)
+    for (let y = 0; y < H; y++)
+      for (let x = 0; x < W; x++) {
+        if (x >= area[0]! && x < area[2]! && y >= area[1]! && y < area[3]! && z >= slices[0]! && z < slices[1]!) continue;
+        const i = ((z * H + y) * W + x) * 4;
+        scatter.fill(0, i, i + 4);
+        scatterAlpha.fill(0, i, i + 4);
+      }
+  const projection = perspective(0.8, W / H, 0.2, 50);
+  const camera = lookAt([0.5, 0.3, 3], [0, 0, 0]);
+  const view = vdbMat4Invert(camera);
+  const range: [number, number] = [0.5, 30];
+  const blend = 0.2;
+  const { frame, lights } = frameUniforms(device, {
+    cameraWorld: camera,
+    projectionInverse: vdbMat4Invert(projection),
+    previousView: view,
+    previousProjection: projection,
+    grid: [W, H, D, vdbFrameAtlasLayout(W, H, D).columns],
+    range: [range[0], range[1], range[0], range[1]],
+    areaRect: area,
+    areaSlices: slices,
+    dispatchBox: [0, 0, W, H],
+    jitterFade: [-1, 0, blend, temporal ? 1 : 0],
+    flags: [16, temporal ? 1 : 0, 0, 0],
+  });
+  const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
+  const mk = (d: number, format: GPUTextureFormat = "rgba16float") => device.createTexture({ size: [W, H, d], dimension: "3d", format, usage });
+  const scatterTex = mk(D);
+  const alphaTex = mk(D);
+  const integrated = mk(D + 1);
+  const integratedAlpha = mk(D + 1, alphaFormat);
+  const historyIn = mk(2 * D);
+  const historyOut = mk(2 * D);
+  writeHalfTexture(device, scatterTex, [W, H, D], scatter);
+  writeHalfTexture(device, alphaTex, [W, H, D], scatterAlpha);
+  writeHalfTexture(device, historyIn, [W, H, 2 * D], history);
+  const built = computePipeline(device, vdbFrameResolveSpec({ temporal, spectral: true, alphaFormat }));
+  const sampler = device.createSampler({ magFilter: "linear", minFilter: "linear", addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge", addressModeW: "clamp-to-edge" });
+  const enc = device.createCommandEncoder();
+  const pass = enc.beginComputePass();
+  pass.setPipeline(built.pipeline);
+  pass.setBindGroup(0, device.createBindGroup({ layout: built.layouts[0]!, entries: [{ binding: 0, resource: { buffer: frame } }, { binding: 1, resource: { buffer: lights } }, { binding: 2, resource: sampler }, envEntry(device), mieEntry(device)] }));
+  pass.setBindGroup(
+    1,
+    device.createBindGroup({
+      layout: built.layouts[1]!,
+      entries: [
+        { binding: 0, resource: scatterTex.createView() },
+        { binding: 1, resource: integrated.createView() },
+        ...(temporal ? [{ binding: 2, resource: historyIn.createView() }, { binding: 3, resource: historyOut.createView() }] : []),
+        { binding: 4, resource: alphaTex.createView() },
+        { binding: 5, resource: integratedAlpha.createView() },
+      ],
+    }),
+  );
+  pass.dispatchWorkgroups(Math.ceil(W / 8), Math.ceil(H / 8), 1);
+  pass.end();
+  device.queue.submit([enc.finish()]);
+  const prefix = halves(await readTexture(device, integrated, [W, H, D + 1], 8));
+  const alphaChannels = alphaFormat === "rg16float" ? 2 : 4;
+  const prefixAlpha = halves(await readTexture(device, integratedAlpha, [W, H, D + 1], alphaChannels * 2));
+  const histOut = temporal ? halves(await readTexture(device, historyOut, [W, H, 2 * D], 8)) : null;
+  const at = (arr: Float64Array, x: number, y: number, z: number, channels = 4): VDBFrameVec4 => {
+    const i = ((z * H + y) * W + x) * channels;
+    return [arr[i]!, arr[i + 1]!, channels > 2 ? arr[i + 2]! : 0, channels > 3 ? arr[i + 3]! : 0];
+  };
+  const projectionInverse = vdbMat4Invert(projection);
+  const stats = newStats(`2 f16 ulp per boundary of both prefixes (${alphaFormat} alpha prefix)${temporal ? " and of both history halves" : ""}`);
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      const inRect = x >= area[0]! && x < area[2]! && y >= area[1]! && y < area[3]!;
+      if (!inRect) {
+        for (let k = 0; k <= D; k++) {
+          compare(stats, [x, y, k], at(prefix, x, y, k), [0, 0, 0, 0]);
+          compare(stats, [x, y, k, 1], at(prefixAlpha, x, y, k, alphaChannels).slice(0, 2), [0, 0]);
+        }
+        if (histOut) for (let z = 0; z < 2 * D; z++) compare(stats, [x, y, z, -1], at(histOut, x, y, z), [0, 0, 0, 0]);
+        continue;
+      }
+      const resolved: { scatter: VDBFrameVec4; alpha: VDBFrameVec4 }[] = [];
+      for (let z = 0; z < D; z++) {
+        const cur = at(scatter, x, y, z);
+        const curA = at(scatterAlpha, x, y, z);
+        if (!(z >= slices[0]! && z < slices[1]!)) {
+          resolved.push(temporal ? { scatter: [0, 0, 0, 0], alpha: [0, 0, 0, 0] } : { scatter: cur, alpha: curA });
+          continue;
+        }
+        let out = { scatter: cur, alpha: curA };
+        if (temporal) {
+          const uv: [number, number] = [(x + 0.5) / W, (y + 0.5) / H];
+          const viewP = vdbFrameViewPosition(projectionInverse, uv, vdbFrameSliceDepth(range, (z + 0.5) / D));
+          const w = [0, 1, 2].map((k) => camera[k]! * viewP[0] + camera[4 + k]! * viewP[1] + camera[8 + k]! * viewP[2] + camera[12 + k]!) as VDBFrameVec3;
+          const rp = vdbFrameReproject(w, view, projection, range, [W, H, D], { uv, slice: z }, blend);
+          if (rp) {
+            const hx = Math.min(W - 1, Math.max(0, Math.round(rp.uv[0] * W - 0.5)));
+            const hy = Math.min(H - 1, Math.max(0, Math.round(rp.uv[1] * H - 0.5)));
+            const hz = Math.min(D - 1, Math.max(0, Math.round(rp.slice)));
+            const neighbours = (arr: Float64Array) => {
+              const n = [at(arr, Math.max(x - 1, 0), y, z), at(arr, Math.min(x + 1, W - 1), y, z), at(arr, x, Math.max(y - 1, 0), z), at(arr, x, Math.min(y + 1, H - 1), z)];
+              if (z > 0) n.push(at(arr, x, y, z - 1));
+              if (z + 1 < D) n.push(at(arr, x, y, z + 1));
+              return n;
+            };
+            out = {
+              scatter: vdbFrameTemporalFroxel(cur, at(history, hx, hy, hz), neighbours(scatter), rp.blend),
+              alpha: vdbFrameTemporalFroxel(curA, at(history, hx, hy, hz + D), neighbours(scatterAlpha), rp.blend),
+            };
+          }
+        }
+        resolved.push(out);
+      }
+      // ?mutate=spectral-alpha: the green alpha for every channel
+      const scan = vdbFrameScanColumnSpectral(
+        MUTATE === "spectral-alpha" ? resolved.map((f) => ({ scatter: f.scatter, alpha: [f.scatter[3], f.scatter[3], 0, f.scatter[3]] as VDBFrameVec4 })) : resolved,
+        MUTATE === "scan-stop" ? { stop: 0 } : {},
+      );
+      for (let k = 0; k <= D; k++) {
+        compare(stats, [x, y, k], at(prefix, x, y, k), scan.prefix[k]!);
+        compare(stats, [x, y, k, 1], at(prefixAlpha, x, y, k, alphaChannels).slice(0, 2), scan.alpha[k]!);
+      }
+      if (histOut)
+        for (let z = 0; z < D; z++) {
+          compare(stats, [x, y, z, -1], at(histOut, x, y, z), resolved[z]!.scatter);
+          compare(stats, [x, y, z, -2], at(histOut, x, y, z + D), resolved[z]!.alpha);
+        }
+    }
+  result.stats = stats;
+  result.spectral = { groups: 0, gpuGroups: alphaFormat === "rg16float" ? 2 : 4 };
+}
+
+/**
+ * K6.4 `?probe=integrate&spectral=1` (`&srgb=1`): the spectral composite pass (both prefixes, over a scene colour, no
+ * hardware blending) on synthetic prefixes from `vdbFrameScanColumnSpectral` vs `vdbFrameSliceCoord` +
+ * `vdbFrameIntegratePrefixSpectral` + `vdbFrameCompositeSpectral`.
+ */
+async function probeIntegrateSpectral(device: GPUDevice): Promise<void> {
+  const srgb = params.get("srgb") === "1";
+  const [W, H, D] = [40, 28, 10];
+  const r = rng(29);
+  const range: [number, number] = [1, 80];
+  const prefix = new Float64Array(W * H * (D + 1) * 4);
+  const prefixAlpha = new Float64Array(W * H * (D + 1) * 4);
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      const froxels = Array.from({ length: D }, () => {
+        const g = r() < 0.3 ? 0 : r() * 0.6;
+        const a = [g * (0.5 + r() * 0.3), g, Math.min(g * (1.3 + r() * 0.3), 0.95)];
+        return { scatter: [r() * a[0]!, r() * a[1]!, r() * a[2]!, a[1]!] as VDBFrameVec4, alpha: [a[0]!, a[2]!, 0, a[1]!] as VDBFrameVec4 };
+      });
+      const col = vdbFrameScanColumnSpectral(froxels);
+      col.prefix.forEach((b, k) => prefix.set(b.map(roundHalf), ((k * H + y) * W + x) * 4));
+      col.alpha.forEach((b, k) => prefixAlpha.set([roundHalf(b[0]), roundHalf(b[1]), 0, 0], ((k * H + y) * W + x) * 4));
+    }
+  const near = 0.3;
+  const far = 200;
+  const depthValues = new Float32Array(W * H);
+  const viewDepths = new Float64Array(W * H);
+  const sceneValues = new Float64Array(W * H * 4);
+  for (let i = 0; i < W * H; i++) {
+    for (let c = 0; c < 4; c++) sceneValues[i * 4 + c] = roundHalf(c === 3 ? 1 : r());
+    if (i % 17 === 0) {
+      depthValues[i] = 1;
+      viewDepths[i] = 1e20;
+      continue;
+    }
+    const z = 0.5 + r() * 100;
+    depthValues[i] = (far * (z - near)) / (z * (far - near));
+    const d = depthValues[i]!;
+    viewDepths[i] = -((near * far) / ((far - near) * d - far));
+  }
+  const { frame, lights } = frameUniforms(device, {
+    grid: [W, H, D, 1],
+    range: [range[0], range[1], range[0], range[1]],
+    flags: [16, 0, 0, 0],
+    screen: [W, H, 1, 0],
+    camera: [near, far, 0, 0],
+  });
+  const mk3 = () => device.createTexture({ size: [W, H, D + 1], dimension: "3d", format: "rgba16float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+  const prefixTex = mk3();
+  const alphaTex = mk3();
+  writeHalfTexture(device, prefixTex, [W, H, D + 1], prefix);
+  writeHalfTexture(device, alphaTex, [W, H, D + 1], prefixAlpha);
+  const depthTex = device.createTexture({ size: [W, H], format: "r32float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+  device.queue.writeTexture({ texture: depthTex }, depthValues, { bytesPerRow: W * 4 }, [W, H]);
+  const sceneTex = device.createTexture({ size: [W, H], format: "rgba16float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+  writeHalfTexture(device, sceneTex, [W, H, 1], sceneValues);
+  const color = device.createTexture({ size: [W, H], format: "rgba16float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST });
+  writeHalfTexture(device, color, [W, H, 1], sceneValues);
+  const built = renderPipeline(device, vdbFrameCompositeSpec({ colorFormat: "rgba16float", depth: "r32float", srgb, spectral: true }));
+  const sampler = device.createSampler({ magFilter: "linear", minFilter: "linear" });
+  const enc = device.createCommandEncoder();
+  const pass = enc.beginRenderPass({ colorAttachments: [{ view: color.createView(), loadOp: "load", storeOp: "store" }] });
+  pass.setPipeline(built.pipeline);
+  pass.setBindGroup(0, device.createBindGroup({ layout: built.layouts[0]!, entries: [{ binding: 0, resource: { buffer: frame } }, { binding: 1, resource: { buffer: lights } }, { binding: 2, resource: sampler }, envEntry(device), mieEntry(device)] }));
+  pass.setBindGroup(
+    1,
+    device.createBindGroup({
+      layout: built.layouts[1]!,
+      entries: [
+        { binding: 0, resource: prefixTex.createView() },
+        { binding: 1, resource: sampler },
+        { binding: 2, resource: depthTex.createView() },
+        { binding: 3, resource: sceneTex.createView() },
+        { binding: 4, resource: alphaTex.createView() },
+      ],
+    }),
+  );
+  pass.draw(3);
+  pass.end();
+  device.queue.submit([enc.finish()]);
+  const out = halves(await readTexture(device, color, [W, H, 1], 8));
+  const stats = newStats(`2 f16 ulp (rgba16float target; the spectral composite over the scene colour${srgb ? ", sRGB" : ""})`);
+  const at = (arr: Float64Array, x: number, y: number, k: number): VDBFrameVec4 => {
+    const i = ((k * H + y) * W + x) * 4;
+    return [arr[i]!, arr[i + 1]!, arr[i + 2]!, arr[i + 3]!];
+  };
+  for (let py = 0; py < H; py++)
+    for (let x = 0; x < W; x++) {
+      const y = H - 1 - py;
+      const pixel = py * W + x;
+      const scene: VDBFrameVec4 = [sceneValues[pixel * 4]!, sceneValues[pixel * 4 + 1]!, sceneValues[pixel * 4 + 2]!, sceneValues[pixel * 4 + 3]!];
+      const { k, c } = vdbFrameSliceCoord(viewDepths[pixel]!, range, D);
+      const a = at(prefix, x, y, k);
+      const b = at(prefix, x, y, k + 1);
+      const aa = at(prefixAlpha, x, y, k);
+      const ba = at(prefixAlpha, x, y, k + 1);
+      const rr = vdbFrameIntegratePrefixSpectral(a, MUTATE === "spectral-alpha" ? [a[3], a[3]] : [aa[0], aa[1]], b, MUTATE === "spectral-alpha" ? [b[3], b[3]] : [ba[0], ba[1]], MUTATE === "coverage" ? Math.min(1, c * 1.1) : c);
+      const cpu = Math.min(...rr.transmittance) >= 1 ? scene : vdbFrameCompositeSpectral(rr.radiance, rr.transmittance, scene, srgb, true);
+      compare(stats, [x, py], [out[pixel * 4]!, out[pixel * 4 + 1]!, out[pixel * 4 + 2]!, out[pixel * 4 + 3]!], cpu);
+    }
+  result.stats = stats;
+}
+
 async function probeResolve(device: GPUDevice): Promise<void> {
+  if (SPECTRAL) return probeResolveSpectral(device);
   const temporal = params.get("temporal") === "1";
   const [W, H, D] = [20, 14, 16];
   const r = rng(11);
@@ -1445,6 +2085,7 @@ async function probeResolve(device: GPUDevice): Promise<void> {
 }
 
 async function probeIntegrate(device: GPUDevice): Promise<void> {
+  if (SPECTRAL) return probeIntegrateSpectral(device);
   const [W, H, D] = [40, 28, 10];
   const r = rng(23);
   const range: [number, number] = [1, 80];
@@ -1741,7 +2382,7 @@ function bilinearLayer(data: ArrayLike<number>, size: number, layer: number, s: 
 }
 
 /** Runs a receiver probe kernel (`code`, entry `entry`) over `rows` (vec4f each) with its four group-0 bindings. */
-async function runRowProbe(device: GPUDevice, code: string, entry: string, uniform: GPUBuffer, view: GPUTextureView, rows: Float32Array<ArrayBuffer>, viewDimension: GPUTextureViewDimension): Promise<Float32Array> {
+async function runRowProbe(device: GPUDevice, code: string, entry: string, uniform: GPUBuffer, view: GPUTextureView, rows: Float32Array<ArrayBuffer>, viewDimension: GPUTextureViewDimension, rgbView: GPUTextureView | null = null): Promise<Float32Array> {
   device.pushErrorScope("validation");
   const layout = device.createBindGroupLayout({
     entries: [
@@ -1749,6 +2390,8 @@ async function runRowProbe(device: GPUDevice, code: string, entry: string, unifo
       { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float", viewDimension } },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, sampler: { type: "filtering" } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      // K6.4: the spectral map's rgb twin
+      ...(rgbView ? [{ binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float" as const, viewDimension } }] : []),
     ],
   });
   const pipeline = device.createComputePipeline({ layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }), compute: { module: device.createShaderModule({ code }), entryPoint: entry } });
@@ -1762,6 +2405,7 @@ async function runRowProbe(device: GPUDevice, code: string, entry: string, unifo
       { binding: 1, resource: view },
       { binding: 2, resource: sampler },
       { binding: 3, resource: { buffer } },
+      ...(rgbView ? [{ binding: 4, resource: rgbView }] : []),
     ],
   });
   const read = device.createBuffer({ size: rows.byteLength, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
@@ -1818,10 +2462,12 @@ async function probeShadow(device: GPUDevice): Promise<void> {
     castShadowSteps: STEPS,
     castShadowUpdatesPerFrame: 16,
     castShadowDistance: 40,
+    // K6.4 `&spectral=1`: spectral maps (the grey map with the channel mean, the rgb twin)
+    spectral: SPECTRAL,
   };
   const renderer = vdbCreateFrameRenderer(device, { settings });
-  renderer.addVolume(scene.slots[0]!, { matrixWorld: compose([0, 0, 0], 0.4, [2, 1.6, 2.2]), extinction: 4, mipmaps: true });
-  renderer.addVolume(scene.slots[1]!, { matrixWorld: compose([0.7, 0.25, -0.3], -0.3, [1.8, 1.5, 1.7]), extinction: 3, mipmaps: true });
+  renderer.addVolume(scene.slots[0]!, { matrixWorld: compose([0, 0, 0], 0.4, [2, 1.6, 2.2]), extinction: 4, mipmaps: true, ...SPECTRAL_A });
+  renderer.addVolume(scene.slots[1]!, { ...SPECTRAL_B, matrixWorld: compose([0.7, 0.25, -0.3], -0.3, [1.8, 1.5, 1.7]), extinction: 3, mipmaps: true });
   const c = renderer.addVolume(scene.slots[2]!, { matrixWorld: compose([0.6, 1.6, 0.4], 0.2, [1.4, 0.5, 1.2]), extinction: 5, mipmaps: true });
   c.visible = false;
   const eyeWorld = lookAt([3.2, 1.6, 4.4], [0.2, 0, 0]);
@@ -1846,6 +2492,8 @@ async function probeShadow(device: GPUDevice): Promise<void> {
   const gt = grid.textures;
   const shadowStack: VDBFrameTexture3d = { data: halves(await readTexture(device, gt.shadow, gt.shadowLayout.size, 8)), size: gt.shadowLayout.size, channels: 4 };
   const mapData = halves(await readTexture(device, map.texture, [SIZE, SIZE, map.layers], 8));
+  if (SPECTRAL && !map.rgbTexture) throw new Error("spectral: the map has no rgb twin");
+  const rgbData = map.rgbTexture ? halves(await readTexture(device, map.rgbTexture, [SIZE, SIZE, map.layers], 8)) : null;
   const layout: VDBFrameGridLayout = {
     count: grid.count,
     resolution: R,
@@ -1857,7 +2505,12 @@ async function probeShadow(device: GPUDevice): Promise<void> {
   };
   const last = grid.count - 1;
   const box = { min: layout.gridMin[last]!, max: layout.gridMin[last]!.map((v, k) => v + layout.gridSize[last]![k]!) as VDBFrameVec3 };
-  const extinction = (world: VDBFrameVec3) => vdbFrameStackSample(shadowStack, gt.shadowLayout.origins[last]!, R, vdbFrameGridUvw(layout, last, world))[0]!;
+  // K6.4: the spectral grid holds each channel's extinction (?mutate=spectrum: the green channel for every channel)
+  const extinction = (world: VDBFrameVec3): number | VDBFrameVec3 => {
+    const e = vdbFrameStackSample(shadowStack, gt.shadowLayout.origins[last]!, R, vdbFrameGridUvw(layout, last, world));
+    if (!SPECTRAL) return e[0]!;
+    return MUTATE === "spectrum" ? [e[1]!, e[1]!, e[1]!] : [e[0]!, e[1]!, e[2]!];
+  };
   const drawn = { ...map.drawn, origin: map.drawn.origin.map((o) => [...o] as VDBFrameVec3), forward: [...map.drawn.forward] as VDBFrameVec3 };
   const layers = light === "dir" ? drawn.cascadeCount : light === "spot" ? 1 : 6;
   const steps = MUTATE === "map-steps" ? STEPS + 1 : STEPS;
@@ -1884,11 +2537,14 @@ async function probeShadow(device: GPUDevice): Promise<void> {
           ray = { origin: drawn.origin[layer]!, forward: drawn.forward, perspective: drawn.perspective ? 1 : 0, far: drawn.far[layer]! };
         }
         if (MUTATE === "map-far") ray = { ...ray, far: ray.far * 1.01 };
-        const cpu = vdbFrameShadowMapTexel(extinction, origin, direction, box, steps, ray).map;
+        const texel = vdbFrameShadowMapTexel(extinction, origin, direction, box, steps, ray, SPECTRAL);
+        const cpu = texel.map;
         const i = ((layer * SIZE + y) * SIZE + x) * 4;
         const gpu = [mapData[i]!, mapData[i + 1]!, mapData[i + 2]!, mapData[i + 3]!];
         if (cpu[3] > 1e-3) shadowed++;
-        compare(stats, [layer, x, y], gpu, cpu, 2, 2 ** -20);
+        // K6.4: the grey map (the channel mean) and the rgb twin
+        if (rgbData) compare(stats, [layer, x, y], [...gpu, rgbData[i]!, rgbData[i + 1]!, rgbData[i + 2]!, rgbData[i + 3]!], [...cpu, ...texel.spectral!], 2, 2 ** -20);
+        else compare(stats, [layer, x, y], gpu, cpu, 2, 2 ** -20);
       }
   result.stats = stats;
 
@@ -1921,18 +2577,26 @@ async function probeShadow(device: GPUDevice): Promise<void> {
   }
   const gpuRows = await runRowProbe(
     device,
-    vdbVolumeShadowProbeWgsl(light === "point"),
+    vdbVolumeShadowProbeWgsl(light === "point", !!rgbData),
     "vdbVolumeShadowProbeCs",
     map.view,
     map.texture.createView({ dimension: light === "point" ? "cube" : "2d-array" }),
     new Float32Array(rows),
     light === "point" ? "cube" : "2d-array",
+    map.rgbTexture ? map.rgbTexture.createView({ dimension: light === "point" ? "cube" : "2d-array" }) : null,
   );
   const rstats = newStats("|d| ≤ 1e-3 (receiver transmittance vs vdbFrameVolumeShadowLookup on the read-back map; SwiftShader filters f16 texels in f32)");
   let receiverShadowed = 0;
   const viewForCpu = MUTATE === "receiver-far" ? { ...viewCpu, far: viewCpu.far.map((f) => f * 1.01) } : viewCpu;
   points.forEach((p, i) => {
     const depth = MUTATE === "receiver-layer" ? p.depth * 3 : p.depth;
+    if (rgbData) {
+      // K6.4: the rgb receivers on the read-back map and its twin
+      const cpu = vdbFrameVolumeShadowLookupRgb(viewForCpu, p.world, depth, (layer, s, t) => bilinearLayer(mapData, SIZE, layer, s, t), (layer, s, t) => bilinearLayer(rgbData, SIZE, layer, s, t));
+      if (Math.min(...cpu) < 0.999) receiverShadowed++;
+      compareScaled(rstats, [i], [gpuRows[i * 4]!, gpuRows[i * 4 + 1]!, gpuRows[i * 4 + 2]!], cpu, 1e-3, 1);
+      return;
+    }
     const cpu = vdbFrameVolumeShadowLookup(viewForCpu, p.world, depth, (layer, s, t) => bilinearLayer(mapData, SIZE, layer, s, t));
     if (cpu < 0.999) receiverShadowed++;
     compareScaled(rstats, [i], [gpuRows[i * 4]!], [cpu], 1e-3, 1);
@@ -2107,7 +2771,20 @@ async function probeCompile(device: GPUDevice): Promise<void> {
   const fx = await sparseFixture(device);
   const sparse = vdbSparseSourceGpu(fx.pool, { types: ["float"], maxVolumes: 8, label: "k6 compile" });
   sparse.volume({ density: fx.ids.d2, mask: fx.ids.m, albedo: fx.ids.r, emission: fx.ids.e }, { image: fx.images.get(fx.ids.d2)! });
-  const specs = [
+  // K6.4 `&spectral=1`: the spectral variants only (the gathers 'volume' mixture / over and 'frame', the spectral shadow
+  // grid, transmittance, environment grid, shadow map and resolve in both alpha prefix formats the device has)
+  const spectralSpecs = [
+    ...[vdbDenseSource(device, vol), vdbDenseSource(device, plain), sparse].flatMap((s) => [
+      ...(["mixture", "over"] as const).flatMap((mix) => [false, true].map((multi) => vdbFrameGatherSpec(s, { mix, multi, spectral: true }))),
+      ...[false, true].map((multi) => vdbFrameGatherSpec(s, { mix: "mixture", multi, lighting: "frame", spectral: true })),
+      ...[false, true].map((multi) => vdbFrameGridDensitySpec(s, { multi, spectral: true })),
+    ]),
+    vdbFrameTransmittanceSpec({ spectral: true }),
+    vdbFrameEnvironmentGridSpec({ spectral: true }),
+    vdbFrameVolumeShadowSpec({ spectral: true }),
+    ...[false, true].flatMap((temporal) => (["rgba16float", ...(device.features.has("texture-formats-tier1") ? (["rg16float"] as const) : [])] as const).map((alphaFormat) => vdbFrameResolveSpec({ temporal, spectral: true, alphaFormat }))),
+  ];
+  const greySpecs = [
     ...[vdbDenseSource(device, vol), vdbDenseSource(device, plain), sparse].flatMap((s) => [
       ...(["mixture", "over"] as const).flatMap((mix) => [false, true].map((multi) => vdbFrameGatherSpec(s, { mix, multi }))),
       ...[false, true].map((multi) => vdbFrameGatherSpec(s, { mix: "mixture", multi, lighting: "frame" })),
@@ -2139,6 +2816,7 @@ async function probeCompile(device: GPUDevice): Promise<void> {
       vdbFrameGatherSpec(s, { mix: "mixture", multi: true, lighting: "frame", hook: COMPILE_HOOK }),
     ]),
   ];
+  const specs = SPECTRAL ? spectralSpecs : greySpecs;
   const errors: string[] = [];
   // `&only=`: compile the specs whose label contains it (diagnostics); per-spec seconds in result.compileSeconds
   const only = params.get("only");
@@ -2164,8 +2842,8 @@ async function probeCompile(device: GPUDevice): Promise<void> {
   }
   let variants = specs.length;
   for (const depth of ["depth", "r32float"] as const)
-    for (const srgb of [false, true]) {
-      const spec = vdbFrameCompositeSpec({ colorFormat: "rgba16float", depth, srgb });
+    for (const [srgb, spectral] of SPECTRAL ? ([[false, true], [true, true]] as const) : ([[false, false], [true, false]] as const)) {
+      const spec = vdbFrameCompositeSpec({ colorFormat: "rgba16float", depth, srgb, spectral });
       variants++;
       device.pushErrorScope("validation");
       const module = device.createShaderModule({ code: spec.code });
@@ -2197,7 +2875,9 @@ async function main(): Promise<void> {
   if (!adapter) throw new Error("WebGPU: no adapter");
   const info = adapter.info;
   result.adapter = [info?.vendor, info?.architecture, info?.description].filter(Boolean).join(" ");
-  const device = await adapter.requestDevice({ requiredLimits: VDBGridPool.requiredLimits(adapter) });
+  // K6.4 `?tier1=1`: the rg16float alpha prefix (texture-formats-tier1) when the adapter has it
+  const tier1 = params.get("tier1") === "1" && adapter.features.has("texture-formats-tier1");
+  const device = await adapter.requestDevice({ requiredLimits: VDBGridPool.requiredLimits(adapter), ...(tier1 ? { requiredFeatures: ["texture-formats-tier1" as GPUFeatureName] } : {}) });
   device.addEventListener("uncapturederror", (e) => result.uncaptured.push((e as GPUUncapturedErrorEvent).error.message));
   if (SCENE) await runRawScene(device, SCENE, params, result);
   else if (PROBE === "view") await probeView(device);

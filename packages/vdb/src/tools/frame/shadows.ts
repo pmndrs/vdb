@@ -505,11 +505,29 @@ export interface VDBFrameVolumeShadowViewCpu {
  * {@link vdbFrameShadowReceiver}. 1 outside the map or when disabled.
  */
 export function vdbFrameVolumeShadowLookup(view: VDBFrameVolumeShadowViewCpu, world: Vec3, viewDepth: number, sample: (layer: number, s: number, t: number) => Vec4): number {
-  if (!view.enabled) return 1;
+  return vdbFrameVolumeShadowLookupWith(view, world, viewDepth, sample, null) as number;
+}
+
+/**
+ * K6.4: the spectral receivers (`vdbVolumeShadowRgb` / `vdbVolumeShadowCubeRgb`): each channel's transmittance from the
+ * map's rgb twin (`sampleRgb`, the same layer and uv), along the grey texel's first-to-last span.
+ */
+export function vdbFrameVolumeShadowLookupRgb(view: VDBFrameVolumeShadowViewCpu, world: Vec3, viewDepth: number, sample: (layer: number, s: number, t: number) => Vec4, sampleRgb: (layer: number, s: number, t: number) => Vec4): Vec3 {
+  return vdbFrameVolumeShadowLookupWith(view, world, viewDepth, sample, sampleRgb) as Vec3;
+}
+
+function vdbFrameVolumeShadowLookupWith(view: VDBFrameVolumeShadowViewCpu, world: Vec3, viewDepth: number, sample: (layer: number, s: number, t: number) => Vec4, sampleRgb: ((layer: number, s: number, t: number) => Vec4) | null): number | Vec3 {
+  const none = sampleRgb ? ([1, 1, 1] as Vec3) : 1;
+  const rgbAt = (layer: number, s: number, t: number): Vec3 | null => {
+    if (!sampleRgb) return null;
+    const v = sampleRgb(layer, s, t);
+    return [v[0], v[1], v[2]];
+  };
+  if (!view.enabled) return none;
   if (view.kind === 2) {
     const offset = sub(world, view.origin[0]!);
     const f = vdbFrameCubeFaceUv(offset);
-    return vdbFrameShadowReceiver(sample(f.face, f.s, f.t), len(offset), view.far[0]!) as number;
+    return vdbFrameShadowReceiver(sample(f.face, f.s, f.t), len(offset), view.far[0]!, rgbAt(f.face, f.s, f.t));
   }
   let layer = 0;
   let uv: Vec2;
@@ -518,14 +536,14 @@ export function vdbFrameVolumeShadowLookup(view: VDBFrameVolumeShadowViewCpu, wo
     const clip = mul4(view.viewProjection[layer]!, [world[0], world[1], world[2], 1]);
     const tile: Vec2 = [clip[0] * 0.5 + 0.5, 0.5 - clip[1] * 0.5];
     const lastBreak = view.breaks[Math.max(0, Math.min(3, view.cascadeCount - 1))]!;
-    if (!(viewDepth <= lastBreak && tile[0] >= 0 && tile[0] <= 1 && tile[1] >= 0 && tile[1] <= 1)) return 1;
+    if (!(viewDepth <= lastBreak && tile[0] >= 0 && tile[0] <= 1 && tile[1] >= 0 && tile[1] <= 1)) return none;
     const inset = 0.5 / view.size;
     uv = [clamp(tile[0], inset, 1 - inset), clamp(tile[1], inset, 1 - inset)];
   } else {
     const spot = vdbFrameShadowSpotUv(mul4(view.viewProjection[0]!, [world[0], world[1], world[2], 1]));
-    if (!spot.inside) return 1;
+    if (!spot.inside) return none;
     uv = spot.uv;
   }
   const depth = vdbFrameShadowDepth({ origin: view.origin[layer]!, forward: view.forward, perspective: view.perspective ? 1 : 0 }, world);
-  return vdbFrameShadowReceiver(sample(layer, uv[0], uv[1]), depth, view.far[layer]!) as number;
+  return vdbFrameShadowReceiver(sample(layer, uv[0], uv[1]), depth, view.far[layer]!, rgbAt(layer, uv[0], uv[1]));
 }
