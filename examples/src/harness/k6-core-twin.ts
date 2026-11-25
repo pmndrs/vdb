@@ -179,6 +179,8 @@ export interface TwinVolume {
   temperatureRange: [number, number];
   /** K6.4: the extinction scale of each channel (spectral; default 1, 1, 1). */
   extinctionSpectrum?: V3;
+  /** K6.10b: the volume's emission colour (t, temperature) → rgb, a LUT row or a hook's twin (default white). */
+  emissionColor?: ((t: number, temperature: number) => V3) | null;
 }
 
 /** The frame values the gather kernel reads. */
@@ -413,7 +415,7 @@ export function volumeFroxelTwin(frame: TwinFrame, r: TwinVolume, cell: V3, muta
     irradiance = add(irradiance, scale(mul3([l.color[0], l.color[1], l.color[2]], light), spot));
   }
   const lit = scale(mul3(albedo, irradiance), 1 / Math.PI);
-  const radiance = add([Math.max(r.scatterColor[0], lit[0]), Math.max(r.scatterColor[1], lit[1]), Math.max(r.scatterColor[2], lit[2])], emissionAt(r, local, readLod));
+  const radiance = add([Math.max(r.scatterColor[0], lit[0]), Math.max(r.scatterColor[1], lit[1]), Math.max(r.scatterColor[2], lit[2])], emissionAt(r, local, readLod, r.emissionColor ?? null));
   return { radiance, alpha: slice.alpha };
 }
 
@@ -546,7 +548,7 @@ export function volumeFroxelSpectralTwin(frame: TwinFrame, r: TwinVolume, cell: 
     irradiance = add(irradiance, scale(mul3([l.color[0], l.color[1], l.color[2]], light), spot));
   }
   const lit = scale(mul3(albedo, irradiance), 1 / Math.PI);
-  const radiance = add([Math.max(r.scatterColor[0], lit[0]), Math.max(r.scatterColor[1], lit[1]), Math.max(r.scatterColor[2], lit[2])], emissionAt(r, local, readLod));
+  const radiance = add([Math.max(r.scatterColor[0], lit[0]), Math.max(r.scatterColor[1], lit[1]), Math.max(r.scatterColor[2], lit[2])], emissionAt(r, local, readLod, r.emissionColor ?? null));
   return { radiance, alpha: slice.alpha };
 }
 
@@ -579,6 +581,8 @@ export function resolveTwin(o: {
   neighbours: (z: number) => V4[];
   history: ((z: number) => V4 | null) | null;
   blend: number;
+  /** K6.10b: the blend of slice z (a moving camera: the reprojection's motion blend); default `blend`. */
+  blendAt?: (z: number) => number;
   inSlices: (z: number) => boolean;
   mutate?: TwinMutation;
 }): { prefix: V4[]; history: V4[] } {
@@ -598,7 +602,8 @@ export function resolveTwin(o: {
     const n = [...o.neighbours(z)];
     if (z > 0) n.push(o.column[z - 1]!);
     if (z + 1 < D) n.push(o.column[z + 1]!);
-    resolved.push(o.mutate === "temporal-clamp" ? (current.map((c, i) => h[i]! + (c - h[i]!) * o.blend) as V4) : vdbFrameTemporalFroxel(current, h, n, o.blend));
+    const blend = o.blendAt?.(z) ?? o.blend;
+    resolved.push(o.mutate === "temporal-clamp" ? (current.map((c, i) => h[i]! + (c - h[i]!) * blend) as V4) : vdbFrameTemporalFroxel(current, h, n, blend));
   }
   const prefix = vdbFrameScanColumn(resolved, o.mutate === "scan-stop" ? { stop: 0 } : {});
   return { prefix, history: resolved };

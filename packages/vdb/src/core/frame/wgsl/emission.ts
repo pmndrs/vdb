@@ -346,7 +346,8 @@ fn vdbEmissionIrradiance(probes: texture_3d<f32>, smp: sampler, grid: VdbEmissio
  *     fn vdbEmissionIrradiance(probes: texture_3d<f32>, smp: sampler, grid: VdbEmissionGrid, world: vec3f, normal: vec3f) -> vec3f
  *
  * Bind `outputs.emissionProbes.texture` (a `'3d'` view), a filtering sampler (linear, clamp to edge) and
- * `outputs.emissionProbes.grid` (`var<uniform>`). The result is irradiance (his light node's E(n) before the light's
+ * `outputs.emissionProbes.grid` (`var<uniform>`; it also has `STORAGE` usage, for engines that bind foreign buffers only
+ * as storage: `./three` reads it as `array<vec4u>` and unpacks the struct). The result is irradiance (his light node's E(n) before the light's
  * colour × intensity); a Lambert surface adds albedo × E / π. CPU twin: tools/frame `vdbFrameEmissionLookup` +
  * `vdbFrameEmissionIrradiance` (on a stack sampler).
  */

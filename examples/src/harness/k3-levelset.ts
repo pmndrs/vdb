@@ -27,12 +27,16 @@
  * scenes render through `vdbCreatePointPassGpu` (analytic disc: strays judged against the disc). `sprite-probe`:
  * the sprite WGSL in a compute kernel vs the f32 twin. `?mutate=` breaks one twin term (pixel-corner,
  * ray-ortho, normal-view, depth-linear, shade-sign; sprite-half, sprite-min, sprite-w): the gate must fail.
+ * K6.10b `&ortho=1` (core): an orthographic camera with his camera's pose and framing (the pass takes it from the
+ * projection, as demo 17's light depth map); the twins trace orthographic rays. `?mutate=wgsl-*` patches the pass's WGSL
+ * (`wgsl-ls-ortho`: the pass ignores the orthographic flag).
  *
  * Query: `?w=&h=`, `?twin=1`, `?aniso=1` (a rotated, non-uniformly scaled instance transform on top of his placement), `?timing=N` (N shaded frames, median submit-to-done ms; provisional, D25),
  * `?maxSamples=`, `?normalStep=`, `?file=` (another level set or point `.vdb` under /fixtures/).
  * Results: `window.__VDB_K3_LEVELSET__` (e2e/k3-levelset.spec.ts writes PNGs to artifacts/k3/ours-step7/).
  */
 import * as THREE from "three";
+import { installWgslPatch, type VDBWgslPatches } from "./wgsl-patch.js";
 import { Mesh, WebGPURenderer } from "three/webgpu";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { VDBGridNode, VDBLevelSetMaterial, VDBPoints, vdbProxyGeometry, type VDBTslNode } from "@pmndrs/vdb/three";
@@ -161,6 +165,30 @@ const TIMING = Number(params.get("timing") ?? 0);
 const BACKEND: "three" | "core" = params.get("backend") === "core" ? "core" : "three";
 const MUTATE = params.get("mutate") ?? "none";
 const VS_THREE = params.get("vsThree") === "1";
+const ORTHO = params.get("ortho") === "1";
+
+/** K6.10b `?mutate=wgsl-*`: the pass's WGSL patched before it compiles (wgsl-patch.ts). */
+const WGSL_PATCHES: VDBWgslPatches = {
+  "wgsl-ls-ortho": ["vdbLsFrame.cameraWorld, vdbLsFrame.flags.x != 0u)", "vdbLsFrame.cameraWorld, false)"],
+};
+
+/**
+ * K6.10b: an orthographic camera with the perspective camera's pose, framing at `target` what the perspective camera
+ * frames there (half height = distance / projection[5]).
+ */
+function orthographicLike(camera: THREE.PerspectiveCamera, target: THREE.Vector3): THREE.PerspectiveCamera {
+  const position = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  const halfH = position.distanceTo(target) / camera.projectionMatrix.elements[5]!;
+  const halfW = (halfH * W) / H;
+  const ortho = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, 0.01, 2 * position.distanceTo(target) + 1000);
+  ortho.matrixAutoUpdate = false;
+  ortho.matrix.copy(camera.matrixWorld);
+  ortho.matrixWorld.copy(camera.matrixWorld);
+  ortho.matrixWorldInverse.copy(camera.matrixWorld).invert();
+  ortho.updateProjectionMatrix();
+  // the K6.6 core path takes the camera's matrices only (the twins: projectionMatrixInverse, matrixWorld)
+  return ortho as unknown as THREE.PerspectiveCamera;
+}
 result.backend = BACKEND;
 result.mutate = MUTATE;
 /** His examples page background (main.jsx). */
@@ -332,10 +360,14 @@ async function levelSetScene(renderer: WebGPURenderer, device: GPUDevice): Promi
   const id = pool.add(image);
   let info = pool.info(id);
   const manifest = def!.output === "probe" ? null : await loadManifest(def!.name);
-  const camera = hisCamera(manifest);
+  let camera = hisCamera(manifest);
   const placed = manifest?.metadata?.levelSets?.[0]?.matrixWorld;
   const box = worldBox(info.indexBBox.min, info.indexBBox.max, grid.transform.matrix);
   const objectToWorld = placed ? new THREE.Matrix4().fromArray(placed) : hisPlacement(box.min, box.max);
+  if (ORTHO) {
+    if (BACKEND !== "core" || VS_THREE) throw new Error("?ortho=1 renders through the core pass only (backend=core, no vsThree)");
+    camera = orthographicLike(camera, new THREE.Vector3(...box.min).add(new THREE.Vector3(...box.max)).multiplyScalar(0.5).applyMatrix4(objectToWorld));
+  }
   if (params.get("aniso") === "1") {
     // A rotated, non-uniformly scaled instance: the world normal must be W^T times the index gradient.
     objectToWorld.multiply(new THREE.Matrix4().makeRotationAxis(new THREE.Vector3(1, 1, 0).normalize(), 0.6)).multiply(new THREE.Matrix4().makeScale(1, 1.6, 0.7));
@@ -501,7 +533,7 @@ async function coreLevelSetScene(
       const i = y * W + x;
       const n = g.color.subarray(i * 4, i * 4 + 3);
       if (!(Math.hypot(n[0]!, n[1]!, n[2]!) > 0.5)) continue;
-      const ray = levelSetViewRay(levelSetPixelUv([x + 0.5, y + 0.5], [0, 0, W, H]), projectionInverse, cameraWorld, false);
+      const ray = levelSetViewRay(levelSetPixelUv([x + 0.5, y + 0.5], [0, 0, W, H]), projectionInverse, cameraWorld, ORTHO);
       const t = g.color[i * 4 + 3]!;
       gpuNormal.set([n[0]!, n[1]!, n[2]!, 1], i * 4);
       gpuHit.set([ray.origin[0] + ray.dir[0] * t, ray.origin[1] + ray.dir[1] * t, ray.origin[2] + ray.dir[2] * t, 1], i * 4);
@@ -611,7 +643,7 @@ function compareTwin(
       gpuMask[i] = gpuNormal[i * 4 + 3]! > 0.5 ? 1 : 0;
       if (core) {
         const uv = levelSetPixelUv(MUTATE === "pixel-corner" ? [x, y] : [x + 0.5, y + 0.5], [0, 0, W, H]);
-        const ray = levelSetViewRay(uv, projectionInverse, cameraWorld, MUTATE === "ray-ortho");
+        const ray = levelSetViewRay(uv, projectionInverse, cameraWorld, ORTHO !== (MUTATE === "ray-ortho"));
         const s = levelSetSurface(image, ray, info.worldToIndex, viewProjection, {
           sdfToIndex,
           maxSamples: Number(params.get("maxSamples") ?? 512),
@@ -906,7 +938,9 @@ async function main(): Promise<void> {
     log(`sprite probe${MUTATE !== "none" ? ` (mutate ${MUTATE})` : ""}: ${JSON.stringify(result.sprite)}`, result.sprite.over === 0 ? "ok" : "fail");
     return;
   }
+  const checkWgslPatch = installWgslPatch(device, WGSL_PATCHES, MUTATE);
   const display = def.kind === "levelset" ? await levelSetScene(renderer, device) : await pointsScene(renderer, device);
+  checkWgslPatch();
   result.width = W;
   result.height = H;
   result.rgba = toBase64(display);

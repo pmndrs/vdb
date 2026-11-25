@@ -29,7 +29,7 @@
  */
 
 import * as THREE from "three";
-import { CodeNode, Node, type NodeBuilder, type StorageBufferAttribute, type WebGPURenderer } from "three/webgpu";
+import { Node, type StorageBufferAttribute, type WebGPURenderer } from "three/webgpu";
 import * as TSL from "three/tsl";
 import { vdbThreeStorageStandIn, type VDBTslNode } from "../grid-node.js";
 import { getDevice } from "../device.js";
@@ -37,6 +37,7 @@ import { frameShadowCoarseMapSize } from "../../tools/frame/shadows.js";
 import { vdbFrameCheckFilterInputs, vdbFrameCheckLightReset, vdbFrameRenderUpdateType, vdbFrameShadowFilters, vdbFrameSharedLightNode } from "./three-internals.js";
 import type { VDBFrameRenderer } from "./renderer.js";
 import { VDBCoreTextureBinding } from "./core-textures.js";
+import { VDBFrameStructLoaderNode, vdbFrameStructLoaderWgsl, vdbFrameStructWords, type VDBFrameStorageNode } from "./core-structs.js";
 import { VDB_VOLUME_SHADOW_VIEW, vdbVolumeShadowWgsl } from "../../core/frame/wgsl/shadows.js";
 import type { VDBVolumeShadowMap } from "../../core/frame/types.js";
 
@@ -45,7 +46,7 @@ const { code, cubeTexture, dot, positionView, positionWorld, sampler, storage, t
 type N = VDBTslNode;
 type RendererLike = WebGPURenderer & { isWebGPURenderer?: boolean };
 type ShadowLight = THREE.DirectionalLight | THREE.SpotLight | THREE.PointLight;
-type StorageNode = Node & { value: unknown; setName(name: string): unknown; build(builder: NodeBuilder, output?: string): unknown };
+type StorageNode = VDBFrameStorageNode;
 
 const isShadowLight = (light: THREE.Object3D): light is ShadowLight => {
   const l = light as THREE.Light & { isDirectionalLight?: boolean; isSpotLight?: boolean; isPointLight?: boolean };
@@ -74,55 +75,19 @@ const resetLightShadow = (light: ShadowLight): { dispose(): void } | null => {
 };
 
 /** `vec4u` words of the view struct (every field is 16-byte aligned). */
-const VIEW_WORDS = VDB_VOLUME_SHADOW_VIEW.size / 16;
+const VIEW_WORDS = vdbFrameStructWords(VDB_VOLUME_SHADOW_VIEW);
 
 /**
  * WGSL that unpacks the view buffer (bound as `array<vec4u>` at `ref`) into the core's `VdbVolumeShadowView`, generated
  * from the struct's layout, so a field the core adds is unpacked too (a type this cannot unpack throws).
  */
 export function vdbFrameShadowViewLoaderWgsl(fnName: string, ref: string): string {
-  const lines = [`fn ${fnName}() -> VdbVolumeShadowView {`, "  var v: VdbVolumeShadowView;"];
-  for (const f of VDB_VOLUME_SHADOW_VIEW.fields.values()) {
-    for (let e = 0; e < f.count; e++) {
-      const at = (f.offset + e * f.stride) / 16;
-      const lhs = f.count > 1 ? `v.${f.name}[${e}]` : `v.${f.name}`;
-      let rhs: string;
-      if (f.type === "mat4x4f") rhs = `mat4x4f(${[0, 1, 2, 3].map((c) => `bitcast<vec4f>(${ref}[${at + c}])`).join(", ")})`;
-      else if (f.type === "vec4f") rhs = `bitcast<vec4f>(${ref}[${at}])`;
-      else if (f.type === "vec4u") rhs = `${ref}[${at}]`;
-      else throw new Error(`vdbFrameShadowViewLoaderWgsl: VdbVolumeShadowView.${f.name} is ${f.type}; only 16-byte vector and mat4x4f fields unpack`);
-      lines.push(`  ${lhs} = ${rhs};`);
-    }
-  }
-  lines.push("  return v;", "}");
-  return lines.join("\n");
+  return vdbFrameStructLoaderWgsl(VDB_VOLUME_SHADOW_VIEW, fnName, ref);
 }
 
 /** The core's receiver functions and the view struct, one code node shared by every receiver (once per shader). */
 let receiverCode: N | null = null;
 const receiverCodeNode = (): N => (receiverCode ??= code(vdbVolumeShadowWgsl()));
-
-/** One light's view loader: a code node over its storage node, generated per shader with the buffer's reference. */
-class VDBFrameShadowViewNode extends CodeNode {
-  /** Node-valued property: three sets it up and analyzes it as this node's child (the binding). */
-  vdbShadowView: StorageNode;
-  readonly fnName: string;
-
-  constructor(view: StorageNode, fnName: string) {
-    super("", [], "wgsl");
-    this.vdbShadowView = view;
-    this.fnName = fnName;
-  }
-
-  override generate(builder: NodeBuilder): string {
-    const ref = this.vdbShadowView.build(builder, "property");
-    if (typeof ref !== "string") throw new Error("VDBFrameVolumeShadowNode: three built the view storage node to a non-string reference");
-    const text = vdbFrameShadowViewLoaderWgsl(this.fnName, ref);
-    const nodeCode = (builder as unknown as { getCodeFromNode(node: Node, type: string): { code: string } }).getCodeFromNode(this, this.getNodeType(builder));
-    nodeCode.code = text;
-    return text;
-  }
-}
 
 /** The texture and buffer nodes of one light's receivers; made once, their values follow the core. */
 interface EntryNodes {
@@ -131,7 +96,7 @@ interface EntryNodes {
   map: N;
   rgb: N;
   view: StorageNode;
-  loader: VDBFrameShadowViewNode;
+  loader: VDBFrameStructLoaderNode;
   fns: Map<string, (inputs: Record<string, N>) => N>;
 }
 
@@ -312,7 +277,7 @@ export class VDBFrameVolumeShadowReceivers {
       map: make(entry.binding.texture),
       rgb: make(entry.rgbBinding.texture),
       view,
-      loader: new VDBFrameShadowViewNode(view, `vdbFrameShadowView${k}`),
+      loader: new VDBFrameStructLoaderNode(view, VDB_VOLUME_SHADOW_VIEW, `vdbFrameShadowView${k}`),
       fns: new Map(),
     };
     return entry.nodes;

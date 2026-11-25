@@ -7,8 +7,9 @@
  * 1. `new LightsNode().setLights([light]).setupLightsNode(builder)` returns the light node every material shares
  *    for that light (three keeps one per light in a module WeakMap), an `AnalyticLightNode` with a `shadowNode`
  *    field and `disposeShadow()`, which drops the shadow node and bumps the node's `version` (the lights cache key
- *    includes it, so receivers rebuild). His `resetLightShadow`: a new `shadow.filterNode` only takes effect when
- *    the light's shadow node is built again.
+ *    includes it for a `castShadow` light, so receivers rebuild; checked too). His `resetLightShadow`: a new
+ *    `shadow.filterNode` only takes effect when the light's shadow node is built again. K6.8b: the emission light's
+ *    receivers rebuild the same way (the light keeps `castShadow` on and its node bumps `version`).
  * 2. `ShadowNode` / `PointShadowNode` call `shadow.filterNode(inputs)` at build with `{ depthTexture, shadowCoord,
  *    shadow, depthLayer }` (point: `{ depthTexture, bd3D, dp, distance, shadow }`); the default filters are the
  *    `three/tsl` exports `BasicShadowFilter`, `PCFShadowFilter`, `VSMShadowFilter` (by `shadowMap.type`; the
@@ -80,6 +81,13 @@ export function vdbFrameCheckLightReset(): void {
         a.disposeShadow();
         if (!disposed || a.shadowNode !== null || !((a.version ?? 0) > version)) {
           error = mismatch("AnalyticLightNode.disposeShadow() did not drop the shadow node and bump its version (receivers would keep the old shadow)");
+        } else {
+          // K6.8b: the receivers rebuild because the lights cache key holds a castShadow light's node version
+          const lights = new LightsNode() as unknown as { setLights(l: THREE.Light[]): { getCacheKey(force: boolean): number } };
+          const keyed = lights.setLights([light]);
+          const before = keyed.getCacheKey(true);
+          (a as { needsUpdate?: boolean }).needsUpdate = true;
+          if (keyed.getCacheKey(true) === before) error = mismatch("LightsNode's cache key does not follow a castShadow light's node version (receivers would not rebuild)");
         }
       }
     }

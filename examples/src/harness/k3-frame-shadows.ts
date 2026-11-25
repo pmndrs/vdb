@@ -55,7 +55,10 @@ interface Result {
   // shadow case
   entry?: { size: number; cascades: number; breaks: number[]; far: number[]; drawn: number; waiting: number } | null;
   shadowStats?: { groundPixels: number; covered: number; shadowedPixels: number; meanDarkening: number };
-  /** K6.8a `?mutate=`: the frame after the light (or map size) came back vs the first; the shadow while it was away. */
+  /**
+   * K6.8a `?mutate=`: the frame after the light (or map size) came back vs the first; the shadow while it was away. K6.8b
+   * (emission): `awayShadowed` counts the pixels that changed while away; `mapsAway` is 1 when the core had probes then.
+   */
   mutate?: { kind: string; identical: boolean; maxDiff: number; awayShadowed: number; mapsAway: number };
   // emission case
   emitters?: number;
@@ -105,9 +108,11 @@ const BLOB = params.get("emitter") === "blob";
 // K6.8a: `?spectral=1` spectral maps (the receivers' rgb WGSL; per-channel extinction); `?mutate=toggle|resize` after the
 // measured frames: hide the light for some renders (the core frees its map and retires its texture and view buffer) or
 // change the map size, then restore it; the frame after must equal the first and nothing may bind a retired object
-// (K6.10 finding 8)
+// (K6.10 finding 8). K6.8b, the emission case: `?mutate=probes` (the probe resolution halved: the core makes a new probe
+// stack and retires the old one), `?mutate=light` (the emission light hidden: the core releases its probes) or
+// `?mutate=emitter` (the emissive volume hidden: no emitters, then back), each for some renders, then restored.
 const SPECTRAL = params.get("spectral") === "1";
-const MUTATE = params.get("mutate") as "toggle" | "resize" | null;
+const MUTATE = params.get("mutate") as "toggle" | "resize" | "probes" | "light" | "emitter" | null;
 const BACKGROUND = new THREE.Color(CASE === "emission" ? 0x000000 : 0x598eff);
 const SHADOW_OPACITY = 0.5;
 
@@ -655,6 +660,30 @@ async function runEmission(renderer: WebGPURenderer, device: GPUDevice): Promise
     size: light.cascadeSize.slice(0, light.cascadeCount).map((v) => v.toArray()),
     center: light.probeCenter.toArray(),
   };
+
+  // K6.8b (the K6.10 finding-8 class): the probe stack replaced or released while lit receivers (a plain
+  // MeshLambertMaterial: three gives it SHARED refreshes) were built with it, then restored; the frame after must equal the
+  // first, and nothing may bind a stack the core retired (an uncaptured "Destroyed texture … used in a submit")
+  if (MUTATE === "probes" || MUTATE === "light" || MUTATE === "emitter") {
+    const set = (away: boolean) => {
+      if (MUTATE === "probes") light.resolution = away ? Math.max(2, PROBES / 2) : PROBES;
+      else if (MUTATE === "light") light.visible = away ? false : EMIT;
+      else volume.visible = !away;
+    };
+    set(true);
+    // Several renders (each a task: the readback awaits): the core retires the old stack, then destroys it
+    let awayFrame = on;
+    for (let i = 0; i < 4; i++) awayFrame = await frame();
+    const mapsAway = fr.core?.outputs.emissionProbes ? 1 : 0;
+    let awayChanged = 0;
+    for (let i = 0; i < W * H; i++) if (Math.abs(awayFrame[i * 4]! - on[i * 4]!) > 1e-3) awayChanged++;
+    set(false);
+    for (let i = 0; i < 2; i++) await frame();
+    const restored = toDisplay(await frame());
+    let maxDiff = 0;
+    for (let i = 0; i < restored.length; i++) maxDiff = Math.max(maxDiff, Math.abs(restored[i]! - display[i]!));
+    result.mutate = { kind: MUTATE, identical: maxDiff === 0, maxDiff, awayShadowed: awayChanged, mapsAway };
+  }
 
   const groundPoints: (V3 | null)[] = [];
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) groundPoints.push(groundPoint(camera, x, y, groundY, GROUND_HALF - 1));

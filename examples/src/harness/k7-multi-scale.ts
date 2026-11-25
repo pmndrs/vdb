@@ -12,6 +12,7 @@
  * Retire check: a resize between frames, the old view still bound by a dispatch in the next frame's encoder.
  * Results: `window.__VDB_K7_MULTI_SCALE__` (e2e/k7-multi-scale.spec.ts).
  */
+import { installWgslPatch, type VDBWgslPatches } from "./wgsl-patch.js";
 import {
   VDB_FRAME_MULTI_SCALE_PARAMS_BYTES,
   VDB_FRAME_MULTI_SCALE_SAMPLER,
@@ -401,6 +402,17 @@ async function retire(device: GPUDevice, built: Built): Promise<void> {
   log(`retire: ${JSON.stringify(result.retire)}`, errors.length === 0 ? "ok" : "fail");
 }
 
+/**
+ * K6.10b `?mutate=wgsl-*` (fail-before, GPU side; wgsl-patch.ts): csMsLevel's binomial divided by 510; csMsPack's f16
+ * conversion truncating (a ≤ 1 ulp gate alone misses it: the spec bounds the 1-ulp share).
+ */
+const MUTATE = new URLSearchParams(location.search).get("mutate") ?? "none";
+const WGSL_PATCHES: VDBWgslPatches = {
+  "wgsl-ms-level": ["bitcast<u32>(sz / 512.0)", "bitcast<u32>(sz / 510.0)"],
+  "wgsl-ms-pack": ["return h | ((r + 0x00000fffu + ((r >> 13u) & 1u)) >> 13u);", "return h | (r >> 13u);"],
+};
+let checkWgslPatch = (): void => {};
+
 async function main(): Promise<void> {
   root.textContent = "";
   const adapter = await navigator.gpu?.requestAdapter();
@@ -409,6 +421,7 @@ async function main(): Promise<void> {
   result.adapter = [info?.vendor, info?.architecture, info?.description].filter(Boolean).join(" ");
   const device = await adapter.requestDevice();
   device.addEventListener("uncapturederror", (e) => result.uncaptured.push((e as GPUUncapturedErrorEvent).error.message));
+  checkWgslPatch = installWgslPatch(device, WGSL_PATCHES, MUTATE);
 
   const zero = await build(device, { name: "rg-zero", format: "rg16float", textureSize: [37, 24, 50], size: [37, 24, 50], levels: 6, seed: 1 });
   await build(device, { name: "rg-clamp", format: "rg16float", textureSize: [37, 24, 50], size: [37, 24, 50], levels: 6, edge: "clamp", seed: 1 });
@@ -424,6 +437,7 @@ async function main(): Promise<void> {
 }
 
 main()
+  .then(() => checkWgslPatch())
   .catch((e: unknown) => {
     result.error = e instanceof Error ? `${e.message}\n${e.stack ?? ""}` : String(e);
     log(result.error, "fail");

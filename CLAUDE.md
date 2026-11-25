@@ -542,3 +542,26 @@ From v1; details in docs/archive/handoffs/.
   second bunny) and the reference page's `?albedo=r,g,b;r,g,b`; `reference-report.mjs --groups=mix-red1,mix-red2,
   mix-dark1,mix-dark2` (a group's `refExtra` goes onto the reference query).
 - Port 5320 can be held by another repo's Vite (the pathtracer's worktrees use it): `lsof` shows the cwd; pick another.
+- three r187's `LightsNode.customCacheKey` holds a light node's `version` only for a `castShadow` light, so bumping a
+  non-shadow light node's version rebuilds nothing. K6.8b: `VDBFrameEmissionLight.castShadow` is always `true` (an
+  accessor; the light casts no shadow, its node overrides `setup`) and its node sets `needsUpdate = true` when the core
+  makes a new probe stack or grid, which rebuilds the lit receivers at their next render (the internal-1 self-test checks
+  the cache key follows the version). Repro of the class: `k3-frame-shadows ?case=emission&emitter=blob&mutate=probes`
+  (also `light`, `emitter`); before K6.8b `probes` submitted the destroyed stack ("Destroyed texture … emission probes").
+- The emission light's receivers run the core's `vdbEmissionIrradiance` through a `wgslFn`; the core's
+  `outputs.emissionProbes.grid` has `STORAGE` usage for it (read as `array<vec4u>`, unpacked by
+  `three/frame/core-structs.ts` `vdbFrameStructLoaderWgsl`, shared with the volume shadow view). A new struct three must
+  read goes through the same loader (16-byte vector and `mat4x4f` fields only).
+- `depth32float` takes no `writeTexture` / buffer copy: fill a depth texture through a pass that writes
+  `@builtin(frag_depth)` (`depthCompare: 'always'`, no colour targets; exact for f32 in [0, 1]), as k6-core's
+  `?probe=integrate&depthFormat=depth32float` does.
+- k6-core `?probe=gather` dense with `groups=1` gives both volumes the source of volume A (no emission channel): a probe of
+  the emission colour in the gathers needs `groups=2` (dense) or `source=sparse` (`&emissionColor=lut|hook`, K6.10b); a
+  WGSL patch on the colour code then "matches no shader module".
+- Harness WGSL mutations outside k6-core use `examples/src/harness/wgsl-patch.ts` (`installWgslPatch(device, patches,
+  mutate)`): k3-levelset, compute, k3-pyramid, k7-multi-scale. Install it right after `requestDevice` and call the
+  returned check when the run ends (an unmatched patch is an error). Pipelines cached per device (multi-scale, pyramid)
+  are built after the install, so a fresh page always sees the patch.
+- A worktree-isolated agent's Bash refuses a command that mixes `git` with a heredoc, `sed -i` or several other steps
+  ("too complex to verify that it stays inside the worktree"): run `git` on its own line, and edit through a script file
+  in the scratchpad. The lead session's scratchpad is shared: name directories after the task (`k68b-base`, not `base`).

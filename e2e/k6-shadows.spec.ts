@@ -171,3 +171,24 @@ test("K6.5 the emission light (explosion frame 10 and a smooth blob, dense and s
   expect(save("emission-explosion-dense-run2", again, again.rgba!).equals(first!), "two page loads byte-identical").toBe(true);
   expect(errors).toEqual([]);
 });
+
+// K6.8b (the K6.10 finding-8 class for the emission light): its probe stack replaced (`probes`: the resolution halved, a
+// new core texture), released (`light`: the light hidden, the core retires the stack) or emptied (`emitter`: the volume
+// hidden), then restored, with lit receivers (a plain MeshLambertMaterial, SHARED refreshes) built before: no uncaptured
+// error ("Destroyed texture … used in a submit") and the frame after equals the first.
+for (const kind of ["probes", "light", "emitter"] as const) {
+  test(`K6.8b the emission light, probe stack ${kind} away and back: receivers follow the core`, async ({ page }) => {
+    test.setTimeout(900_000);
+    const errors = collectErrors(page);
+    const r = await run(page, `?case=emission&emitter=blob&mutate=${kind}`);
+    expectClean(r);
+    const detail = detailOf(r);
+    expect(r.backend, detail).toMatchObject({ core: true, probes: true });
+    console.log(`[k6-emission] mutate=${kind} on ${r.adapter}: ${JSON.stringify(r.mutate)}`);
+    expect(r.mutate, detail).toMatchObject({ kind, identical: true });
+    // while away: a halved stack still lights (the frame moves); no light or no emitter: the core has no probes / none lit
+    if (kind === "light") expect(r.mutate!.mapsAway, detail).toBe(0);
+    expect(r.mutate!.awayShadowed, detail).toBeGreaterThan(100);
+    expect(errors).toEqual([]);
+  });
+}

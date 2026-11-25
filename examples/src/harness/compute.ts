@@ -10,6 +10,21 @@
  * Results go to `window.__VDB_COMPUTE__` for e2e/compute.spec.ts.
  */
 import { VDBGridPool, vdbApplyValueTransform, vdbDecodeToAtlasGpu, vdbGridStatsGpu } from "@pmndrs/vdb";
+import { installWgslPatch, type VDBWgslPatches } from "./wgsl-patch.js";
+
+/**
+ * K6.10b `?mutate=wgsl-*` (fail-before, GPU side; wgsl-patch.ts): the atlas kernel's trilinear position moved a quarter
+ * voxel, its nearest read rounding down; the stats fast path's histogram bin one up, its sum halved; the dump path's
+ * active flag inverted.
+ */
+const WGSL_PATCHES: VDBWgslPatches = {
+  "wgsl-atlas-trilinear": ["value = vdbSample(&acc, pos);", "value = vdbSample(&acc, pos + vec3f(0.25));"],
+  "wgsl-atlas-nearest": ["vdbReadValue(&acc, vec3i(floor(pos + vec3f(0.5))))", "vdbReadValue(&acc, vec3i(floor(pos)))"],
+  "wgsl-stats-bin": ["let bin = min(u32(norm * f32(bins)), bins - 1u);", "let bin = min(u32(norm * f32(bins)) + 1u, bins - 1u);"],
+  "wgsl-stats-sum": ["let scaled = u32(norm * CS_SUM_SCALE);", "let scaled = u32(norm * CS_SUM_SCALE * 0.5);"],
+  "wgsl-stats-dump": ["csDumpIsOn[idx] = select(0u, 1u, on);", "csDumpIsOn[idx] = select(1u, 0u, on);"],
+};
+const MUTATE = new URLSearchParams(location.search).get("mutate") ?? "none";
 import type { VDBAtlasFilter, VDBAtlasFormat, VDBDecodeToAtlasOptions } from "@pmndrs/vdb";
 import { NvdbFile, atlasFromRaw, vdbBuildFromDense, vdbDecodeToAtlasCpu, vdbGridStatsCpu, getDim, vdbReadValueF32 } from "../../../packages/vdb/src/tools/internal.js";
 
@@ -119,6 +134,7 @@ async function run(): Promise<ComputeReport> {
   report.adapter = [adapter.info?.vendor, adapter.info?.architecture].filter(Boolean).join(" ");
   const device = await adapter.requestDevice({ requiredLimits: VDBGridPool.requiredLimits(adapter) });
   device.addEventListener("uncapturederror", (e) => report.uncaptured.push((e as GPUUncapturedErrorEvent).error.message));
+  const checkWgslPatch = installWgslPatch(device, WGSL_PATCHES, MUTATE);
 
   const loaded = await Promise.all(
     FIXTURES.map(async (name) => {
@@ -287,6 +303,7 @@ async function run(): Promise<ComputeReport> {
   await device.queue.onSubmittedWorkDone();
   if (pool.lastError) report.lastError = pool.lastError.message;
   pool.dispose();
+  checkWgslPatch();
   device.destroy();
   return { ...report, done: true };
 }

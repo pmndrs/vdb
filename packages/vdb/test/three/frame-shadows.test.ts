@@ -13,6 +13,8 @@ import { VDBFrameEmissionLight, VDBFrameEmissionLightNode, VDBFrameRenderer, vdb
 import { vdbFrameRegisterLightNode, vdbFrameRenderId, vdbFrameResetInternalsCache, vdbFrameCheckFilterInputs, vdbFramePrecompiling } from "../../src/three/frame/three-internals.js";
 import type { VDBVolumeShadowMap } from "../../src/core/frame/types.js";
 import { vdbFrameShadowViewLoaderWgsl } from "../../src/three/frame/volume-shadows.js";
+import { vdbFrameStructLoaderWgsl } from "../../src/three/frame/core-structs.js";
+import { VDB_EMISSION_GRID } from "../../src/core/frame/wgsl/emission.js";
 
 const fakeRenderer = () => ({ isWebGPURenderer: true, shadowMap: { type: THREE.PCFShadowMap, enabled: true } }) as never;
 
@@ -44,6 +46,19 @@ describe("K3.6 settings and three internals", () => {
       expect(() => vdbFrameCheckLightReset()).toThrow(/VDB_ENGINE_MISMATCH/);
     } finally {
       proto.setupLightsNode = real;
+    }
+  });
+
+  it("K6.8b fail-before: a lights cache key that ignores a castShadow light's node version (receivers never rebuild) throws", () => {
+    const proto = LightsNode.prototype as unknown as { customCacheKey: () => number };
+    const real = proto.customCacheKey;
+    proto.customCacheKey = function (this: { _lights: THREE.Light[] }) {
+      return this._lights.reduce((h, l) => h * 31 + l.id, 7);
+    };
+    try {
+      expect(() => vdbFrameCheckLightReset()).toThrow(/VDB_ENGINE_MISMATCH.*cache key/);
+    } finally {
+      proto.customCacheKey = real;
     }
   });
 
@@ -165,6 +180,29 @@ describe("K3.6 emission light host side", () => {
     expect(light).toMatchObject({ intensity: 25, resolution: 32, range: 3, cascades: 1, distance: 512, steps: 24, isLight: true });
     expect(light.getSteps()).toBe(24);
     light.dispose();
+  });
+
+  it("K6.8b: castShadow stays on (three rebuilds a castShadow light's receivers when its node version moves)", () => {
+    const light = new VDBFrameEmissionLight();
+    expect(light.castShadow).toBe(true);
+    light.castShadow = false;
+    expect(light.castShadow).toBe(true);
+    const copy = new VDBFrameEmissionLight().copy(new THREE.PointLight() as never);
+    expect(copy.castShadow).toBe(true);
+    light.dispose();
+  });
+
+  it("K6.8b: the grid loader unpacks every VdbEmissionGrid field from its vec4u words (the core's struct layout)", () => {
+    const wgsl = vdbFrameStructLoaderWgsl(VDB_EMISSION_GRID, "load", "r");
+    const words = [...wgsl.matchAll(/r\[(\d+)\]/g)].map((m) => Number(m[1]));
+    // 22 words, each read once: 4 gridMin, 4 gridSize, 12 origins, center, info
+    expect(VDB_EMISSION_GRID.size / 16).toBe(22);
+    expect(words.sort((a, b) => a - b)).toEqual(Array.from({ length: 22 }, (_, i) => i));
+    expect(wgsl).toContain("fn load() -> VdbEmissionGrid {");
+    expect(wgsl).toContain("v.gridSize[0] = bitcast<vec4f>(r[4]);");
+    expect(wgsl).toContain("v.origin[11] = bitcast<vec4f>(r[19]);");
+    expect(wgsl).toContain("v.center = bitcast<vec4f>(r[20]);");
+    expect(wgsl).toContain("v.info = bitcast<vec4f>(r[21]);");
   });
 
   it("updateProbes copies the core's probe grid of the scene's first volume's renderer (none: no probes)", () => {

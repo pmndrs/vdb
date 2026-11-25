@@ -127,6 +127,7 @@ export {
   vdbSrgbOetf,
   vdbSrgbEotf,
   vdbFrameSrgbBlend,
+  vdbFrameSceneViewDepth,
   vdbFrameHenyeyGreensteinColor,
   vdbFramePhaseColor,
   vdbFramePhaseWeightScaled,

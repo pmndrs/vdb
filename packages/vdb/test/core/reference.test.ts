@@ -13,6 +13,7 @@ import {
   vdbReferencePackUniforms,
   vdbReferenceTableLayout,
   vdbReferenceWgsl,
+  vdbCreateReferenceRendererGpu,
   type VDBReferenceSourceGpu,
 } from "../../src/core/internal.js";
 import { VDB_REFERENCE_MAX_HEMISPHERES, VDB_REFERENCE_MAX_LIGHTS, VDB_REFERENCE_MAX_VOLUMES, vdbRefInvert4, vdbReferenceBlackbodyTable, vdbReferenceMiePhaseTable, type VDBReferenceMajorantGrid } from "../../src/tools/internal.js";
@@ -193,5 +194,64 @@ describe("K6.R reference kernel WGSL", () => {
     expect(f[vol(0) + 35]).toBeCloseTo(Math.log(bb.maxTemperature), 5);
     const l = O.lights / 4;
     expect(Array.from(f.subarray(l + 12, l + 16))).toEqual([2, 30, 2, 0]);
+  });
+});
+
+describe("K6.10b reference renderer setScene", () => {
+  /** A device with just what the renderer calls; textures record destroy(). */
+  function fakeDevice() {
+    const textures: { label: string; destroyed: boolean }[] = [];
+    const device = {
+      limits: { maxTextureDimension3D: 2048 },
+      queue: { writeBuffer() {}, writeTexture() {}, submit() {} },
+      createBuffer: () => ({ destroy() {} }),
+      createTexture(d: GPUTextureDescriptor) {
+        const t = {
+          label: d.label ?? "",
+          destroyed: false,
+          destroy() {
+            if (this.destroyed) throw new Error("destroyed twice");
+            this.destroyed = true;
+          },
+          createView: () => ({}),
+        };
+        textures.push(t);
+        return t;
+      },
+      createBindGroupLayout: () => ({}),
+      createBindGroup: () => ({}),
+      createPipelineLayout: () => ({}),
+      createShaderModule: () => ({ getCompilationInfo: async () => ({ messages: [] }) }),
+      createComputePipelineAsync: async () => ({}),
+      pushErrorScope() {},
+      popErrorScope: async () => null,
+    };
+    return { device: device as unknown as GPUDevice, textures };
+  }
+  const scene = {
+    camera: { cameraToWorld: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 9, 1], projectionInverse: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] },
+    volumes: [],
+    lights: [],
+    environment: { uniform: [0.1, 0.2, 0.3], equirect: { width: 2, height: 1, data: new Float32Array(8) } },
+  } as never;
+
+  it("retires the textures it replaces to a later task (fail-before: destroyed at once); dispose destroys the rest once", async () => {
+    const { device, textures } = fakeDevice();
+    const ref = await vdbCreateReferenceRendererGpu(device, { source: stubSource, width: 4, height: 3 });
+    const first = textures.filter((t) => /environment|majorants/.test(t.label));
+    // the environment, the tables (same label) and the majorants
+    expect(first).toHaveLength(3);
+    ref.setScene(scene, { spp: 1 });
+    // a render recorded before setScene in the host's encoder may still name them until the host submits
+    expect(first.map((t) => t.destroyed)).toEqual([false, false, false]);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(first.map((t) => t.destroyed)).toEqual([true, true, true]);
+    const second = textures.filter((t) => /environment|majorants/.test(t.label) && !first.includes(t));
+    expect(second).toHaveLength(3);
+    ref.setScene(scene, { spp: 1 });
+    // pending retired textures and the live ones: all destroyed by dispose, none twice (the fake throws)
+    ref.dispose();
+    expect(textures.every((t) => t.destroyed)).toBe(true);
+    await new Promise((r) => setTimeout(r, 0));
   });
 });

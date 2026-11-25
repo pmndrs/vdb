@@ -88,6 +88,7 @@ import {
   vdbFrameSliceCoord,
   vdbFrameSliceDepth,
   vdbFrameSrgbBlend,
+  vdbFrameSceneViewDepth,
   vdbFrameViewPosition,
   vdbFrameVolumeSlices,
   vdbHalfToFloat,
@@ -219,6 +220,8 @@ interface Result {
   probe?: string;
   mutate?: string;
   stats?: Stats;
+  /** K6.10b `?probe=resolve&move=1`: froxels with a history, those whose blend is below 1, and of those off a texel centre. */
+  motion?: { valid: number; partial: number; offCentre: number };
   /** `?probe=gather`: `render()` (the core composite pass) vs its twin. */
   renderStats?: Stats;
   /** `?probe=gather&swap=1`: builds in the second identical update. */
@@ -735,6 +738,18 @@ const WGSL_PATCHES: Record<string, [string, string]> = {
   "wgsl-gather-extinction": ["let stepTransmittance = exp(-", "let stepTransmittance = exp(-1.25 * "],
   "wgsl-gather-phase": ["dot(rayDirection, lightDirection)", "-dot(rayDirection, lightDirection)"],
   "wgsl-resolve-order": ["radiance += transmittance * froxel.rgb;", "radiance += transmittance * (1.0 - alpha) * froxel.rgb;"],
+  // K6.10b, the composite: the sRGB blend skips the scene colour's OETF; the scene depth ignores the orthographic or
+  // the reversed flag; the depth read takes the pixel to the right
+  // K6.10b, the resolve under camera motion: the reprojection ignores the camera's turn in x, y; the motion blend's gain halves
+  "wgsl-resolve-reproject": ["let previousUv = previousClip.xy / previousClip.w * 0.5 + 0.5;", "let previousUv = uv;"],
+  "wgsl-resolve-motion": ["clamp(motion * 4.0, 0.0, 1.0)", "clamp(motion * 2.0, 0.0, 1.0)"],
+  // K6.10b, the emission colour in the gathers: the LUT's lower texel read with its channels turned; the hook's result too
+  "wgsl-emission-lut": ["textureLoad(vdbFrameEmissionLut, vec2u(column, row), 0).rgb", "textureLoad(vdbFrameEmissionLut, vec2u(column, row), 0).brg"],
+  "wgsl-emission-hook": ["return vdbUserEmissionColor(t, temperature);", "return vdbUserEmissionColor(t, temperature).bgr;"],
+  "wgsl-composite-srgb": ["var backgroundColor = vdbFrameSrgbOetfColor(sceneColor.rgb);", "var backgroundColor = sceneColor.rgb;"],
+  "wgsl-composite-ortho": ["let orthographic = (vdbFrame.flags.z & 2u) != 0u;", "let orthographic = false;"],
+  "wgsl-composite-reversed": ["let reversed = (vdbFrame.flags.z & 1u) != 0u;", "let reversed = false;"],
+  "wgsl-composite-depth": ["textureLoad(vdbFrameSceneDepth, pixel, 0)", "textureLoad(vdbFrameSceneDepth, pixel + vec2i(1, 0), 0)"],
 };
 
 /** Installs the `?mutate=wgsl-*` patch; the returned check throws when it matched no module. */
@@ -828,11 +843,23 @@ function occluderTwin(o: SynthOccluders, counter: { n: number }): (index: number
   };
 }
 
+/** K6.10b: a synthetic emission LUT row for the gather probe (256 × rgb, f32 as the core's rgba32float LUT; not white). */
+const GATHER_LUT = Float32Array.from({ length: 256 * 3 }, (_, i) => {
+  const x = Math.floor(i / 3) / 255;
+  const c = i % 3;
+  return c === 0 ? 0.2 + 0.8 * x : c === 1 ? 1 - 0.7 * x : 0.3 + 0.5 * Math.sin(x * 9) ** 2;
+});
+/** K6.10b: the gather probe's user hook and its twin. */
+const GATHER_HOOK = "fn vdbUserEmissionColor(t: f32, temperature: f32) -> vec3f {\n  return vec3f(1.0 - 0.6 * t, 0.25 + t, temperature / 4000.0);\n}\n";
+const gatherHookTwin = (t: number, temperature: number): VDBFrameVec3 => [1 - 0.6 * t, 0.25 + t, temperature / 4000];
+
 async function probeGather(device: GPUDevice): Promise<void> {
   const mix = (params.get("mix") ?? "mixture") as "mixture" | "over";
   const groups = Number(params.get("groups") ?? 1);
   const mips = params.get("mips") !== "0";
   const kind = params.get("source") === "sparse" ? "sparse" : "dense";
+  // K6.10b `&emissionColor=lut|hook`: volume B's emission colour is a synthetic LUT row or a user WGSL hook (white before)
+  const emissionColorKind = params.get("emissionColor");
   const [GW, GH, GD] = [24, 16, 12];
   const restore = patchShaders(device);
   const scene = await probeScene(device, { kind, groups, mips });
@@ -877,9 +904,12 @@ async function probeGather(device: GPUDevice): Promise<void> {
     wrap3D: "mirror",
     offset3D: [0.1, 0, -0.05],
     hdda: true,
+    ...(emissionColorKind === "lut" ? { emissionColor: { lut: GATHER_LUT } } : emissionColorKind === "hook" ? { emissionColor: { wgsl: GATHER_HOOK } } : {}),
   };
   const a = renderer.addVolume(scene.slots[0]!, pA);
   const b = renderer.addVolume(scene.slots[1]!, pB);
+  // a hook draws white until it validated (asynchronously)
+  if (emissionColorKind === "hook") await renderer.prepare();
   const eyeWorld = lookAt([3.2, 1.6, 4.4], [0.2, 0, 0]);
   const view = vdbMat4Invert(eyeWorld);
   const projection = perspective(0.75, GW / GH, 0.1, 100);
@@ -923,6 +953,8 @@ async function probeGather(device: GPUDevice): Promise<void> {
     ...twinRecord(h, sampler, c, vdbFrameFroxelRect(c.localToView, projection, GW, GH)!, vdbFrameVolumeSlices(c.viewNear, c.viewFar, range, GD), p.phaseG ?? 0.8, ms),
     // K6.4: the renderer's spectrum packing (his getFrameExtinctionSpectrum)
     extinctionSpectrum: vdbFrameExtinctionSpectrum([...p.extinctionScale], p.angstromExponent),
+    // K6.10b: B's emission colour (the LUT row's f32 texels; the hook's maths)
+    emissionColor: h === b && MUTATE !== "emission-color" ? (emissionColorKind === "lut" ? (_t: number, temperature: number) => vdbFrameEmissionLutColor(GATHER_LUT, temperature) : emissionColorKind === "hook" ? gatherHookTwin : null) : null,
   }));
   // record order = source-group order: A's source first (one group: add order)
   const ordered = records;
@@ -2058,7 +2090,11 @@ async function probeIntegrateSpectral(device: GPUDevice): Promise<void> {
 
 async function probeResolve(device: GPUDevice): Promise<void> {
   if (SPECTRAL) return probeResolveSpectral(device);
-  const temporal = params.get("temporal") === "1";
+  // K6.10b `&move=1` (temporal): the camera moved a little since the history (a small turn and a step back), so the
+  // reprojection lands between history texels (hardware trilinear; twin vdbFrameTexture3DLinear) with a per-froxel
+  // motion blend below 1
+  const moving = params.get("move") === "1";
+  const temporal = params.get("temporal") === "1" || moving;
   const [W, H, D] = [20, 14, 16];
   const r = rng(11);
   const area = [3, 2, 17, 12];
@@ -2087,12 +2123,13 @@ async function probeResolve(device: GPUDevice): Promise<void> {
   const projection = perspective(0.8, W / H, 0.2, 50);
   const camera = lookAt([0.5, 0.3, 3], [0, 0, 0]);
   const view = vdbMat4Invert(camera);
+  const previousView = moving ? vdbMat4Invert(lookAt([0.5, 0.3, 3.01], [0.02, 0.012, 0])) : view;
   const range: [number, number] = [0.5, 30];
   const blend = 0.2;
   const { frame, lights } = frameUniforms(device, {
     cameraWorld: camera,
     projectionInverse: vdbMat4Invert(projection),
-    previousView: view,
+    previousView,
     previousProjection: projection,
     grid: [W, H, D, vdbFrameAtlasLayout(W, H, D).columns],
     range: [range[0], range[1], range[0], range[1]],
@@ -2137,10 +2174,14 @@ async function probeResolve(device: GPUDevice): Promise<void> {
     return [arr[i]!, arr[i + 1]!, arr[i + 2]!, arr[i + 3]!];
   };
   const projectionInverse = vdbMat4Invert(projection);
-  const stats = newStats("2 f16 ulp per boundary of the prefix (and of history′ with temporal)");
+  const stats = newStats(`2 f16 ulp per boundary of the prefix (and of history′ with temporal${moving ? "; a moving camera" : ""})`);
+  const historyTexture = { data: history, dimensions: [W, H, D] as V3, channels: 4 };
+  // K6.10b: froxels with a history whose blend is between the temporal blend and 1 (the history counts, off a texel centre)
+  const motion = { valid: 0, partial: 0, offCentre: 0 };
   for (let y = 0; y < H; y++)
     for (let x = 0; x < W; x++) {
       const inRect = x >= area[0]! && x < area[2]! && y >= area[1]! && y < area[3]!;
+      const blends: number[] = [];
       let expected: { prefix: VDBFrameVec4[]; history: VDBFrameVec4[] };
       if (!inRect) expected = { prefix: Array.from({ length: D + 1 }, () => [0, 0, 0, 0] as VDBFrameVec4), history: Array.from({ length: D }, () => [0, 0, 0, 0] as VDBFrameVec4) };
       else {
@@ -2153,13 +2194,23 @@ async function probeResolve(device: GPUDevice): Promise<void> {
                 const uv: [number, number] = [(x + 0.5) / W, (y + 0.5) / H];
                 const viewP = vdbFrameViewPosition(projectionInverse, uv, vdbFrameSliceDepth(range, (z + 0.5) / D));
                 const w = [0, 1, 2].map((k) => camera[k]! * viewP[0] + camera[4 + k]! * viewP[1] + camera[8 + k]! * viewP[2] + camera[12 + k]!) as VDBFrameVec3;
-                const rp = vdbFrameReproject(w, view, projection, range, [W, H, D], { uv, slice: z }, blend);
+                const rp = vdbFrameReproject(w, previousView, projection, range, [W, H, D], { uv, slice: z }, blend);
                 if (!rp) return null;
+                blends[z] = rp.blend;
                 // static camera: the reprojection lands on the texel centre
-                return at(history, Math.min(W - 1, Math.max(0, Math.round(rp.uv[0] * W - 0.5))), Math.min(H - 1, Math.max(0, Math.round(rp.uv[1] * H - 0.5))), Math.min(D - 1, Math.max(0, Math.round(rp.slice))));
+                if (!moving) return at(history, Math.min(W - 1, Math.max(0, Math.round(rp.uv[0] * W - 0.5))), Math.min(H - 1, Math.max(0, Math.round(rp.uv[1] * H - 0.5))), Math.min(D - 1, Math.max(0, Math.round(rp.slice))));
+                // the kernel's clamps (half a texel inside in x, y; the slice to [0, D − 1]), then hardware trilinear
+                const p: V3 = [Math.min(Math.max(rp.uv[0] * W, 0.5), W - 0.5), Math.min(Math.max(rp.uv[1] * H, 0.5), H - 0.5), Math.min(Math.max(rp.slice, 0), D - 1) + 0.5];
+                if (z >= slices[0]! && z < slices[1]!) {
+                  motion.valid++;
+                  if (rp.blend < 1 - 1e-3) motion.partial++;
+                  if (rp.blend < 1 - 1e-3 && p.some((c) => Math.abs(c - Math.floor(c) - 0.5) > 0.02)) motion.offCentre++;
+                }
+                return vdbFrameTexture3DLinear(historyTexture, p) as VDBFrameVec4;
               }
             : null,
           blend,
+          blendAt: (z) => blends[z] ?? blend,
           inSlices: (z) => z >= slices[0]! && z < slices[1]!,
           mutate: MUTATE,
         });
@@ -2168,10 +2219,24 @@ async function probeResolve(device: GPUDevice): Promise<void> {
       if (histOut) for (let z = 0; z < D; z++) compare(stats, [x, y, z, -1], at(histOut, x, y, z), inRect ? expected.history[z]! : [0, 0, 0, 0]);
     }
   result.stats = stats;
+  if (moving) result.motion = motion;
 }
 
+/**
+ * `?probe=integrate`: the composite pass on a synthetic prefix and scene depth vs `vdbFrameSliceCoord` +
+ * `vdbFrameIntegratePrefix`. K6.10b: `&srgb=1` the grey sRGB composite over a scene colour (`vdbFrameSrgbBlend`; the
+ * target holds the scene, no hardware blending); `&depthMode=perspective|ortho|reversed|ortho-reversed` the scene depth's
+ * projection (`flags.z`: 1 reversed, 2 orthographic; twin `vdbFrameSceneViewDepth`); `&depthFormat=depth32float` the
+ * depth read as a `texture_depth_2d` (written by a frag_depth pass: depth formats take no buffer copies).
+ */
 async function probeIntegrate(device: GPUDevice): Promise<void> {
   if (SPECTRAL) return probeIntegrateSpectral(device);
+  const srgb = params.get("srgb") === "1";
+  const depthMode = params.get("depthMode") ?? "perspective";
+  if (!["perspective", "ortho", "reversed", "ortho-reversed"].includes(depthMode)) throw new Error(`unknown depthMode ${depthMode}`);
+  const reversed = depthMode.endsWith("reversed");
+  const orthographic = depthMode.startsWith("ortho");
+  const depthFormat = params.get("depthFormat") === "depth32float" ? "depth32float" : "r32float";
   const [W, H, D] = [40, 28, 10];
   const r = rng(23);
   const range: [number, number] = [1, 80];
@@ -2191,31 +2256,68 @@ async function probeIntegrate(device: GPUDevice): Promise<void> {
   const viewDepths = new Float64Array(W * H);
   for (let i = 0; i < W * H; i++) {
     if (i % 17 === 0) {
-      depthValues[i] = 1;
+      depthValues[i] = reversed ? 0 : 1;
       viewDepths[i] = 1e20;
       continue;
     }
+    // three's viewZTo*Depth of the view depth z (viewZ = −z), stored as f32; the twin reads the f32 back
     const z = 0.5 + r() * 100;
-    depthValues[i] = (far * (z - near)) / (z * (far - near));
-    const d = depthValues[i]!;
-    viewDepths[i] = -((near * far) / ((far - near) * d - far));
+    if (orthographic) depthValues[i] = reversed ? (far - z) / (far - near) : (z - near) / (far - near);
+    else depthValues[i] = reversed ? (near * (far - z)) / (z * (far - near)) : (far * (z - near)) / (z * (far - near));
+    viewDepths[i] = vdbFrameSceneViewDepth(depthValues[i]!, near, far, { reversed, orthographic });
   }
+  // the scene colour under an sRGB composite (its own stream: the default probe's data stay as they were)
+  const rs = rng(31);
+  const sceneValues = new Float64Array(W * H * 4);
+  for (let i = 0; i < W * H * 4; i++) sceneValues[i] = roundHalf(i % 4 === 3 ? 0.5 + rs() * 0.5 : rs());
   const { frame, lights } = frameUniforms(device, {
     grid: [W, H, D, 1],
     range: [range[0], range[1], range[0], range[1]],
-    flags: [16, 0, 0, 0],
+    flags: [16, 0, (reversed ? 1 : 0) | (orthographic ? 2 : 0), 0],
     screen: [W, H, 1, 0],
     camera: [near, far, 0, 0],
   });
   const prefixTex = device.createTexture({ size: [W, H, D + 1], dimension: "3d", format: "rgba16float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
   writeHalfTexture(device, prefixTex, [W, H, D + 1], prefix);
-  const depthTex = device.createTexture({ size: [W, H], format: "r32float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
-  device.queue.writeTexture({ texture: depthTex }, depthValues, { bytesPerRow: W * 4 }, [W, H]);
-  const color = device.createTexture({ size: [W, H], format: "rgba16float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
-  const built = renderPipeline(device, vdbFrameCompositeSpec({ colorFormat: "rgba16float", depth: "r32float", srgb: false }));
+  const depthR32 = device.createTexture({ size: [W, H], format: "r32float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+  device.queue.writeTexture({ texture: depthR32 }, depthValues, { bytesPerRow: W * 4 }, [W, H]);
+  let depthTex = depthR32;
+  if (depthFormat === "depth32float") {
+    // depth32float takes no buffer copy: a pass writes each texel's value through frag_depth (exact for f32 in [0, 1])
+    depthTex = device.createTexture({ size: [W, H], format: "depth32float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT });
+    const module = device.createShaderModule({
+      code: `@group(0) @binding(0) var src: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  let c = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+  return vec4f(c * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4f) -> @builtin(frag_depth) f32 {
+  return textureLoad(src, vec2i(p.xy), 0).r;
+}`,
+    });
+    const pipeline = device.createRenderPipeline({
+      layout: "auto",
+      vertex: { module, entryPoint: "vs" },
+      fragment: { module, entryPoint: "fs", targets: [] },
+      depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "always" },
+    });
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginRenderPass({ colorAttachments: [], depthStencilAttachment: { view: depthTex.createView(), depthClearValue: 0.5, depthLoadOp: "clear", depthStoreOp: "store" } });
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: depthR32.createView() }] }));
+    pass.draw(3);
+    pass.end();
+    device.queue.submit([enc.finish()]);
+  }
+  const sceneTex = device.createTexture({ size: [W, H], format: "rgba16float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+  writeHalfTexture(device, sceneTex, [W, H, 1], sceneValues);
+  const color = device.createTexture({ size: [W, H], format: "rgba16float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST });
+  // sRGB: the pass writes the blended colour (no hardware blending) over the scene colour; premultiplied: blended over 0
+  if (srgb) writeHalfTexture(device, color, [W, H, 1], sceneValues);
+  const built = renderPipeline(device, vdbFrameCompositeSpec({ colorFormat: "rgba16float", depth: depthFormat === "depth32float" ? "depth" : "r32float", srgb }));
   const sampler = device.createSampler({ magFilter: "linear", minFilter: "linear" });
   const enc = device.createCommandEncoder();
-  const pass = enc.beginRenderPass({ colorAttachments: [{ view: color.createView(), loadOp: "clear", clearValue: [0, 0, 0, 0], storeOp: "store" }] });
+  const pass = enc.beginRenderPass({ colorAttachments: [{ view: color.createView(), loadOp: srgb ? "load" : "clear", clearValue: [0, 0, 0, 0], storeOp: "store" }] });
   pass.setPipeline(built.pipeline);
   pass.setBindGroup(0, device.createBindGroup({ layout: built.layouts[0]!, entries: [{ binding: 0, resource: { buffer: frame } }, { binding: 1, resource: { buffer: lights } }, { binding: 2, resource: sampler }, envEntry(device), mieEntry(device)] }));
   pass.setBindGroup(
@@ -2226,6 +2328,7 @@ async function probeIntegrate(device: GPUDevice): Promise<void> {
         { binding: 0, resource: prefixTex.createView() },
         { binding: 1, resource: sampler },
         { binding: 2, resource: depthTex.createView() },
+        ...(srgb ? [{ binding: 3, resource: sceneTex.createView() }] : []),
       ],
     }),
   );
@@ -2233,7 +2336,8 @@ async function probeIntegrate(device: GPUDevice): Promise<void> {
   pass.end();
   device.queue.submit([enc.finish()]);
   const out = halves(await readTexture(device, color, [W, H, 1], 8));
-  const stats = newStats("2 f16 ulp (rgba16float target; froxel grid = screen, so taps sit on texel centres)");
+  const what = [srgb ? "grey sRGB composite over the scene colour" : "premultiplied", depthMode, depthFormat].join(", ");
+  const stats = newStats(`2 f16 ulp (rgba16float target; froxel grid = screen, so taps sit on texel centres; ${what})`);
   for (let py = 0; py < H; py++)
     for (let x = 0; x < W; x++) {
       const y = H - 1 - py; // texel y is bottom-up; pixel rows top-down
@@ -2243,7 +2347,14 @@ async function probeIntegrate(device: GPUDevice): Promise<void> {
         return [prefix[j]!, prefix[j + 1]!, prefix[j + 2]!, prefix[j + 3]!];
       }, viewDepths[i]!, range, D, MUTATE);
       const alpha = cpu[3];
-      compare(stats, [x, py], [out[i * 4]!, out[i * 4 + 1]!, out[i * 4 + 2]!, out[i * 4 + 3]!], alpha > 0 ? cpu : [0, 0, 0, 0]);
+      let expected: VDBFrameVec4;
+      if (!srgb) expected = alpha > 0 ? cpu : [0, 0, 0, 0];
+      else {
+        const scene: VDBFrameVec4 = [sceneValues[i * 4]!, sceneValues[i * 4 + 1]!, sceneValues[i * 4 + 2]!, sceneValues[i * 4 + 3]!];
+        // the pass discards where nothing is in front (T = 1): the scene colour stays
+        expected = alpha > 0 ? [...vdbFrameSrgbBlend([scene[0], scene[1], scene[2]], [cpu[0], cpu[1], cpu[2]], alpha), alpha + scene[3] * (1 - alpha)] : scene;
+      }
+      compare(stats, [x, py], [out[i * 4]!, out[i * 4 + 1]!, out[i * 4 + 2]!, out[i * 4 + 3]!], expected);
     }
   result.stats = stats;
 }
