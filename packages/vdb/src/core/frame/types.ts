@@ -94,7 +94,10 @@ export interface VDBVolumeShadowMap {
   readonly rgbTexture: GPUTexture | null;
   readonly layers: number;
   readonly size: number;
-  /** The drawn view as a uniform buffer (`VdbVolumeShadowView`, rewritten each update). */
+  /**
+   * The drawn view as a uniform buffer (`VdbVolumeShadowView`, rewritten each update). Its usage also has `STORAGE`
+   * (K6.8a: `./three` binds it read-only as `array<vec4u>`).
+   */
   readonly view: GPUBuffer;
   readonly drawn: VDBVolumeShadowDrawn;
   /** False when the light is not in this frame or no caster exists: receivers read 1. */

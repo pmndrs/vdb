@@ -478,7 +478,10 @@ From v1; details in docs/archive/handoffs/.
 - `vdbSparseSource` / `vdbDenseTextures` stay the `./three` source handles: the frame renderer reads their pool, ids, boxes
   and stats into the core's own sources (`vdbSparseSourceGpu`, `vdbDenseSource`); their TSL nodes and GPU pyramid run
   only for custom materials (`vdbVolumeNodes`). A harness that checks the TSL pyramid must sample through the nodes
-  (k3-pyramid `?three=1`), not through a `VDBFrameVolume`.
+  (k3-pyramid `?three=1`), not through a `VDBFrameVolume`. K6.8a: that TSL half (`sparse-nodes.ts`) and a dense
+  source's three textures are made on first access (`source.pyramid`, `source.textures`, `vdbVolumeUniforms`): reading
+  them allocates, and a frame-only source's `gpuBytes.pyramid` is 0 (its LOD bytes are the core's:
+  `frameRenderer.coreVolumeOf(volume).slot.source.gpuBytes`, demo 15).
 - Dawn zero-fills a new texture through ONE staging buffer of its size (rows padded to 256 bytes): a texture over the
   device's `maxBufferSize` (256 MiB by default) fails the whole submit ("Buffer size … exceeds the max buffer size
   limit", an uncaptured error) and the frame silently loses its volumes. The core clamps `shadowResolution` for that
@@ -510,3 +513,21 @@ From v1; details in docs/archive/handoffs/.
   worktree first.
 - The agent sandbox also refuses some Bash heredocs (a python edit script, a `cat >>` block): write the text to the
   scratchpad with the Write tool and run or append it by path.
+- three r187 re-reads a render object's object-group bindings (texture and storage nodes) only on a FULL refresh. A plain
+  material (no node properties: `MeshStandardMaterial`, `ShadowMaterial`) that did not move gets a SHARED refresh
+  (`NodeMaterialObserver.needsRefresh`), which updates shared uniform buffers only: a texture or storage node's `value`
+  swap never reaches it, and it keeps drawing the old bind group. Swap the value AND rebuild (K6.8a: the volume shadow
+  receivers call `resetLightShadow`), or use `renderGroup` uniforms (updated in SHARED refreshes).
+- three binds a buffer it does not own only as storage (`vdbThreeStorageStandIn`, the `VDBGridNode` pattern): a uniform
+  `BufferNode` uploads its own array each update. A core buffer three must read needs `STORAGE` usage; read it as
+  `array<vec4u>` and unpack the struct in WGSL (`vdbFrameShadowViewLoaderWgsl` for `VdbVolumeShadowView`).
+- `wgslFn` parameters `texture_2d_array<f32>` / `texture_cube<f32>` take a texture node by reference and `sampler(node)`
+  its sampler (one binding pair). A cube ExternalTexture stand-in needs `mapping = CubeReflectionMapping`, or three's
+  `CubeTextureNode` logs "Mapping not supported" (a console error that e2e `collectErrors` catches).
+- Finding-8 class (a three receiver bound to a core object the core retired): `k3-frame-shadows ?mutate=toggle` (the
+  light hidden for four renders, then shown) and `?mutate=resize` (the map size halved, then back); `k6-shadows` runs
+  both. Before K6.8a the toggle submitted the destroyed spot map ("Destroyed texture … used in a submit", maxDiff 255).
+- V79 A/B with two different media: `k3-frame ?albedo1=r,g,b` / `?albedo2=r,g,b` (linear base colour of the first /
+  second bunny) and the reference page's `?albedo=r,g,b;r,g,b`; `reference-report.mjs --groups=mix-red1,mix-red2,
+  mix-dark1,mix-dark2` (a group's `refExtra` goes onto the reference query).
+- Port 5320 can be held by another repo's Vite (the pathtracer's worktrees use it): `lsof` shows the cwd; pick another.

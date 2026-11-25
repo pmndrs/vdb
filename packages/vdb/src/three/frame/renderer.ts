@@ -284,12 +284,13 @@ export class VDBFrameRenderer {
 
   /**
    * K6.1d: the core volume of a frame volume on a sparse source: one `vdbSparseSourceGpu` per pool and source options
-   * (its pyramids are the core's own), one slot per three source with the same grids, boxes and stats.
+   * (its pyramids are the core's own), one slot per three source with the same grids, boxes and stats. K6.8a: the three
+   * source is a handle; its TSL half (and its own pyramid) is never made here.
    */
   #sparseVolumeOf(frameVolume: VDBFrameVolume): VDBFrameVolumeGpu {
     const three = frameVolume.source as VDBThreeSparseSource & {
       auxBoxes?: Record<"mask" | "albedo" | "emission", VDBIndexBox | null>;
-      pyramidMaxOption?: { pyramidMax?: number };
+      pyramidOptions?: { pyramidMax?: number };
     };
     const pool = three.grids.pool as unknown as VDBGridPool;
     const types = (three.grids.options as { types?: readonly VDBGridTypeName[] }).types;
@@ -299,7 +300,7 @@ export class VDBFrameRenderer {
       followImage: three.followImage,
       fastTrilinear: three.fastTrilinear,
       cacheAccessor: three.cacheAccessor,
-      ...(three.pyramidMaxOption?.pyramidMax !== undefined ? { pyramidMax: three.pyramidMaxOption.pyramidMax } : {}),
+      ...(three.pyramidOptions?.pyramidMax !== undefined ? { pyramidMax: three.pyramidOptions.pyramidMax } : {}),
       ...(types ? { types } : {}),
     };
     const key = JSON.stringify(options);
@@ -468,6 +469,15 @@ export class VDBFrameRenderer {
       }
     });
     return { lights: out, emissionLight, shadowLights };
+  }
+
+  /**
+   * @internal K6.8a: the core volume a frame volume draws as (null before its first render with this renderer). Its
+   * `slot.source` is the core source the frame renderer made for it; a sparse volume's pyramids live there (its
+   * `gpuBytes`), not in the three source (demo 15's GPU bytes).
+   */
+  coreVolumeOf(frameVolume: VDBFrameVolume): VDBFrameVolumeGpu | null {
+    return this.#volumes.get(frameVolume) ?? null;
   }
 
   /** Frees the core renderer, its stand-ins and the shadow filters. A later render makes them again. */

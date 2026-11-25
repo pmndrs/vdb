@@ -142,6 +142,31 @@ const GROUP_DEFS = {
       k3("core ms off", "scene=step3-two-bunnies-dir-isolated&ms=0", { lighting: "frame", vsSingle: true }),
     ],
   },
+  // K6.8a (V79): two DIFFERENT media overlapping (one bunny white, the other a red absorbing or a dark medium), each
+  // colour on either bunny (the record order of 'over' is the scene order: the second bunny goes over the first in a
+  // froxel). `refExtra` gives the reference page the same albedos (linear).
+  ...Object.fromEntries(
+    [
+      ["mix-red2", "albedo2=0.9,0.3,0.2", "1,1,1;0.9,0.3,0.2", "the second bunny red, absorbing"],
+      ["mix-red1", "albedo1=0.9,0.3,0.2", "0.9,0.3,0.2;1,1,1", "the first bunny red, absorbing"],
+      ["mix-dark2", "albedo2=0.1,0.1,0.1", "1,1,1;0.1,0.1,0.1", "the second bunny dark (albedo 0.1)"],
+      ["mix-dark1", "albedo1=0.1,0.1,0.1", "0.1,0.1,0.1;1,1,1", "the first bunny dark (albedo 0.1)"],
+    ].map(([key, q, albedo, what]) => [
+      key,
+      {
+        kind: "his",
+        title: `V79 (K6.8a): two overlapping bunnies, ${what}, 'volume' lighting: froxelMix 'mixture' vs 'over'`,
+        scenario: "step3-two-bunnies-dir-isolated",
+        lighting: "volume",
+        refExtra: `&albedo=${albedo}`,
+        rows: ["0", "1"].flatMap((ms) =>
+          ["mixture", "over"].map((mix) =>
+            k3(`core ms ${ms === "0" ? "off" : "on"}, ${mix}`, `scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=${ms}&froxelMix=${mix}&${q}`, { lighting: "volume", ...(ms === "0" ? { vsSingle: true } : {}) }),
+          ),
+        ),
+      },
+    ]),
+  ),
   mix: {
     kind: "his",
     title: "V79: two overlapping bunnies, 'volume' lighting: froxelMix 'mixture' vs 'over'",
@@ -488,7 +513,7 @@ try {
         const s = frames.find((t) => t.settings && t.lighting === "frame")?.settings;
         const phase = g.phase ?? (g.lighting === "volume" ? VOLUME_PHASE : s?.phase === "dual-lobe" ? [s.phaseG, s.phaseBackG, s.phaseBackWeight] : [s?.phaseG ?? 0.8, 0, 0]);
         if (g.lighting === "frame" && s && !["henyey-greenstein", "dual-lobe", "isotropic", "lorenz-mie", "lorenz-mie-rgb"].includes(s.phase)) console.warn(`  phase ${s.phase}: the reference uses HG g = ${phase[0]}`);
-        query = `case=report&scenario=${g.scenario}&lighting=${lighting}&phase=${phase.join(",")}${g.mie ? `&mie=${g.mie}` : ""}${g.env ? `&env=${g.env}` : ""}`;
+        query = `case=report&scenario=${g.scenario}&lighting=${lighting}&phase=${phase.join(",")}${g.mie ? `&mie=${g.mie}` : ""}${g.env ? `&env=${g.env}` : ""}${g.refExtra ?? ""}`;
       } else query = `case=scene&scene=${g.scene}&lighting=${lighting}`;
       const common = `&w=${gw}&h=${gh}&spp=${SPP}&target=${TARGET}&check=${CHECK}&budget=${BUDGET}`;
       const entry = {};
