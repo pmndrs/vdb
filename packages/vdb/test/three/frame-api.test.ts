@@ -99,6 +99,25 @@ describe("K5.9 VDBFrameVolume API", () => {
     v.dispose();
   });
 
+  it("K6.8a: a dense source a VDBFrameVolume draws makes no three textures; replaces before the first access land in them", () => {
+    const source = vdbDenseTextures(frame([8, 8, 8], true));
+    const v = new VDBFrameVolume(source, { frameRenderer: new VDBFrameRenderer() });
+    // a resize and a frame without flames, all before any texture exists: version and stats follow
+    source.replace(frame([16, 8, 8], false, 0.4));
+    expect(source.version).toBe(1);
+    expect(source.stats.meanNonZero).toBeCloseTo(0.4, 2);
+    // the first access uploads the current frame (the missing channel as its absent value, at the new size)
+    const density = source.textures.density!.map.image as { width: number };
+    const emission = source.textures.emission!.map.image as { data: Uint8Array; width: number };
+    expect([density.width, emission.width]).toEqual([16, 16]);
+    expect(emission.data.every((b) => b === 0)).toBe(true);
+    // same size again: no version bump (textures exist now)
+    source.replace(frame([16, 8, 8], true, 0.5));
+    expect(source.version).toBe(1);
+    v.dispose();
+    source.dispose();
+  });
+
   it("RV: a dense frame with another .wvdb box moves the volume's box (his WVDB sequences: each frame its own box); a bbox prop stays", () => {
     const a = frame([8, 8, 8], false, 0.2, [[0, 0, 0], [8, 8, 8]]);
     const b = frame([8, 8, 8], false, 0.2, [[4, -2, 0], [20, 6, 16]]); // same texels, another box

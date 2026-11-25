@@ -81,8 +81,19 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
   `NvdbFormatError` (a 0 size used to loop over empty grids).
 - Tools: for `.nvdb` files whose FileMetaData leaves `indexBBox` and `voxelCount` zero (Warp writes them so),
   `NvdbGridMetadata` takes them from the grid image.
+- Three (K6.8a): `vdbSparseSource` / `vdbDenseTextures` are handles; `VDBFrameVolume` reads them into the core's own
+  sources. Their three-side GPU resources exist only for custom TSL materials and are made on first use: a dense
+  source's `textures` (it no longer uploads the texels twice), a sparse source's `pyramid` (it no longer builds a second
+  pyramid at creation). Until then a sparse source's `gpuBytes.pyramid` / `pyramidScratch` and `pyramidBuilds` are 0.
+- Three (K6.8a): the volume shadow receivers on meshes call the core's `vdbVolumeShadowWgsl` (one implementation),
+  binding the map's `view` buffer through a storage stand-in; `VDBVolumeShadowMap.view` gains `STORAGE` usage.
 
 ### Fixed
+
+- Three (K6.8a): a shadow light whose core map went away (hidden for a few renders, or out of the camera's layers) and
+  came back left its mesh receivers bound to the retired, destroyed map texture ("Destroyed texture … used in a
+  submit", and a wrong shadow; K6.10 finding 8). Receivers now bind placeholders while a light has no map, and rebuild
+  when the core makes a new map. Point-light receivers no longer log `CubeTextureNode: Mapping not supported`.
 
 - Core frame renderer (K6.10a): `settings.shadowResolution` whose transmittance stack does not tile in
   `maxTextureDimension3D` (above 1024 with one cascade, 1024 with 3–4) clamps with a one-time warning; it threw a

@@ -8,7 +8,7 @@
  * took it as given and did not destroy it, else `VDB_ENGINE_MISMATCH`.
  */
 
-import { ClampToEdgeWrapping, ExternalTexture, LinearFilter, REVISION } from "three";
+import { ClampToEdgeWrapping, CubeReflectionMapping, ExternalTexture, LinearFilter, REVISION } from "three";
 import { VDBError } from "../../core/errors.js";
 
 interface BackendLike {
@@ -40,7 +40,11 @@ export function vdbCoreTextureStandIn(gpu: GPUTexture, kind: VDBCoreTextureKind 
   const f = t as unknown as Record<string, unknown>;
   if (kind === "3d") f.is3DTexture = true;
   else if (kind === "2d-array") f.isArrayTexture = true;
-  else f.isCubeTexture = true;
+  else {
+    f.isCubeTexture = true;
+    // K6.8a: a cube's mapping (three's default is UVMapping): CubeTextureNode logs "Mapping not supported" for any other
+    t.mapping = CubeReflectionMapping;
+  }
   f.wrapR = ClampToEdgeWrapping;
   t.wrapS = t.wrapT = ClampToEdgeWrapping;
   t.minFilter = t.magFilter = LinearFilter;

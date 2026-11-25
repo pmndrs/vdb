@@ -814,7 +814,9 @@ async function report(device: GPUDevice): Promise<void> {
   if (mie === "mono" || mie === "rgb") phase!.table = vdbReferenceMiePhaseTable(mie);
   // K6.R1: per-cell majorants from the texels (8³ cells), unless `?majorants=0`
   const majorantGrid = params.get("majorants") === "0" ? undefined : vdbReferenceMajorantGridDense(volume, 8);
-  const volumes = [vol, ...others].map((v) => {
+  // K6.8a (V79 A/B): `?albedo=r,g,b;r,g,b` (linear) per volume, as k3-frame's `?albedo1=` / `?albedo2=`
+  const albedos = (params.get("albedo") ?? "").split(";").map((t) => (t ? (t.split(",").map(Number) as VDBRefVec3) : null));
+  const volumes = [vol, ...others].map((v, i) => {
     const l2w = Array.from(vdbRefMultiply4(v.matrixWorld, v.textures[0]!.matrix));
     return {
       localToWorld: l2w,
@@ -822,7 +824,7 @@ async function report(device: GPUDevice): Promise<void> {
       sigma: vdbReferenceSigma({ localToWorld: l2w, extinction: Number(params.get("extinction") ?? v.extinction), normalizeDensity: true, meanNonZero: volume.meanDensity }),
       majorant: volume.maxDensity,
       ...(majorantGrid ? { majorantGrid } : {}),
-      albedo: [1, 1, 1] as VDBRefVec3,
+      albedo: albedos[i] ?? ([1, 1, 1] as VDBRefVec3),
       phase,
     };
   });

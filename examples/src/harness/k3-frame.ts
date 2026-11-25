@@ -399,6 +399,14 @@ const ANGSTROM = params.has("angstrom") ? Number(params.get("angstrom")) : (def?
 const parseMs = (v: string): VDBFrameMultipleScattering => (v === "0" || v === "false" ? false : v === "1" || v === "true" ? true : (v as VDBFrameMultipleScattering));
 const MS: VDBFrameMultipleScattering = params.has("ms") ? parseMs(params.get("ms")!) : (def?.multipleScattering ?? true);
 const num = (k: string): number | undefined => (params.has(k) ? Number(params.get(k)) : undefined);
+// K6.8a (V79 A/B): `?albedo1=r,g,b` / `?albedo2=r,g,b` (linear) set the first / second bunny's base colour (the reference
+// page takes the same values as `?albedo=`), so two overlapping media differ and their froxel mix can be judged.
+const linearColor = (k: string): THREE.Color | undefined => {
+  const v = params.get(k)?.split(",").map(Number);
+  return v && v.length === 3 && v.every((x) => Number.isFinite(x)) ? new THREE.Color().setRGB(v[0]!, v[1]!, v[2]!, THREE.LinearSRGBColorSpace) : undefined;
+};
+const ALBEDO1 = linearColor("albedo1");
+const ALBEDO2 = linearColor("albedo2");
 const PHASE_OVERRIDES: Partial<VDBFrameRendererSettings> = Object.fromEntries(
   (
     [
@@ -799,7 +807,7 @@ async function main(): Promise<void> {
   const volume = new VDBFrameVolume(source, {
     frameRenderer,
     bbox,
-    baseColor: MEDIUM_PROPS ? MEDIUM_PROPS.baseColor : "#ffffff",
+    baseColor: ALBEDO1 ?? (MEDIUM_PROPS ? MEDIUM_PROPS.baseColor : "#ffffff"),
     // His frame.js default angstromExponent 0 (grey); a medium sets its own
     angstromExponent: MEDIUM_PROPS ? MEDIUM_PROPS.angstromExponent : (ANGSTROM ?? 0.0),
     absorbance: 1.0,
@@ -879,6 +887,7 @@ async function main(): Promise<void> {
       frameRenderer,
       bbox,
       extinction: def.smoke ? 40 : 100,
+      ...(ALBEDO2 ? { baseColor: ALBEDO2 } : {}),
       phase: "dual-lobe",
       shadowSteps: SHADOW_STEPS,
       mipmaps: MIPS,

@@ -504,7 +504,10 @@ async function run(): Promise<void> {
 
   function refreshCards(): void {
     if (sparse) {
-      const g = sparse.source.gpuBytes;
+      const pool = sparse.source.gpuBytes.pool;
+      // K6.8a: the LOD pyramid is the frame renderer's (its core sparse source), not the three source's
+      const core = (frSparse.coreVolumeOf(sparse.volume)?.slot.source as { gpuBytes?: { atlas: number; pyramidScratch: number } } | undefined)?.gpuBytes;
+      const g = { pool, pyramid: core?.atlas ?? 0, pyramidScratch: core?.pyramidScratch ?? 0 };
       const gpu = g.pool + g.pyramid + g.pyramidScratch;
       const st: SideStats = {
         label: "sparse",

@@ -238,7 +238,8 @@ export class VDBFrameVolume extends THREE.Group {
   constructor(source: VDBThreeVolumeSource, props: VDBFrameVolumeProps = {}) {
     super();
 
-    const ok = source && ((source.kind === "dense" && !!source.textures?.density) || (source.kind === "sparse" && typeof source.createNodes === "function"));
+    // K6.8a: `volume`, not `textures`: a dense source's three textures are made only for custom materials
+    const ok = source && ((source.kind === "dense" && !!source.volume?.density) || (source.kind === "sparse" && typeof source.createNodes === "function"));
     if (!ok) {
       throw new VDBError("VDB_BAD_OPTION", "VDBFrameVolume: pass a volume source from vdbDenseTextures() or vdbSparseSource() (@pmndrs/vdb/three).");
     }

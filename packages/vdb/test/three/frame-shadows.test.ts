@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { VDBFrameEmissionLight, VDBFrameEmissionLightNode, VDBFrameRenderer, vdbFrameCheckLightReset } from "../../src/three/internal.js";
 import { vdbFrameRegisterLightNode, vdbFrameRenderId, vdbFrameResetInternalsCache, vdbFrameCheckFilterInputs, vdbFramePrecompiling } from "../../src/three/frame/three-internals.js";
 import type { VDBVolumeShadowMap } from "../../src/core/frame/types.js";
+import { vdbFrameShadowViewLoaderWgsl } from "../../src/three/frame/volume-shadows.js";
 
 const fakeRenderer = () => ({ isWebGPURenderer: true, shadowMap: { type: THREE.PCFShadowMap, enabled: true } }) as never;
 
@@ -99,10 +100,9 @@ describe("K3.6 volume shadows: filters on lights", () => {
     expect(filterOf(spot)?.isVDBFrameVolumeShadowFilter).toBe(true);
     expect(filterOf(quiet)).toBeFalsy();
     expect(fr.volumeShadows.entries.get(spot)!.userFilter).toBe(userFilter);
-    // directional lights read cascades (layers of the core map); no map before the core drew one
-    expect(fr.volumeShadows.entries.get(sun)!.cascades?.length).toBe(4);
-    expect(fr.volumeShadows.entries.get(spot)!.cascades).toBeNull();
-    expect(fr.volumeShadows.entries.get(sun)!.map).toBeNull();
+    // no core map before the core drew one (the receivers bind placeholders)
+    expect(fr.volumeShadows.entries.get(sun)!.coreMap).toBeNull();
+    expect(fr.volumeShadows.entries.get(sun)!.texture).toBeNull();
     // the filter checks what three passes it
     expect(() => (filterOf(sun) as unknown as (i: unknown) => unknown)({})).toThrow(/VDB_ENGINE_MISMATCH/);
 
@@ -120,8 +120,8 @@ describe("K3.6 volume shadows: filters on lights", () => {
   });
 });
 
-describe("K6.5 receivers read the core's drawn state", () => {
-  it("sync copies each map's drawn view (cascades, spot) and the budget counters; a light without a map reads none", () => {
+describe("K6.5 / K6.8a receivers bind the core's maps", () => {
+  it("sync binds each light's core map (texture, rgb twin, view buffer) and the budget counters; a light without a map binds none", () => {
     const fr = new VDBFrameRenderer();
     fr.settings.castShadows = true;
     const scene = new THREE.Scene();
@@ -130,24 +130,31 @@ describe("K6.5 receivers read the core's drawn state", () => {
     sun.castShadow = spot.castShadow = true;
     scene.add(sun, spot);
     fr.volumeShadows.update(fakeRenderer(), scene);
-    const vp = (k: number) => Array.from({ length: 16 }, (_, i) => i + k);
-    const map = (o: Partial<VDBVolumeShadowMap>): VDBVolumeShadowMap => ({ texture: null as unknown as GPUTexture, rgbTexture: null, size: 256, enabled: true, lastDraw: [3, 4, 5], ...o }) as unknown as VDBVolumeShadowMap;
-    const drawn = { viewProjection: [vp(1), vp(2)], origin: [[1, 2, 3], [4, 5, 6]], forward: [0, -1, 0], far: [10, 20], perspective: false, cascadeCount: 2, breaks: [5, 50, 0, 0] };
-    const maps = new Map<number | string, VDBVolumeShadowMap>([[sun.id, map({ drawn } as never)]]);
-    fr.volumeShadows.sync(maps, { drawn: 1, waiting: 2 });
+    const texture = { label: "map" } as GPUTexture;
+    const view = { label: "view" } as GPUBuffer;
+    const map = { texture, rgbTexture: null, view, size: 256, enabled: true, lastDraw: [3, 4, 5] } as unknown as VDBVolumeShadowMap;
+    fr.volumeShadows.sync(new Map([[sun.id, map]]), { drawn: 1, waiting: 2 });
     const e = fr.volumeShadows.entries.get(sun)!;
-    expect(e.enabled.value).toBe(1);
-    expect(e.drawn.cascadeCount).toBe(2);
-    expect(e.drawn.cascadeBreaks.toArray()).toEqual([5, 50, 0, 0]);
-    expect(e.cascades![1]!.drawn.viewProjection.elements).toEqual(vp(2));
-    expect(e.cascades![1]!.drawn.origin.toArray()).toEqual([4, 5, 6]);
-    expect(e.cascades![1]!.drawn.far).toBe(20);
-    expect(e.cascades![1]!.lastDraw).toBe(5);
-    expect(e.lastDraw).toBe(3);
-    expect(fr.volumeShadows.entries.get(spot)!.enabled.value).toBe(0);
+    expect([e.coreMap, e.texture, e.viewBuffer, e.rgbTexture, e.size, e.lastDraw]).toEqual([map, texture, view, null, 256, 3]);
+    expect(fr.volumeShadows.entries.get(spot)!.coreMap).toBeNull();
     expect(fr.volumeShadows.lastUpdate).toEqual({ drawn: 1, waiting: 2 });
+    // the map is gone (the light left the core's frame): the entry binds nothing of the core's (finding 8)
+    fr.volumeShadows.sync(new Map(), { drawn: 0, waiting: 0 });
+    expect([e.coreMap, e.texture, e.viewBuffer]).toEqual([null, null, null]);
     fr.dispose();
     expect(fr.volumeShadows.entries.size).toBe(0);
+  });
+
+  it("the view loader unpacks every VdbVolumeShadowView field from its vec4u words (the core's struct layout)", () => {
+    const wgsl = vdbFrameShadowViewLoaderWgsl("load", "r");
+    const words = [...wgsl.matchAll(/r\[(\d+)\]/g)].map((m) => Number(m[1]));
+    // 24 words, each read once: 4 mat4x4f (0–15), 4 origins (16–19), forward, breaks, info, spectral
+    expect(words.sort((a, b) => a - b)).toEqual(Array.from({ length: 24 }, (_, i) => i));
+    expect(wgsl).toContain("v.viewProjection[1] = mat4x4f(bitcast<vec4f>(r[4]), bitcast<vec4f>(r[5]), bitcast<vec4f>(r[6]), bitcast<vec4f>(r[7]));");
+    expect(wgsl).toContain("v.origin[3] = bitcast<vec4f>(r[19]);");
+    expect(wgsl).toContain("v.forward = bitcast<vec4f>(r[20]);");
+    expect(wgsl).toContain("v.info = r[22];");
+    expect(wgsl).toContain("v.spectral = r[23];");
   });
 });
 

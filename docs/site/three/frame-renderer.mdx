@@ -30,8 +30,13 @@ A volume reads its density only through a **source**. There are two:
 
 | Source | Made by | What it holds |
 | --- | --- | --- |
-| Dense | `vdbDenseTextures(wvdbDenseVolume(readWvdb(bytes)))` | A `.wvdb` LOD as 8-bit 3D textures with a mip atlas. Density is clamped to 0..1. |
+| Dense | `vdbDenseTextures(wvdbDenseVolume(readWvdb(bytes)))` | A `.wvdb` LOD (8-bit texels with a mip atlas). Density is clamped to 0..1. |
 | Sparse | `vdbSparseSource(grids, { density: id }, options)` | A pool grid at full resolution, read through `vdbSample`. |
+
+Both are handles: the frame renderer reads them into the core's own sources, which upload the dense texels and build
+the sparse LOD pyramid on the GPU. The three textures (`source.textures`) and a sparse source's own pyramid
+(`source.pyramid`) exist only for custom TSL materials (`vdbVolumeUniforms` / `vdbVolumeNodes`), made the first time one
+asks for them.
 
 {/* snippet: frame-dense */}
 ```ts
@@ -83,9 +88,10 @@ scene.add(volume);
 
 When a froxel spans many voxels, a sparse source filters. `lod` picks how:
 
-- `'coarse-pyramid'` (default): a dense r16f pyramid, built on the GPU from the pool grid (`pyramidBuild: 'gpu'`,
-  default) and rebuilt when the grid's `imageRevision` changes, so `pool.replace` frames work. `'cpu'` builds it from
-  `images.density` once. `pyramidMax` is the base level's longest side (default 128).
+- `'coarse-pyramid'` (default): a dense r16f pyramid, built on the GPU from the pool grid and rebuilt when the grid's
+  `imageRevision` changes, so `pool.replace` frames work. `pyramidMax` is the base level's longest side (default 128).
+  The frame renderer builds its own; `pyramidBuild` (`'gpu'` default, or `'cpu'` from `images.density` once) picks how
+  a custom material's pyramid is built.
 - `'node-average'`: no extra memory, trilinear over the nodes' stored averages. It blurs and brightens; it needs
   stats.
 - `'none'`: level 0 only, which aliases.

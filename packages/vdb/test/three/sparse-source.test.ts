@@ -288,16 +288,17 @@ describe("vdbSparseSource", () => {
     };
     const grids = { module: {}, options: { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd"] }, pool } as unknown as VDBGridNode;
     const s = vdbSparseSource(grids, { density: 0 }, { lod: "none", images: { density: grid.image }, followImage: true });
-    const counts = () => {
-      const r = s as unknown as { statsListeners: Set<unknown>; layoutListeners: Set<unknown> };
-      return [r.statsListeners.size, r.layoutListeners.size];
-    };
+    const internals = () => (s as unknown as { internals(): { statsListeners: number; layoutListeners: number; nodes: boolean } }).internals();
+    const counts = () => [internals().statsListeners, internals().layoutListeners];
     const frameRenderer = new VDBFrameRenderer();
     const keep = new VDBFrameVolume(s, { frameRenderer });
     expect(counts()).toEqual([0, 0]);
     for (let i = 0; i < 50; i++) new VDBFrameVolume(s, { frameRenderer }).dispose();
     expect(counts()).toEqual([0, 0]);
+    // K6.8a: frame volumes never make the TSL half (no pyramid, no nodes); the first custom-material use does
+    expect(internals().nodes).toBe(false);
     const u = vdbVolumeUniforms(s);
+    expect(internals().nodes).toBe(true);
     expect(counts()).toEqual([1, 1]);
     u.dispose();
     u.dispose(); // idempotent

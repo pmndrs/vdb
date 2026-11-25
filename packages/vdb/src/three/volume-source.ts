@@ -69,9 +69,13 @@ export interface VDBDenseChannelTextures {
 export interface VDBThreeDenseSource extends VDBVolumeSourceInfo {
   /** Always `"dense"`. */
   readonly kind: "dense";
-  /** The `.wvdb` volume currently uploaded. */
+  /** The `.wvdb` volume currently uploaded (`VDBFrameVolume`: the core frame renderer uploads it into its own textures). */
   readonly volume: WvdbDenseVolume;
-  /** The textures per channel, null for a channel the source lacks. */
+  /**
+   * The textures per channel, null for a channel the source lacks. K6.8a: made (uploaded) on first access, by
+   * `vdbVolumeUniforms` or here; a source only a `VDBFrameVolume` draws never makes them (the core's dense source holds
+   * the frame renderer's copy).
+   */
   readonly textures: Readonly<Record<ChannelName, VDBDenseChannelTextures | null>>;
   /**
    * Swap in another LOD or sequence frame. New sizes make new textures and bump `version`, and so does a frame with
@@ -113,11 +117,11 @@ function channelTextures(tex: WvdbDenseTexture | null): VDBDenseChannelTextures 
 }
 
 /** K5.9: a channel's absent value (mask and albedo 1, emission 0) as a texture of the density's size (and mip atlas). */
-function constantChannel(name: ChannelName, t: VDBDenseChannelTextures, density: WvdbDenseTexture): WvdbDenseTexture {
-  const texelBytes: 1 | 4 = t.map.format === THREE.RGBAFormat ? 4 : 1;
+function constantChannel(name: ChannelName, shape: { mip: boolean; texelBytes: 1 | 4 }, density: WvdbDenseTexture): WvdbDenseTexture {
+  const { texelBytes } = shape;
   const value = name === "emission" ? 0 : 255;
   const fill = (dims: readonly number[]) => new Uint8Array(dims[0]! * dims[1]! * dims[2]! * texelBytes).fill(value);
-  const mip = t.mip && density.mip ? { data: fill(density.mip.dimensions), dimensions: density.mip.dimensions, levels: density.mip.levels } : null;
+  const mip = shape.mip && density.mip ? { data: fill(density.mip.dimensions), dimensions: density.mip.dimensions, levels: density.mip.levels } : null;
   return { data: fill(density.dimensions), dimensions: density.dimensions, format: texelBytes === 4 ? "rgba8unorm" : "r8unorm", texelBytes, mip };
 }
 
@@ -128,60 +132,88 @@ const channelsOf = (v: WvdbDenseVolume): Record<ChannelName, WvdbDenseTexture | 
   emission: v.emission,
 });
 
+/** K6.8a: which channels (their texel size and mip atlas) a dense source was made with; fixed for its life. */
+type DenseShape = Record<ChannelName, { mip: boolean; texelBytes: 1 | 4 } | null>;
+
+const sameDims = (a: readonly number[] | undefined, b: readonly number[] | undefined): boolean => !!a && !!b && a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+
 class ThreeDenseSource implements VDBThreeDenseSource {
   readonly kind = "dense" as const;
   readonly boxToSource = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.5, 0.5, 0.5, 1]);
   readonly channels: VDBVolumeChannels;
   volume: WvdbDenseVolume;
-  textures: Record<ChannelName, VDBDenseChannelTextures | null>;
   texels: [number, number, number];
   lodLevels: number;
   stats: { meanNonZero: number; max: number; activeVoxels: number };
   version = 0;
   private readonly warnedExtra = new Set<ChannelName>();
+  readonly #shape: DenseShape;
+  /** The three textures (K6.8a: made on first use; `VDBFrameVolume` reads `volume` into the core's dense source). */
+  #textures: Record<ChannelName, VDBDenseChannelTextures | null> | null = null;
+  /** The channels the textures hold now (`replace` fills a missing channel with its absent value). */
+  #channelData: Record<ChannelName, WvdbDenseTexture | null>;
 
   constructor(volume: WvdbDenseVolume) {
     this.volume = volume;
     this.channels = { mask: !!volume.mask, albedo: !!volume.albedo, emission: !!volume.emission };
     const c = channelsOf(volume);
-    this.textures = { density: channelTextures(c.density), mask: channelTextures(c.mask), albedo: channelTextures(c.albedo), emission: channelTextures(c.emission) };
+    this.#shape = Object.fromEntries(CHANNELS.map((n) => [n, c[n] ? { mip: !!c[n]!.mip, texelBytes: c[n]!.texelBytes } : null])) as DenseShape;
+    this.#channelData = c;
     this.texels = [...volume.dimensions] as [number, number, number];
     this.lodLevels = volume.density.mip?.levels ?? 0;
     this.stats = { meanNonZero: volume.meanDensity, max: volume.maxDensity, activeVoxels: volume.activeTexels };
+  }
+
+  get textures(): Record<ChannelName, VDBDenseChannelTextures | null> {
+    if (!this.#textures) {
+      const c = this.#channelData;
+      this.#textures = { density: channelTextures(c.density), mask: channelTextures(c.mask), albedo: channelTextures(c.albedo), emission: channelTextures(c.emission) };
+    }
+    return this.#textures;
   }
 
   replace(volume: WvdbDenseVolume): void {
     if (!volume || volume.kind !== "dense" || !volume.density) {
       throw new VDBError("VDB_BAD_OPTION", "vdbDenseTextures.replace: pass a dense volume from wvdbDenseVolume() (@pmndrs/vdb/tools).");
     }
+    const shape = this.#shape;
     const next = channelsOf(volume);
     const densityMip = next.density!.mip;
-    if (!!this.textures.density!.mip !== !!densityMip && this.textures.density!.mip) {
+    if (!!shape.density!.mip !== !!densityMip && shape.density!.mip) {
       throw new VDBError("VDB_BAD_OPTION", "vdbDenseTextures.replace: the frame's density has no mip atlas but the source's has; bake every frame with mipmaps, or make the source without.");
     }
     // K5.9 (sequences): a channel the source has and the frame lacks reads its absent value (mask and albedo 1,
     // emission 0) from a constant texture of the frame's size; a channel (or mip atlas) the source lacks is ignored,
     // since the shaders were built without it (warned once: make the source from a frame that has every channel).
     for (const name of CHANNELS) {
-      const t = this.textures[name];
+      const s = shape[name];
       const v = next[name];
-      if (!t && v) {
+      if (!s && v) {
         if (!this.warnedExtra.has(name)) {
           this.warnedExtra.add(name);
           console.warn(`vdbDenseTextures.replace: the frame has a ${name} channel the source was made without; it is ignored.`);
         }
         next[name] = null;
-      } else if (t && !v) {
-        next[name] = constantChannel(name, t, next.density!);
-      } else if (t && v && !!t.mip !== !!v.mip) {
-        if (t.mip) throw new VDBError("VDB_BAD_OPTION", `vdbDenseTextures.replace: the frame's ${name} channel has no mip atlas but the source's has; make a new source.`);
+      } else if (s && !v) {
+        next[name] = constantChannel(name, s, next.density!);
+      } else if (s && v && s.mip !== !!v.mip) {
+        if (s.mip) throw new VDBError("VDB_BAD_OPTION", `vdbDenseTextures.replace: the frame's ${name} channel has no mip atlas but the source's has; make a new source.`);
         next[name] = { ...v, mip: null };
       }
     }
-    // WVDBLoader.js L37–48 updateTexture: a new size disposes the GPU texture first.
+    // WVDBLoader.js L37–48 updateTexture: a new size disposes the GPU texture first (and bumps `version`).
+    const before = this.#channelData;
     let resized = false;
     for (const name of CHANNELS) {
-      const t = this.textures[name];
+      const o = before[name];
+      const v = next[name];
+      if (!o || !v) continue;
+      if (!sameDims(o.dimensions, v.dimensions) || (!!o.mip && !!v.mip && !sameDims(o.mip.dimensions, v.mip.dimensions))) resized = true;
+    }
+    this.#channelData = next;
+    const textures = this.#textures;
+    for (const name of CHANNELS) {
+      const t = textures?.[name];
       const v = next[name];
       if (!t || !v) continue;
       const set = (tex: THREE.Data3DTexture, data: Uint8Array<ArrayBuffer>, dims: readonly number[]) => {
@@ -189,10 +221,7 @@ class ThreeDenseSource implements VDBThreeDenseSource {
         const img = tex.image as { width: number; height: number; depth: number };
         const changed = img.width !== width || img.height !== height || img.depth !== depth;
         tex.image = { data, width, height, depth } as never;
-        if (changed) {
-          tex.dispose();
-          resized = true;
-        }
+        if (changed) tex.dispose();
         tex.needsUpdate = true;
       };
       set(t.map, v.data, v.dimensions);
@@ -206,12 +235,12 @@ class ThreeDenseSource implements VDBThreeDenseSource {
     if (resized || moved) this.version++;
     this.volume = volume;
     this.texels = [...volume.dimensions] as [number, number, number];
-    this.lodLevels = this.textures.density!.mip ? (volume.density.mip?.levels ?? 0) : 0;
+    this.lodLevels = shape.density!.mip ? (volume.density.mip?.levels ?? 0) : 0;
     this.stats = { meanNonZero: volume.meanDensity, max: volume.maxDensity, activeVoxels: volume.activeTexels };
   }
 
   dispose(): void {
-    for (const t of Object.values(this.textures)) {
+    for (const t of Object.values(this.#textures ?? {})) {
       t?.map.dispose();
       t?.mip?.dispose();
     }

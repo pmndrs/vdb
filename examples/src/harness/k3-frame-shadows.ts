@@ -55,6 +55,8 @@ interface Result {
   // shadow case
   entry?: { size: number; cascades: number; breaks: number[]; far: number[]; drawn: number; waiting: number } | null;
   shadowStats?: { groundPixels: number; covered: number; shadowedPixels: number; meanDarkening: number };
+  /** K6.8a `?mutate=`: the frame after the light (or map size) came back vs the first; the shadow while it was away. */
+  mutate?: { kind: string; identical: boolean; maxDiff: number; awayShadowed: number; mapsAway: number };
   // emission case
   emitters?: number;
   probeGrid?: { resolution: number; count: number; min: number[][]; size: number[][]; center: number[] };
@@ -100,6 +102,12 @@ const PROBES = Number(params.get("probes") ?? 16);
 const SPECTRUM = params.get("spectrum") ?? "planck";
 const MIPS = params.get("mips") !== "0";
 const BLOB = params.get("emitter") === "blob";
+// K6.8a: `?spectral=1` spectral maps (the receivers' rgb WGSL; per-channel extinction); `?mutate=toggle|resize` after the
+// measured frames: hide the light for some renders (the core frees its map and retires its texture and view buffer) or
+// change the map size, then restore it; the frame after must equal the first and nothing may bind a retired object
+// (K6.10 finding 8)
+const SPECTRAL = params.get("spectral") === "1";
+const MUTATE = params.get("mutate") as "toggle" | "resize" | null;
 const BACKGROUND = new THREE.Color(CASE === "emission" ? 0x000000 : 0x598eff);
 const SHADOW_OPACITY = 0.5;
 
@@ -198,6 +206,7 @@ async function runShadow(renderer: WebGPURenderer, device: GPUDevice): Promise<v
     castShadowMapSize: MAP_SIZE,
     castShadowCascades: CASCADES,
     castShadowSteps: STEPS,
+    spectral: SPECTRAL,
   });
   result.settings = { ...fr.settings };
 
@@ -206,7 +215,15 @@ async function runShadow(renderer: WebGPURenderer, device: GPUDevice): Promise<v
   const size = bbox.getSize(new THREE.Vector3());
   const center = bbox.getCenter(new THREE.Vector3());
   const scale = 100 / Math.max(size.x, size.y, size.z);
-  const volume = new VDBFrameVolume(source, { frameRenderer: fr, bbox, extinction: 60, shadowSteps: 24, mipmaps: MIPS });
+  const volume = new VDBFrameVolume(source, {
+    frameRenderer: fr,
+    bbox,
+    extinction: 60,
+    shadowSteps: 24,
+    mipmaps: MIPS,
+    // K6.8a spectral: channels that differ, so the rgb receivers' channels differ too
+    ...(SPECTRAL ? { extinctionScale: [1.6, 1.0, 0.5] as [number, number, number], angstromExponent: 0 } : {}),
+  });
   volume.scale.setScalar(scale);
   volume.position.copy(center).multiplyScalar(-scale).add(new THREE.Vector3(0, 20 + (size.y * scale) / 2, 0));
 
@@ -224,7 +241,7 @@ async function runShadow(renderer: WebGPURenderer, device: GPUDevice): Promise<v
   ground.receiveShadow = true;
   scene.add(ground);
 
-  let light: THREE.DirectionalLight | THREE.SpotLight;
+  let light: THREE.DirectionalLight | THREE.SpotLight | THREE.PointLight;
   if (LIGHT === "spot") {
     const spot = new THREE.SpotLight(0xffffff, 40000, 0, 0.6, 0.0, 2);
     spot.position.set(-60, 260, -110);
@@ -232,6 +249,13 @@ async function runShadow(renderer: WebGPURenderer, device: GPUDevice): Promise<v
     spot.shadow.camera.near = 10;
     spot.shadow.camera.far = 600;
     light = spot;
+  } else if (LIGHT === "point") {
+    // K6.8a: a point light where the spot is (its map is a cube: the receivers' cube WGSL)
+    const point = new THREE.PointLight(0xffffff, 40000, 0, 2);
+    point.position.set(-60, 260, -110);
+    point.shadow.camera.near = 10;
+    point.shadow.camera.far = 600;
+    light = point;
   } else {
     // The sun low enough that the shadow falls beside the volume; its three shadow camera covers the ground (his fitSunShadow)
     const sun = new THREE.DirectionalLight(0xffffff, 2.0);
@@ -243,7 +267,8 @@ async function runShadow(renderer: WebGPURenderer, device: GPUDevice): Promise<v
   light.castShadow = true;
   light.shadow.mapSize.setScalar(512);
   light.shadow.camera.updateProjectionMatrix();
-  scene.add(light, light.target);
+  scene.add(light);
+  if ("target" in light) scene.add(light.target);
   if (GROUND === "standard") scene.add(new THREE.AmbientLight(0xffffff, 0.2));
 
   const camera = new THREE.PerspectiveCamera(55, W / H, 1, 5000);
@@ -274,17 +299,39 @@ async function runShadow(renderer: WebGPURenderer, device: GPUDevice): Promise<v
   result.rgba = toBase64(display);
   result.backend = { requested: BACKEND, core: !!fr.core, maps: fr.core?.outputs.volumeShadows.size ?? 0, probes: false };
 
+  // K6.8a (K6.10 finding 8): take the map away and bring it back; the receivers built with it must follow the core
+  if (MUTATE === "toggle" || MUTATE === "resize") {
+    const away = MUTATE === "toggle" ? () => (light.visible = false) : () => (fr.settings.castShadowMapSize = MAP_SIZE / 2);
+    const back = MUTATE === "toggle" ? () => (light.visible = true) : () => (fr.settings.castShadowMapSize = MAP_SIZE);
+    away();
+    // Several renders (each a task: the readback awaits): the core retires the old texture and view buffer, then destroys them
+    let awayFrame = on;
+    for (let i = 0; i < 4; i++) awayFrame = await frame();
+    const mapsAway = fr.core?.outputs.volumeShadows.size ?? 0;
+    let awayShadowed = 0;
+    for (let i = 0; i < W * H; i++) if (Math.abs(awayFrame[i * 4 + 1]! - on[i * 4 + 1]!) > 1e-3) awayShadowed++;
+    back();
+    for (let i = 0; i < 2 + CASCADES; i++) await frame();
+    const restored = toDisplay(await frame());
+    let maxDiff = 0;
+    for (let i = 0; i < restored.length; i++) maxDiff = Math.max(maxDiff, Math.abs(restored[i]! - display[i]!));
+    result.mutate = { kind: MUTATE, identical: maxDiff === 0, maxDiff, awayShadowed, mapsAway };
+  }
+
   const entry = fr.volumeShadows.entries.get(light) ?? null;
-  result.entry = entry
-    ? {
-        size: entry.size,
-        cascades: entry.drawn.cascadeCount,
-        breaks: entry.drawn.cascadeBreaks.toArray(),
-        far: entry.cascades ? entry.cascades.slice(0, entry.drawn.cascadeCount).map((c) => c.drawn.far) : [entry.drawn.far],
-        drawn: fr.volumeShadows.lastUpdate.drawn,
-        waiting: fr.volumeShadows.lastUpdate.waiting,
-      }
-    : null;
+  // K6.8a: the receivers bind the core's map and its view buffer; the drawn state is the core map's
+  const drawnState = entry?.coreMap?.drawn ?? null;
+  result.entry =
+    entry && drawnState
+      ? {
+          size: entry.size,
+          cascades: drawnState.cascadeCount,
+          breaks: [...drawnState.breaks],
+          far: drawnState.cascadeCount > 0 ? drawnState.far.slice(0, drawnState.cascadeCount) : [drawnState.far[0] ?? 1],
+          drawn: fr.volumeShadows.lastUpdate.drawn,
+          waiting: fr.volumeShadows.lastUpdate.waiting,
+        }
+      : null;
 
   // The volume's screen coverage: the volume alone (ground hidden) against the background
   ground.visible = false;
