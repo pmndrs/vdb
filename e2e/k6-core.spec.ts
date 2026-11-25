@@ -58,6 +58,34 @@ async function run(page: Page, query: string, timeout = 300_000): Promise<Result
 
 const detail = (r: Result) => JSON.stringify(r, null, 2);
 
+/**
+ * K6.10a: the fewest non-zero ("covered") values a K6.2b / K6.3 / K6.4 / K6.5 probe's stats must have, about half the
+ * smallest count SwiftShader gives for that key (docs/archive/handoffs/K6-10a.md), so an all-zero GPU and twin pair
+ * (a kernel that writes nothing, a twin that reads nothing) fails instead of matching.
+ */
+function minCovered(key: string, query: string): number {
+  const floors: Record<string, number> = {
+    transmittanceStats: 8192, // every voxel: 16384 – 49152
+    environmentGridStats: 2048, // 4096
+    gridStats: 140, // 294 (sparse) – 1443
+    mipStats: 48, // 98 – 312
+    renderStats: 192, // 384
+    receiverStats: 512, // 1024
+    reduceStats: 2, // 2
+    probeStats: 768, // 1536 – 3072
+    irradianceStats: 192, // 382 – 388
+    workStats: 4096, // 8192
+    mapStats: 1024, // 2048
+    bufferStats: 10, // 10 – 34
+  };
+  if (key !== "stats") return floors[key]!;
+  if (query.includes("probe=resolve")) return 1900; // 3856 – 7280
+  if (query.includes("probe=integrate")) return 560; // 1120
+  if (query.includes("probe=shadow")) return 95; // 191 – 597
+  if (query.includes("probe=emission")) return 16; // 32
+  return 130; // gather and 'frame' froxels: 265 – 585
+}
+
 test("K6.1 every frame pipeline variant compiles", async ({ page }) => {
   // K6.5 added the shadow and emission kernels (with hooks): ~43 variants, minutes on SwiftShader under load
   test.setTimeout(900_000);
@@ -83,15 +111,16 @@ test("K6.4 every spectral pipeline variant compiles (both alpha prefix formats w
 
 const PROBES: { name: string; query: string; minCovered: number; mutations: string[] }[] = [
   { name: "view chunks", query: "?probe=view", minCovered: 512, mutations: ["coverage", "mie", "octaves", "two-sided"] },
-  { name: "gather (mixture, one group)", query: "?probe=gather&mix=mixture&groups=1", minCovered: 300, mutations: ["mix", "phase", "extinction", "fade"] },
+  // K6.10a: `wgsl-*` mutations patch the kernel's WGSL (k6-core.ts WGSL_PATCHES), the others flip a twin term
+  { name: "gather (mixture, one group)", query: "?probe=gather&mix=mixture&groups=1", minCovered: 300, mutations: ["mix", "phase", "extinction", "fade", "wgsl-gather-extinction", "wgsl-gather-phase"] },
   { name: "gather (over, one group)", query: "?probe=gather&mix=over&groups=1", minCovered: 300, mutations: ["mix"] },
   { name: "gather (mixture, two groups)", query: "?probe=gather&mix=mixture&groups=2", minCovered: 300, mutations: ["mix"] },
   { name: "gather (over, two groups, no mips)", query: "?probe=gather&mix=over&groups=2&mips=0", minCovered: 300, mutations: ["extinction"] },
-  { name: "resolve", query: "?probe=resolve&temporal=0", minCovered: 512, mutations: ["scan-stop"] },
-  { name: "resolve (temporal)", query: "?probe=resolve&temporal=1", minCovered: 512, mutations: ["temporal-clamp", "scan-stop"] },
+  { name: "resolve", query: "?probe=resolve&temporal=0", minCovered: 512, mutations: ["scan-stop", "wgsl-resolve-order"] },
+  { name: "resolve (temporal)", query: "?probe=resolve&temporal=1", minCovered: 512, mutations: ["temporal-clamp", "scan-stop", "wgsl-resolve-order"] },
   { name: "integrate", query: "?probe=integrate", minCovered: 512, mutations: ["coverage", "taps"] },
   // K6.1d: the gather on the core sparse source (K6.7), volume A skipping empty space (hdda), B wrapped (no skip)
-  { name: "gather sparse (lod none, one group, hdda)", query: "?probe=gather&source=sparse&lod=none&groups=1", minCovered: 200, mutations: ["skip", "extinction", "phase"] },
+  { name: "gather sparse (lod none, one group, hdda)", query: "?probe=gather&source=sparse&lod=none&groups=1", minCovered: 200, mutations: ["skip", "extinction", "phase", "wgsl-gather-extinction"] },
   { name: "gather sparse (node-average, two groups)", query: "?probe=gather&source=sparse&lod=node-average&groups=2", minCovered: 300, mutations: ["mix"] },
   { name: "gather sparse (coarse-pyramid, one group)", query: "?probe=gather&source=sparse&lod=coarse-pyramid&groups=1", minCovered: 300, mutations: ["extinction"] },
 ];
@@ -185,7 +214,7 @@ const K63_PROBES: { name: string; query: string; keys: K63Key[]; mutations: Reco
     mutations: { octaves: "environmentGridStats" },
   },
   { name: "frame, 'two-sided'", query: "?probe=frame&ms=two-sided", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { "two-sided": "transmittanceStats" } },
-  { name: "frame, 'two-sided', sparse, environment 'spherical-harmonics'", query: "?probe=frame&ms=two-sided&source=sparse&env=spherical-harmonics", keys: ["gridStats", "transmittanceStats", "environmentGridStats", "stats"], mutations: {} },
+  { name: "frame, 'two-sided', sparse, environment 'spherical-harmonics'", query: "?probe=frame&ms=two-sided&source=sparse&env=spherical-harmonics", keys: ["gridStats", "transmittanceStats", "environmentGridStats", "stats"], mutations: { "two-sided": "transmittanceStats" } },
   {
     name: "frame, 'mlp' (his network)",
     query: "?probe=frame&ms=mlp",
@@ -223,6 +252,7 @@ for (const p of K63_PROBES) {
       const s = r[key]!;
       expect(s, `${key} missing: ${detail(r)}`).toBeDefined();
       expect(s.compared, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(key === "mipStats" ? 64 : 512);
+      expect(s.covered, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(minCovered(key, p.query));
       expect(s.over, `${key}: ${detail(r)}`).toBeLessThanOrEqual(Math.floor(s.compared * 0.001));
       console.log(`[k6-core] K6.3 ${p.name} ${key} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toFixed(2)} f16 ulp, ${s.over} over`);
     }
@@ -242,7 +272,7 @@ for (const p of K63_PROBES) {
 // composite; spectral volume shadow maps and their rgb receivers). `mutations` maps a twin term to the stats it must break.
 type K64Key = "stats" | "renderStats" | "gridStats" | "transmittanceStats" | "environmentGridStats" | "receiverStats";
 const K64_PROBES: { name: string; query: string; keys: K64Key[]; mutations: Record<string, K64Key> }[] = [
-  { name: "gather spectral, 'mixture', dense", query: "?probe=gather&spectral=1", keys: ["stats", "renderStats"], mutations: { spectrum: "stats", extinction: "stats" } },
+  { name: "gather spectral, 'mixture', dense", query: "?probe=gather&spectral=1", keys: ["stats", "renderStats"], mutations: { spectrum: "stats", extinction: "stats", "wgsl-gather-extinction": "stats", "wgsl-gather-phase": "stats" } },
   { name: "gather spectral, 'over', two groups (partials)", query: "?probe=gather&spectral=1&mix=over&groups=2", keys: ["stats", "renderStats"], mutations: { mix: "stats" } },
   { name: "gather spectral, 'mixture', two groups (partials)", query: "?probe=gather&spectral=1&groups=2", keys: ["stats", "renderStats"], mutations: { mix: "stats" } },
   { name: "gather spectral, 'octaves', environment 'directional'", query: "?probe=gather&spectral=1&ms=octaves&env=directional", keys: ["stats"], mutations: { octaves: "stats" } },
@@ -270,9 +300,9 @@ const K64_PROBES: { name: string; query: string; keys: K64Key[]; mutations: Reco
   { name: "frame spectral, 'outward' environment, single scattering", query: "?probe=frame&spectral=1&ms=0&env=outward", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { "env-outward": "stats" } },
   { name: "frame spectral, 'mlp' runs as 1D diffusion", query: "?probe=frame&spectral=1&ms=mlp", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { diffusion: "transmittanceStats" } },
   { name: "frame spectral, occluder maps", query: "?probe=frame&spectral=1&occluders=1", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { occluder: "stats", "occluder-scattered": "transmittanceStats" } },
-  { name: "resolve spectral", query: "?probe=resolve&spectral=1", keys: ["stats"], mutations: { "spectral-alpha": "stats", "scan-stop": "stats" } },
+  { name: "resolve spectral", query: "?probe=resolve&spectral=1", keys: ["stats"], mutations: { "spectral-alpha": "stats", "scan-stop": "stats", "wgsl-resolve-order": "stats" } },
   { name: "resolve spectral, temporal", query: "?probe=resolve&spectral=1&temporal=1", keys: ["stats"], mutations: { "spectral-alpha": "stats" } },
-  { name: "resolve spectral, rg16float alpha prefix (texture-formats-tier1 when the adapter has it)", query: "?probe=resolve&spectral=1&tier1=1", keys: ["stats"], mutations: {} },
+  { name: "resolve spectral, rg16float alpha prefix (texture-formats-tier1 when the adapter has it)", query: "?probe=resolve&spectral=1&tier1=1", keys: ["stats"], mutations: { "spectral-alpha": "stats", "wgsl-resolve-order": "stats" } },
   { name: "integrate spectral (linear)", query: "?probe=integrate&spectral=1", keys: ["stats"], mutations: { "spectral-alpha": "stats", coverage: "stats" } },
   { name: "integrate spectral (sRGB)", query: "?probe=integrate&spectral=1&srgb=1", keys: ["stats"], mutations: { "spectral-alpha": "stats" } },
   { name: "shadow map spectral, directional (2 cascades)", query: "?probe=shadow&spectral=1&light=dir&cascades=2", keys: ["stats", "receiverStats"], mutations: { spectrum: "stats", "receiver-far": "receiverStats" } },
@@ -293,6 +323,7 @@ for (const p of K64_PROBES) {
       expect(s, `${key} missing: ${detail(r)}`).toBeDefined();
       // render(): one value per pixel of the 24 x 16 froxel grid
       expect(s.compared, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(key === "renderStats" ? 384 : 512);
+      expect(s.covered, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(minCovered(key, p.query));
       expect(s.over, `${key}: ${detail(r)}`).toBeLessThanOrEqual(Math.floor(s.compared * 0.001));
       console.log(`[k6-core] K6.4 ${p.name} ${key} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toFixed(2)} f16 ulp, ${s.over} over`);
     }
@@ -334,6 +365,7 @@ for (const p of K65_PROBES) {
     for (const key of p.keys) {
       const s = r[key]!;
       expect(s.compared, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(key === "reduceStats" ? 2 : key === "stats" && p.query.includes("emission") ? 32 : 512);
+      expect(s.covered, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(minCovered(key, p.query));
       expect(s.over, `${key}: ${detail(r)}`).toBe(0);
       console.log(`[k6-core] K6.5 ${p.name} ${key} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toExponential(2)} (${s.bound}), max |d| ${s.maxAbs.toExponential(2)}, ${s.over} over`);
     }
@@ -412,7 +444,7 @@ const ENV_PROBES: { name: string; query: string; count: number; mutations: Recor
   { name: "equirect rgba16float, 'directional'", query: "?probe=environment&mode=directional", count: 8, mutations: { "env-area": "workStats", "env-blur": "mapStats", "env-seeds": "bufferStats", "env-sh": "bufferStats" } },
   { name: "equirect, rotated and reflected, 'directional' pairs", query: "?probe=environment&mode=directional&pairs=1&rotate=1", count: 8, mutations: { "env-seeds": "bufferStats", "env-sh": "bufferStats" } },
   { name: "equirect rgba32float, rotated, SH L2 lights", query: "?probe=environment&mode=spherical-harmonics&order=2&rotate=1&format=rgba32float", count: 12, mutations: { "env-blur": "mapStats" } },
-  { name: "equirect, SH L1 lights, 3 samples", query: "?probe=environment&mode=spherical-harmonics&order=1&samples=3", count: 6, mutations: {} },
+  { name: "equirect, SH L1 lights, 3 samples", query: "?probe=environment&mode=spherical-harmonics&order=1&samples=3", count: 6, mutations: { "env-sh": "bufferStats", "env-blur": "mapStats" } },
   { name: "cube rgba16float, 'directional'", query: "?probe=environment&projection=cube&mode=directional&samples=5", count: 5, mutations: { "env-area": "workStats" } },
   { name: "equirect, 'outward' (SH only)", query: "?probe=environment&mode=outward", count: 0, mutations: { "env-sh": "bufferStats" } },
 ];
@@ -430,6 +462,7 @@ for (const p of ENV_PROBES) {
     for (const key of ["workStats", "mapStats", "bufferStats"] as const) {
       const s = r[key]!;
       expect(s.compared, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(key === "bufferStats" ? 10 : 2048);
+      expect(s.covered, `${key}: ${detail(r)}`).toBeGreaterThanOrEqual(minCovered(key, p.query));
       // cube: a sub-sample near a face texel edge may pick the neighbour texel (its direction comes from WGSL sin / cos,
       // 2^-11 absolute): one sub-sample of k^2 per flipped texel, a few % of the work texels at most
       expect(s.over, `${key}: ${detail(r)}`).toBeLessThanOrEqual(key === "workStats" && p.query.includes("cube") ? Math.floor(s.compared * 0.02) : 0);
@@ -493,7 +526,7 @@ for (const p of FRAME_ENV_PROBES) {
 const GATHER_ENV_PROBES: { name: string; query: string; mutations: string[] }[] = [
   { name: "'directional' lights, diffusion", query: "?probe=gather&env=directional", mutations: ["env-lights", "env-outward"] },
   { name: "SH lights, single scattering, sparse", query: "?probe=gather&env=spherical-harmonics&ms=0&source=sparse&lod=none", mutations: ["env-lights"] },
-  { name: "'outward' SH irradiance", query: "?probe=gather&env=outward", mutations: [] },
+  { name: "'outward' SH irradiance", query: "?probe=gather&env=outward", mutations: ["env-outward"] },
 ];
 
 for (const p of GATHER_ENV_PROBES) {

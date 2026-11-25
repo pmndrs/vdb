@@ -1,0 +1,63 @@
+---
+title: Migrating from 0.1 to 0.2
+description: What 0.2.0 renamed or removed in @pmndrs/vdb/three, and what replaces it.
+nav: 89
+---
+
+In 0.2.0 the froxel renderer moved into the core: `@pmndrs/vdb` draws every frame with WGSL compute kernels
+(`vdbCreateFrameRenderer`, see [Rendering without three](/core/rendering-without-three)), and `@pmndrs/vdb/three`'s
+`VDBFrameRenderer` is a thin adapter over it. The TSL pass materials, their shader chunks and the internal `backend`
+switch are gone. Frames match 0.1's TSL path closely (57–70 dB on mjurczyk's scenes in the K6 A/Bs; the `'outward'`
+environment irradiance, about 47 dB, differs most), and volume silhouettes can differ by a pixel. The full list is in the [changelog](https://github.com/pmndrs/vdb/blob/main/packages/vdb/CHANGELOG.md).
+
+Nothing outside the froxel renderer changed: `VDBGridPool`, `VDBGridNode`, `VDBVolumeMaterial`, the level sets, the
+points and the tools keep their 0.1 API.
+
+## Removed names
+
+| 0.1 (`@pmndrs/vdb/three`) | 0.2 |
+|---|---|
+| `VDBFrameRendererSettings` | `VDBFrameSettings` (the core's, re-exported). It adds `froxelMix`, `occlusion`, `multiScaleLevels`, `ambientOcclusion`, `ambientOcclusionPairs` and `ambientOcclusionSteps` |
+| `VDBFramePhase` | `VDBFramePhaseName` |
+| `VDBFrameMultipleScattering` | `VDBFrameMultipleScatteringMode` |
+| `vdbFrameLights`, `vdbFrameAllLights` | `VDB_FRAME_LIGHT_BITS` (`ambient`, `point`, `directional`, `spot`, `hemisphere`, `environment`), `VDB_FRAME_ALL_LIGHTS` |
+| `vdbFrameBlackbodyEmission(spectrum, exponent)`, `VDBFrameBlackbodyHook` | `emissionColor: { spectrum, exponent }` (a `VDBEmissionColor`: `'white'`, `{ spectrum: 'planck' \| 'soot', exponent? }`, `{ lut }` or `{ wgsl }`). A TSL hook throws `VDB_BAD_OPTION` |
+| `VDBFramePass` | `passHook` is `{ timestampWrites?, begin?(), end?(update) }`: the timestamps bracket each core update (`VDBFrameTimestamps`, `VDBFrameUpdate`) |
+
+## Renamed or removed members
+
+| 0.1 | 0.2 |
+|---|---|
+| `VDBFrameRenderer.neuralNetwork` | `VDBFrameRenderer.mlp` (`VDBFrameMlp`, EXPERIMENTAL; his trained weights by default; `null` runs `'neural'` / `'mlp'` as 1D diffusion) |
+| `VDBFrameRenderer.renderFroxels()`, `holdFroxels` | `VDBFrameRenderer.froxels` (`false` keeps the last froxels) |
+| `VDBFrameRenderer.environment`, `environmentLights` (a readback) | none: the core extracts the environment lights on the GPU |
+| `VDBFrameRenderer.redrawStats` | the core's `VDBFrameRedrawStats` (adds `volumeShadows`) |
+| none | `VDBFrameRenderer.core`: the `VDBFrameRendererGpu` (its `outputs`), after the first render |
+| `VDBFrameVolume.volumes[0].matrix` | `VDBFrameVolume.boxMatrix` |
+| `VDBFrameVolume.sourceUniforms`, `volumes`, the pass-material fields | none (`vdbVolumeUniforms` and `vdbVolumeNodes` stay for custom TSL materials) |
+| `VDBSequence` from `@pmndrs/vdb/three` | the core's `VDBSequence` (`@pmndrs/vdb`); `@pmndrs/vdb/three` re-exports it |
+
+{/* snippet: migrate-0-2 */}
+```ts
+import { VDB_FRAME_LIGHT_BITS, type VDBFrameRenderer, type VDBFrameSettings, type VDBFrameVolume } from '@pmndrs/vdb/three';
+
+// 0.1: frameRenderer.neuralNetwork = weights;   0.2: the generic MLP data (null: 1D diffusion)
+frameRenderer.mlp = null;
+// 0.1: frameRenderer.holdFroxels = true;   0.2: false keeps the last froxels
+frameRenderer.froxels = false;
+// 0.1: vdbFrameBlackbodyEmission('planck', 1.5);   0.2: plain data
+volume.emissionColor = { spectrum: 'planck', exponent: 1.5 };
+// 0.1: vdbFrameLights.directional | vdbFrameLights.ambient
+volume.lights = VDB_FRAME_LIGHT_BITS.directional | VDB_FRAME_LIGHT_BITS.ambient;
+// 0.1: VDBFrameRendererSettings;   0.2: the core's VDBFrameSettings
+const settings: VDBFrameSettings = frameRenderer.settings;
+// the core renderer itself, after the first render (its outputs: shadow maps, emission probes)
+console.log(frameRenderer.core?.outputs);
+```
+
+## Behaviour to check
+
+- `multipleScattering` still defaults to `'neural'` (his trained network). It runs the core's generic MLP, which is
+  EXPERIMENTAL: its data shape may change before 1.0.
+- Settings out of the device's range clamp with a one-time console warning instead of failing: `shadowResolution`
+  (the transmittance stack must fit `maxTextureDimension3D` and `maxBufferSize`) and `castShadowMapSize`.

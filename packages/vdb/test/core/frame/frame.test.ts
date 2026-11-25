@@ -15,6 +15,8 @@ import {
   vdbFrameChunkProbeSpec,
   vdbFrameCompositeSpec,
   vdbFrameDefaultSettings,
+  vdbFrameFitGridResolution,
+  vdbFrameStackTargets,
   vdbFrameEnvBlurSpec,
   vdbFrameEnvPrefilterSpec,
   vdbFrameEnvReduceSpec,
@@ -45,6 +47,7 @@ import {
   vdbFrameVolumeSlices,
   vdbFroxelHeldSize,
 } from "../../../src/tools/frame/view.js";
+import { vdbFrameStackLayout } from "../../../src/tools/frame/stack.js";
 import { wgslNameProblems } from "../wgsl-names.js";
 // @ts-expect-error: repo-level ESM helper without type declarations
 import { wgslSizes } from "../../../../../scripts/lib/wgsl-variants.mjs";
@@ -226,23 +229,131 @@ describe("K6.5b sampled-texture headroom", () => {
   });
 });
 
+/** Lets a `setTimeout(0)` run (the retire queue's later task). */
+const nextTask = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
 describe("K6.1 retire queue", () => {
-  it("destroys a retired object two updates later; drain destroys the rest", () => {
+  const destroyables = (n: number) => Array.from({ length: n }, () => ({ destroyed: 0, destroy() {
+    this.destroyed++;
+  } }));
+
+  it("destroys a retired object two updates later, in a later task; drain destroys the rest", async () => {
     const q = new VDBRetireQueue();
-    const made = Array.from({ length: 3 }, () => ({ destroyed: 0, destroy() {
-      this.destroyed++;
-    } }));
+    const made = destroyables(3);
     q.retire(made[0]);
     q.advance();
+    await nextTask();
     expect(made[0]!.destroyed).toBe(0);
     q.retire(made[1]);
     q.advance();
+    // K6.10a: due, but not in the task that made it due
+    expect(made[0]!.destroyed).toBe(0);
+    expect(q.pending).toBe(2);
+    await nextTask();
     expect(made[0]!.destroyed).toBe(1);
     expect(made[1]!.destroyed).toBe(0);
     q.retire(made[2]);
     q.drain();
     expect(made.map((m) => m.destroyed)).toEqual([1, 1, 1]);
     expect(q.pending).toBe(0);
+  });
+
+  it("K6.10a fail-before: three updates recorded in one task (one encoder, one submit) destroy nothing before the task ends", async () => {
+    // Before K6.10a the third advance destroyed the object inside the update: the host's later submit of the encoder
+    // that the first update recorded with it failed ("used in submit while destroyed").
+    const q = new VDBRetireQueue();
+    const [a, b] = destroyables(2);
+    q.retire(a);
+    for (let i = 0; i < 5; i++) q.advance();
+    q.retireAfterTask(b);
+    expect([a!.destroyed, b!.destroyed]).toEqual([0, 0]);
+    await nextTask();
+    expect([a!.destroyed, b!.destroyed]).toEqual([1, 1]);
+    // drain before the task: destroyed once, not again by the timer
+    const [c] = destroyables(1);
+    q.retireAfterTask(c);
+    q.drain();
+    await nextTask();
+    expect(c!.destroyed).toBe(1);
+    expect(q.pending).toBe(0);
+  });
+});
+
+describe("K6.10a vdbDenseSource.replace retires its textures (the later-task destroy: test/tools/wvdb-dense.test.ts)", () => {
+  const recording = () => {
+    const textures: { label?: string; destroyed: number }[] = [];
+    const device = {
+      createTexture: (d: GPUTextureDescriptor) => {
+        const t = { ...d, destroyed: 0, createView: () => ({}), destroy() {
+          this.destroyed++;
+        } };
+        textures.push(t);
+        return t;
+      },
+      createSampler: () => ({}),
+      queue: { writeTexture() {} },
+    } as unknown as GPUDevice;
+    return { device, textures };
+  };
+
+  it("dispose destroys a pending retired texture at once, and only once", async () => {
+    const { device, textures } = recording();
+    const src = vdbDenseSource(device, denseVolume());
+    const bigger = denseVolume() as { dimensions: number[]; density: { dimensions: number[]; data: Uint8Array } };
+    bigger.dimensions = [8, 8, 16];
+    bigger.density.dimensions = [8, 8, 16];
+    bigger.density.data = new Uint8Array(8 * 8 * 16);
+    src.replace(bigger as never);
+    src.dispose();
+    expect(textures.map((t) => t.destroyed)).toEqual([1, 1]);
+    await nextTask();
+    expect(textures.map((t) => t.destroyed)).toEqual([1, 1]);
+  });
+});
+
+describe("K6.10a vdbFrameFitGridResolution (the transmittance stack must tile and fit)", () => {
+  const stage = (side: number, targets: number, maxDim = 2048) => {
+    const s = vdbFrameStackLayout(side, targets, maxDim).size;
+    return Math.ceil((s[0] * 8) / 256) * 256 * s[1] * s[2];
+  };
+
+  it("fail-before: a resolution whose stack does not tile clamps instead of throwing (K6.10 repro: 1100, and 1024 with 3–4 cascades)", () => {
+    // before K6.10a the clamp loop called vdbFrameStackLayout, which threw this RangeError
+    expect(() => vdbFrameStackLayout(1100, 4, 2048)).toThrow(RangeError);
+    const big = { maxBufferSize: 2 ** 40 };
+    expect(vdbFrameFitGridResolution(1100, 1, false, big)).toEqual({ size: 1024, reason: "tile" });
+    // 1024 with 3 cascades: 12 targets, 8 fit 2048³; 682 → 27 per stack
+    expect(vdbFrameFitGridResolution(1024, 3, false, big)).toEqual({ size: 682, reason: "tile" });
+    expect(vdbFrameFitGridResolution(1024, 4, false, big)).toEqual({ size: 682, reason: "tile" });
+    // spectral: 12 targets per cascade; and the partials (3 words deep) must fit too
+    const spectral = vdbFrameFitGridResolution(1024, 1, true, big);
+    expect(spectral.reason).toBe("tile");
+    expect(vdbFrameStackLayout(spectral.size, 1).size[2] * 3).toBeLessThanOrEqual(2048);
+    expect(vdbFrameStackLayout(vdbFrameFitGridResolution(5000, 4, true, big).size, 4).size[2] * 3).toBeLessThanOrEqual(2048);
+    // even a huge request ends at a fitting side
+    for (const [r, c, s] of [[100000, 1, false], [5000, 4, true], [3000, 2, false]] as const) {
+      const fit = vdbFrameFitGridResolution(r, c, s, big);
+      expect(() => vdbFrameStackLayout(fit.size, vdbFrameStackTargets(c, s), 2048)).not.toThrow();
+      expect(fit.reason).toBe("tile");
+    }
+  });
+
+  it("under WebGPU's default limits, the stack's padded staging buffer fits 256 MiB (K6.8) and the next side does not", () => {
+    for (const [cascades, spectral] of [[1, false], [2, false], [4, false], [1, true], [4, true]] as const) {
+      const targets = vdbFrameStackTargets(cascades, spectral);
+      for (const r of [1100, 1024, 512, 256]) {
+        const fit = vdbFrameFitGridResolution(r, cascades, spectral);
+        expect(fit.reason).not.toBeNull();
+        expect(stage(fit.size, targets)).toBeLessThanOrEqual(268435456);
+        expect(stage(fit.size + 1, targets)).toBeGreaterThan(268435456);
+      }
+    }
+    // the default settings' resolution is untouched
+    const d = vdbFrameDefaultSettings();
+    expect(vdbFrameFitGridResolution(d.shadowResolution, d.shadowCascades, false)).toEqual({ size: d.shadowResolution, reason: null });
+    expect(vdbFrameFitGridResolution(64, 4, true)).toEqual({ size: 64, reason: null });
+    // a smaller maxTextureDimension3D tiles fewer sub-volumes
+    expect(vdbFrameFitGridResolution(300, 1, false, { maxTextureDimension3D: 512, maxBufferSize: 2 ** 40 })).toEqual({ size: 256, reason: "tile" });
   });
 });
 

@@ -110,7 +110,11 @@ export type TwinMutation =
   | "spectrum"
   | "spectral-pack"
   | "spectral-alpha"
-  | "spectral-absorption";
+  | "spectral-absorption"
+  // K6.10a: WGSL patches of the kernel under test (k6-core.ts WGSL_PATCHES), not twin terms: the twin stays exact
+  | "wgsl-gather-extinction"
+  | "wgsl-gather-phase"
+  | "wgsl-resolve-order";
 
 /** The source as the twin reads it: the `vdbSrc*` functions on the CPU (uvw already offset and wrapped). */
 export interface TwinSampler {
@@ -358,7 +362,8 @@ export function volumeFroxelTwin(frame: TwinFrame, r: TwinVolume, cell: V3, muta
         sum = add(sum, scale(env.colors[i]!, diffusion ? vdbFrameIsotropicDiffusion(front[2], back[2], front[3]) : vdbFrameShadowTotal(front[1], octaves)));
       }
       irradiance = add(irradiance, [Math.max(sum[0], 0), Math.max(sum[1], 0), Math.max(sum[2], 0)]);
-    } else {
+    } else if (!(mutate === "env-outward" && env.count === 0)) {
+      // K6.10a: in 'outward' mode (no lights) ?mutate=env-outward drops this term
       const { front, back } = pair(mat3(r.worldToLocal, outward));
       if (diffusion) {
         irradiance = add(irradiance, scale(vdbFrameEnvironmentIrradiance(env.sh, outward), vdbFrameIsotropicDiffusion(front[2], back[2], front[3]) * 0.5));

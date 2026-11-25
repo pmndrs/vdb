@@ -311,7 +311,7 @@ describe("vdbSparseSourceGpu volumes", () => {
 });
 
 describe("the packed pyramid atlas", () => {
-  it("packs every volume's base and mip atlas into one r16float texture, shares equal pyramids, grows and retires", () => {
+  it("packs every volume's base and mip atlas into one r16float texture, shares equal pyramids, grows and retires", async () => {
     const g1 = pool.add(makeImage({ gridType: 1, bboxMin: [0, 0, 0], bboxMax: [63, 31, 15] }));
     const g2 = pool.add(makeImage({ gridType: 1, bboxMin: [0, 0, 0], bboxMax: [15, 15, 15], seed: 3 }));
     const source = vdbSparseSourceGpu(pool, { pyramidMax: 16, types: ["float"] });
@@ -366,6 +366,9 @@ describe("the packed pyramid atlas", () => {
     frame(source);
     expect(atlas.destroyed).toBe(false);
     frame(source);
+    // K6.10a: due, destroyed in a later task
+    expect(atlas.destroyed).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(atlas.destroyed).toBe(true);
     expect(placeholder.destroyed).toBe(true);
     source.dispose();

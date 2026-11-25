@@ -18,7 +18,7 @@ import {
   vdbFrameShadowFitCascades,
   vdbFrameShadowViewCamera,
 } from "../../../src/tools/internal.js";
-import { VDBFrameShadowMaps, vdbEmissionHookProblems, VDBRetireQueue, type VDBFrameLight } from "../../../src/core/frame/index.js";
+import { VDBFrameShadowMaps, vdbEmissionHookProblems, vdbFrameFitShadowMapSize, VDBRetireQueue, type VDBFrameLight } from "../../../src/core/frame/index.js";
 
 const close = (a: ArrayLike<number>, b: ArrayLike<number>, tol: number) => {
   for (let i = 0; i < a.length; i++) expect(Math.abs(a[i]! - b[i]!), `[${i}] ${a[i]} vs ${b[i]}`).toBeLessThanOrEqual(tol * Math.max(1, Math.abs(b[i]!)));
@@ -208,5 +208,59 @@ describe("K6.5 volume shadow budget (core; his c13f2d5 and 62a6e3e by constructi
     expect(s.layers).toBe(4);
     expect(maps.maps.get("P")!.layers).toBe(6);
     maps.dispose();
+  });
+
+  it("K6.10a: the map size clamps to maxTextureDimension2D and to a staging buffer within maxBufferSize (a point light's 6 faces count), warned once", () => {
+    // fail-before: the size went to createTexture unclamped (a 4096 point map is 805 MB; > 8192 is an invalid texture)
+    const made: GPUTextureDescriptor[] = [];
+    const { device } = fakeDevice();
+    const limited = Object.assign(Object.create(device) as object, {
+      limits: { maxTextureDimension2D: 1024, maxBufferSize: 6 * 1024 * 1024 },
+      createTexture: (d: GPUTextureDescriptor) => (made.push(d), { ...d, createView: () => ({}), destroy() {} }),
+    }) as unknown as GPUDevice;
+    const warnings: string[] = [];
+    const warned = new Set<string>();
+    const maps = new VDBFrameShadowMaps(limited, "t", new VDBRetireQueue(), (key, message) => {
+      if (!warned.has(key)) (warned.add(key), warnings.push(message));
+    });
+    const point: VDBFrameLight = { id: "P", kind: "point", position: [0, 40, 0], color: [1, 1, 1], distance: 0, decay: 2, shadow: { size: 4096 } };
+    const big = spot("A", 0);
+    (big as { shadow: { size: number } }).shadow.size = 4096;
+    const small = spot("B", 5);
+    for (let i = 0; i < 3; i++) maps.update(inputs([point, big, small]));
+    const side = (d: GPUTextureDescriptor) => (d.size as number[])[0]!;
+    const bytes = (d: GPUTextureDescriptor) => Math.ceil((side(d) * 8) / 256) * 256 * side(d) * (d.size as number[])[2]!;
+    // point: 6 layers within 6 MiB (rows padded to 256 bytes)
+    expect(maps.maps.get("P")!.size).toBe(vdbFrameFitShadowMapSize(4096, 6, { maxTextureDimension2D: 1024, maxBufferSize: 6 * 1024 * 1024 }).size);
+    expect(maps.maps.get("P")!.size).toBeLessThan(1024);
+    // spot: one layer, the dimension limit binds first (1024² · 8 = 8 MiB > 6 MiB, so the bytes bind too)
+    expect(maps.maps.get("A")!.size).toBeLessThanOrEqual(1024);
+    expect(maps.maps.get("B")!.size).toBe(64);
+    for (const d of made) {
+      expect(side(d)).toBeLessThanOrEqual(1024);
+      expect(bytes(d)).toBeLessThanOrEqual(6 * 1024 * 1024);
+    }
+    // three updates, one texture per light, one warning per clamped light
+    expect(made.length).toBe(3);
+    expect(warnings.length).toBe(2);
+    expect(warnings.join("\n")).toMatch(/point light \(6 rgba16float layers, 768 MiB\).*maxBufferSize 6 MiB.*clamped to \d+/);
+    maps.dispose();
+  });
+});
+
+describe("K6.10a vdbFrameFitShadowMapSize", () => {
+  it("is the largest side whose padded staging buffer fits, and never above maxTextureDimension2D", () => {
+    const stage = (s: number, layers: number) => Math.ceil((s * 8) / 256) * 256 * s * layers;
+    // WebGPU defaults: a 4096 point map (805 MB) clamps; spot at 4096 (128 MiB) fits
+    const point = vdbFrameFitShadowMapSize(4096, 6);
+    expect(point.reason).toBe("bytes");
+    expect(stage(point.size, 6)).toBeLessThanOrEqual(268435456);
+    expect(stage(point.size + 1, 6)).toBeGreaterThan(268435456);
+    expect(vdbFrameFitShadowMapSize(4096, 1)).toEqual({ size: 4096, reason: null });
+    expect(vdbFrameFitShadowMapSize(512, 4)).toEqual({ size: 512, reason: null });
+    // above maxTextureDimension2D
+    expect(vdbFrameFitShadowMapSize(9000, 1)).toEqual({ size: 5792, reason: "dimension" });
+    expect(vdbFrameFitShadowMapSize(9000, 1, { maxBufferSize: 2 ** 32 })).toEqual({ size: 8192, reason: "dimension" });
+    expect(vdbFrameFitShadowMapSize(0.2, 1)).toEqual({ size: 1, reason: null });
   });
 });

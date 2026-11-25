@@ -1,15 +1,15 @@
 # @pmndrs/vdb
 
-Sparse NanoVDB volumes on WebGPU: an engine-free WGSL core, pure-TypeScript CPU tools and a three.js adapter with a
-froxel volume renderer, level sets and points. One package, three subpaths.
+Sparse NanoVDB volumes on WebGPU: an engine-free WGSL core with a compute froxel volume renderer, level-set and point
+passes, pure-TypeScript CPU tools and a thin three.js adapter. One package, three subpaths.
 
 [Docs](https://pmndrs.github.io/vdb/) · [Examples](https://pmndrs.github.io/vdb/examples/) · [GitHub](https://github.com/pmndrs/vdb) · [Changelog](./CHANGELOG.md)
 
 | Import | What it is | Needs a GPU / three? |
 |---|---|---|
-| `@pmndrs/vdb` | the engine-free WebGPU core: `VDBGridPool`, the generated `vdb*` WGSL module (`vdbModuleWgsl`), GPU compute tools | WebGPU, no engine |
+| `@pmndrs/vdb` | the engine-free WebGPU core: `VDBGridPool`, the generated `vdb*` WGSL module (`vdbModuleWgsl`), GPU compute tools, the froxel renderer (`vdbCreateFrameRenderer`), volume sources (`vdbSparseSourceGpu`, `vdbDenseSource`), level-set and point passes, `VDBSequence` | WebGPU, no engine |
 | `@pmndrs/vdb/tools` | CPU side: `.nvdb` and `.wvdb` read/write, CPU reads (`vdbReadValueCpu`, `vdbSampleTrilinear`), `.vdb` parser, NanoVDB builder, quantizer, resampler | no |
-| `@pmndrs/vdb/three` | the three.js / TSL adapter: `VDBGridNode` (a pool in three's node system), `VDBVolumeMaterial`, the froxel renderer (`VDBFrameVolume`, `VDBFrameRenderer`), `VDBLevelSetMaterial`, `VDBPoints`, `VDBSequence`, compute utilities | `three` (optional peer, `>=0.187.0 <0.188.0`) |
+| `@pmndrs/vdb/three` | the three.js adapter: `VDBGridNode` (a pool in three's node system), `VDBVolumeMaterial`, `VDBFrameVolume` / `VDBFrameRenderer` (the core's froxel renderer on three's device), `VDBLevelSetMaterial`, `VDBPoints`, compute utilities | `three` (optional peer, `>=0.187.0 <0.188.0`) |
 | `@pmndrs/vdb/pnanovdb.wgsl` | the raw WGSL text (use `?raw` in Vite) | no |
 
 ```sh
@@ -20,11 +20,29 @@ npm install @pmndrs/vdb three    # to use @pmndrs/vdb/three
 `three` is an optional peer dependency (r187 only). `@webgpu/types` and `fflate` are regular dependencies.
 `core` and `tools` never import `three`.
 
+Coming from 0.1? 0.2.0 moved the froxel renderer into the core and renamed a few `@pmndrs/vdb/three` names:
+[Migrating from 0.1 to 0.2](https://github.com/pmndrs/vdb/blob/main/docs/site/reference/migrating-0-2.mdx).
+
 ## `@pmndrs/vdb` (core) and the raw WGSL module
 
 The engine-free WebGPU layer: `VDBGridPool` (NanoVDB grids in one storage buffer on the host's `GPUDevice`), the
-generated `vdb*` WGSL module for reading, sampling and marching them (`vdbModuleWgsl`), and GPU compute tools. It
-knows nothing about three.js or any other engine. Loading `.nvdb` files is in `@pmndrs/vdb/tools` (`NvdbFile`).
+generated `vdb*` WGSL module for reading, sampling and marching them (`vdbModuleWgsl`), GPU compute tools, and since
+0.2.0 the froxel volume renderer, its volume sources and the level-set and point passes. It knows nothing about
+three.js or any other engine. Loading `.nvdb` files is in `@pmndrs/vdb/tools` (`NvdbFile`).
+
+### The froxel renderer on raw WebGPU (0.2.0)
+
+`vdbCreateFrameRenderer(device)` (`VDBFrameRendererGpu`) renders volumes through a froxel grid as WGSL compute
+kernels: `'volume'` or `'frame'` lighting, temporal accumulation, phase functions (including Lorenz-Mie), multiple
+scattering, spectral media, an environment, volume shadow maps for your meshes (volume → mesh), your depth maps
+shadowing the volumes (mesh → volume) and an emission light. It takes your `GPUDevice`, records into your encoder
+(`update(encoder, input)`, then `render(encoder, targets)` or `vdbFrameIntegrateWgsl` in your own pass), frees only
+what it made and never submits. Sources: `vdbSparseSourceGpu` (every grid of a `VDBGridPool`, with LOD) and
+`vdbDenseSource` (`.wvdb` textures). `vdbCreateLevelSetPassGpu` and `vdbCreatePointPassGpu` draw level sets and points
+into your passes. Settings out of the device's range (`shadowResolution`, shadow map sizes) clamp with a one-time
+warning. `multipleScattering` defaults to `'neural'` (his trained network on the core's EXPERIMENTAL generic MLP).
+Demo 17 is a full raw-WebGPU page; see
+[docs/site/core/rendering-without-three.mdx](https://github.com/pmndrs/vdb/blob/main/docs/site/core/rendering-without-three.mdx).
 
 ### What's in the box
 
@@ -214,7 +232,7 @@ The three.js adapter over the engine-free core (D8), on three r187 (D23). The
 grids live in a `VDBGridPool` on the renderer's `GPUDevice`; `VDBGridNode`
 puts that pool into three's node system without copying it (three binds the
 pool's own buffer); `VDBVolumeMaterial` raymarches one pooled grid, and
-`VDBSequence` plays frames into one pool id.
+`VDBSequence` (the core's, re-exported) plays frames into one pool id.
 
 ### Quickstart: render a cloud
 
@@ -408,8 +426,11 @@ the update that wrote it.
 
 `VDBFrameVolume` and `VDBFrameRenderer` (ported from mjurczyk/openvdb, re-based on the sparse pool) render volumes
 through a froxel grid with `'volume'` or `'frame'` lighting, temporal accumulation, phase functions (including
-Lorenz-Mie), multiple scattering (two-sided, octaves, neural), spectral media and measured presets, mesh shadows and an
-emission light. Volume sources are dense (`vdbDenseTextures`) or sparse (`vdbSparseSource`, with LOD). See
+Lorenz-Mie), multiple scattering (two-sided, octaves, neural, multi-scale), spectral media and measured presets, mesh
+shadows both ways and an emission light. Since 0.2.0 every frame is drawn by the core's froxel renderer (above) on
+three's device: `VDBFrameRenderer` is a thin adapter (`frameRenderer.core` is the `VDBFrameRendererGpu`), and its
+`settings` are the core's `VDBFrameSettings`. Volume sources are dense (`vdbDenseTextures`) or sparse
+(`vdbSparseSource`, with LOD). See
 [docs/site/three/frame-renderer.mdx](https://github.com/pmndrs/vdb/blob/main/docs/site/three/frame-renderer.mdx).
 
 ### Level sets and points

@@ -28,7 +28,7 @@ const mismatch = (what: string) =>
   new VDBError(
     "VDB_ENGINE_MISMATCH",
     `three adapter: three r${REVISION} ${what}. The core frame renderer binds its GPUTextures into three through ExternalTexture ` +
-      "(written against three r187); this three version is unsupported for backend 'core'.",
+      "(written against three r187); this three version is unsupported for VDBFrameRenderer.",
   );
 
 /** How three views a core texture: a 3D texture (froxels, probes), a 2d-array (volume shadow maps) or a cube (point maps). */

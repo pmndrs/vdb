@@ -281,7 +281,7 @@ describe("K6.6 vdbCreateLevelSetPassGpu", () => {
     expect(rec.pipelines).toBe(1);
   });
 
-  it("orthographic projections set the flag; no light means black direct light; growth retires the old buffer", () => {
+  it("orthographic projections set the flag; no light means black direct light; growth retires the old buffer", async () => {
     const { device, rec } = recordingDevice();
     const ls = vdbCreateLevelSetPassGpu(device, fakePool(), { colorFormat: "rgba16float", depthFormat: "depth32float", output: "gbuffer" });
     const ortho = new Float64Array([0.1, 0, 0, 0, 0, 0.1, 0, 0, 0, 0, -0.01, 0, 0, 0, 0.5, 1]);
@@ -289,12 +289,15 @@ describe("K6.6 vdbCreateLevelSetPassGpu", () => {
     const first = rec.buffers.find((b) => b.label.includes("uniforms"))!;
     expect(readU32(first.data, VDB_LEVEL_SET_PASS_FRAME.fields.get("flags")!.offset, 1)).toEqual([1]);
     expect(readF32(first.data, VDB_LEVEL_SET_PASS_FRAME.fields.get("lightColor")!.offset, 3)).toEqual([0, 0, 0]);
-    // 40 draws outgrow the first buffer (4 draws): replaced, the old one destroyed two records later.
+    // 40 draws outgrow the first buffer (4 draws): replaced, the old one destroyed two records later, in a later task
+    // (K6.10a: three records into one encoder before its submit must not destroy it)
     ls.record(recordingPass(rec), frame, Array.from({ length: 40 }, () => ({ grid: 0 })));
     expect(first.destroyed).toBe(false);
     ls.record(recordingPass(rec), frame, [{ grid: 0 }]);
     expect(first.destroyed).toBe(false);
     ls.record(recordingPass(rec), frame, [{ grid: 0 }]);
+    expect(first.destroyed).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(first.destroyed).toBe(true);
     ls.dispose();
     expect(rec.buffers.every((b) => b.destroyed)).toBe(true);

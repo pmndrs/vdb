@@ -703,7 +703,7 @@ describe("vdbDenseSource WGSL and bindings", () => {
     expect(fake.textures.map((t) => t.desc.format)).toEqual(["r8unorm", "r8unorm", "rgba8unorm", "rgba8unorm"]);
   });
 
-  it("replace: same size rewrites in place; a new size makes new textures and bumps version; dispose destroys them", () => {
+  it("replace: same size rewrites in place; a new size makes new textures and bumps version (the old ones destroyed in a later task); dispose destroys them", async () => {
     const fake = textureFake();
     const v = dense();
     const src = vdbDenseSource(fake.device, v);
@@ -721,6 +721,10 @@ describe("vdbDenseSource WGSL and bindings", () => {
     src.replace(wvdbDenseVolume(readWvdb(bytes), { albedo: "Cd" }));
     expect(src.version).toBe(1);
     expect(src.texels).toEqual([16, 8, 8]);
+    // K6.10a fail-before: destroyed inside replace() before, so a host that replaced between frame.update(encoder) and
+    // queue.submit submitted destroyed textures; now they live until a later task
+    expect(fake.textures.slice(0, 4).some((t) => t.destroyed)).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(fake.textures.slice(0, 4).every((t) => t.destroyed)).toBe(true);
     src.dispose();
     expect(fake.textures.every((t) => t.destroyed)).toBe(true);

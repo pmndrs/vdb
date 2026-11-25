@@ -12,14 +12,14 @@
 //   transmittance, frameShadowOpticalDepth, frameOctaveLight), L416–462 (frameTwoSidedDiffusion,
 //   frameShadowTotal), L464–481 (frameShadowedLight with octaves); core/framePhase.js L110–129
 //   (getFrameScatteringOctaves).
-// Changes: CPU (f64) twins of the TSL shader maths, used as test oracles (grey; the spectral twins are in
+// Changes: CPU (f64) twins of his shader maths, used as test oracles (grey; the spectral twins are in
 // spectral.ts). Divergences: DIVERGES.md (K3.1 and K3.4 rows).
 
 /**
  * CPU twins of the froxel pipeline maths (K3.1, R1 §6 Step 1; CLAUDE.md "every WGSL entry has a CPU
- * twin"). Each function mirrors one TSL chunk of `@pmndrs/vdb/three` `frame/chunks.ts`, in f64, so
- * the GPU passes can be checked against it (e2e `k3-frame` probe) and the maths can move into `core`
- * as WGSL later (K3.8) with the same oracle. Engine-free: plain numbers and tuples.
+ * twin"). Each function mirrors one WGSL chunk of the core frame renderer (`core/frame/wgsl/`; the TSL chunks they
+ * were written against were deleted in K6.8), in f64, so the kernels can be checked against it (e2e `k6-core`
+ * probes). Engine-free: plain numbers and tuples.
  */
 
 import { vdbFrameMieAsymmetry, vdbFrameMiePhase, vdbFrameMieRgbMode, vdbFrameMieRgbPhase } from "./mie.js";

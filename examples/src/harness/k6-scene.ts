@@ -5,7 +5,7 @@
  *
  * Query: `?scene=<name>` (K6_SCENES), `?lighting=volume|frame`, `?ms=0|1|two-sided|octaves|neural` (K6.3, core only:
  * `mlp`, `multi-scale` with `?msEdge=zero|clamp`, `?msLevels=`, K6.3a `?msSigma=his|paper`),
- * `?backend=tsl|core` (K6.1/K6.2 internal A/B), `?froxelMix=mixture|over`, `?w=&h=` (default 1280 × 720), `?froxels=WxHxD`
+ * `?froxelMix=mixture|over` (K6.8: always the core; `?backend=` is ignored), `?w=&h=` (default 1280 × 720), `?froxels=WxHxD`
  * (default his 512x512x24), `?lod=` (sparse sources: default 'coarse-pyramid', D28), `?shadowRes=`, `?shadowSteps=`.
  * Jitter and temporal reprojection off (deterministic); no MSAA (no meshes).
  *

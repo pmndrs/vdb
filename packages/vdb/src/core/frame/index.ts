@@ -136,6 +136,8 @@ export type { VDBFrameMlp, VDBFrameMlpLayer } from "../../tools/frame/mlp.js";
 export { computePipeline, renderPipeline, prepareCompute, prepareRender, vdbHashText } from "./pipelines.js";
 export type { VDBCachedPipeline, VDBComputeSpec, VDBRenderSpec } from "./pipelines.js";
 export { VDBRetireQueue, createFroxelTexture } from "./resources.js";
+export { VDB_FRAME_DEFAULT_LIMITS, vdbFrameFitGridResolution, vdbFrameFitShadowMapSize, vdbFrameStackTargets, vdbFrameStagingBytes } from "./limits.js";
+export type { VDBFrameClamp, VDBFrameClampReason, VDBFrameLimits } from "./limits.js";
 export {
   VDB_FRAME_ENV_PARAMS,
   VDB_FRAME_ENVIRONMENT,

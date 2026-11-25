@@ -18,7 +18,9 @@
  *   device.queue.submit([enc.finish()]);
  *
  * The renderer records, never submits; it frees only what it made (D8). One `update()` per submitted
- * encoder (its uniforms go through `queue.writeBuffer`).
+ * encoder (its uniforms go through `queue.writeBuffer`), submitted in the task that recorded it: a texture the renderer
+ * replaces is destroyed two updates later and never in the task that made it due (K6.10a), so a submit later in that
+ * task is safe.
  */
 
 import { VDBError } from "../errors.js";
@@ -71,6 +73,7 @@ import { VDBFrameEmissionColors, VDBFrameEmissionProbeSet, type VDBFrameEmission
 import { EMISSION_DIRECTION_BINDINGS, EMISSION_PROBE_BINDINGS, EMISSION_REDUCE_BINDINGS, VDB_FRAME_EMISSION_DIRECTIONS, VDB_FRAME_EMITTERS, VDB_FRAME_EMITTERS_STRIDE } from "./wgsl/emission.js";
 import { computePipeline, prepareCompute, prepareRender, renderPipeline } from "./pipelines.js";
 import { BUFFER_USAGE, createFroxelTexture, VDBRetireQueue } from "./resources.js";
+import { VDB_FRAME_DEFAULT_LIMITS, vdbFrameFitGridResolution, vdbFrameStackTargets } from "./limits.js";
 import { VDBFrameScattering } from "./scattering.js";
 import type { VDBFrameScatteringKernel } from "./wgsl/lighting.js";
 import { vdbFrameMieLutWords } from "../../tools/frame/mie.js";
@@ -266,6 +269,8 @@ class FrameRenderer implements VDBFrameRendererGpu {
   readonly #retire = new VDBRetireQueue();
   readonly #volumes: FrameVolume[] = [];
   readonly #warned = new Set<string>();
+  /** K6.10a: clamped shadow grid resolutions by (resolution, cascades, spectral); the limits do not change. */
+  readonly #gridFits = new Map<string, number>();
   readonly #held = vdbFroxelHeldSize();
   readonly #frameWriter = new VDBUniformWriter(VDB_FRAME_UNIFORMS.size);
   readonly #lightsWriter = new VDBUniformWriter(VDB_FRAME_LIGHTS.size);
@@ -343,7 +348,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
       addressModeW: "clamp-to-edge",
     });
     this.#env = new VDBFrameEnvironmentState(device, this.#label);
-    this.#shadows = new VDBFrameShadowMaps(device, this.#label, this.#retire);
+    this.#shadows = new VDBFrameShadowMaps(device, this.#label, this.#retire, (key, message) => this.#warnOnce(key, message));
     this.#colors = new VDBFrameEmissionColors(device, this.#label, this.#retire);
     this.#probes = new VDBFrameEmissionProbeSet(device, this.#label, this.#retire);
     // K6.3: the Lorenz-Mie phase tables as one LUT (V47: rgb 'lorenz-mie-rgb', a 'lorenz-mie'), group 0 binding 4
@@ -989,24 +994,27 @@ class FrameRenderer implements VDBFrameRendererGpu {
   }
 
   /**
-   * K6.8: the shadow grid resolution the device can hold. The transmittance stack (4 rgba16float targets per cascade, 3
-   * per slot group and cascade when spectral) is one texture; Dawn zero-fills a new texture through one staging buffer of
-   * its size, so a stack larger than the device's `maxBufferSize` (256 MiB by default: R = 256 with one cascade is
-   * 512 MiB) fails the host's submit and the frame is lost. Clamp R so the stack fits (warned once).
+   * K6.8 / K6.10a: the shadow grid resolution the device can hold. The transmittance stack (4 rgba16float targets per
+   * cascade, 3 per slot group and cascade when spectral) is one texture that must tile in `maxTextureDimension3D`; Dawn
+   * zero-fills a new texture through one staging buffer of its size, so a stack larger than the device's
+   * `maxBufferSize` (256 MiB by default: R = 256 with one cascade is 512 MiB) fails the host's submit and the frame is
+   * lost. Clamp R so the stack tiles and fits (warned once; `vdbFrameFitGridResolution`).
    */
   #gridResolution(resolution: number, cascades: number, spectral: boolean): number {
-    const maxBytes = this.device.limits?.maxBufferSize ?? 268435456;
-    const targets = spectral ? 3 * VDB_FRAME_SPECTRAL_GROUPS * cascades : 4 * cascades;
-    const maxDim = this.device.limits?.maxTextureDimension3D ?? 2048;
-    // the staging buffer's rows are padded to 256 bytes (Dawn's copy alignment)
-    const bytes = (side: number): number => {
-      const size = vdbFrameStackLayout(side, targets, maxDim).size;
-      return Math.ceil((size[0] * 8) / 256) * 256 * size[1] * size[2];
-    };
-    let r = resolution;
-    while (r > 2 && bytes(r) > maxBytes) r--;
-    if (r !== resolution) this.#warnOnce(`grid-resolution-${resolution}-${cascades}-${spectral}`, `settings.shadowResolution ${resolution} makes a transmittance stack of ${Math.round((resolution ** 3 * targets * 8) / 1048576)} MiB, more than the device's maxBufferSize (${Math.round(maxBytes / 1048576)} MiB); clamped to ${r}.`);
-    return r;
+    const key = `${resolution}-${cascades}-${spectral}`;
+    const cached = this.#gridFits.get(key);
+    if (cached !== undefined) return cached;
+    const limits = this.device.limits ?? {};
+    const fit = vdbFrameFitGridResolution(resolution, cascades, spectral, limits);
+    if (fit.reason) {
+      const targets = vdbFrameStackTargets(cascades, spectral);
+      const maxDim = limits.maxTextureDimension3D ?? VDB_FRAME_DEFAULT_LIMITS.maxTextureDimension3D;
+      const maxMiB = Math.round((limits.maxBufferSize ?? VDB_FRAME_DEFAULT_LIMITS.maxBufferSize) / 1048576);
+      const why = fit.reason === "tile" ? `its ${targets} stack targets of ${resolution}³ do not tile in maxTextureDimension3D` : `its transmittance stack of ${Math.round((resolution ** 3 * targets * 8) / 1048576)} MiB exceeds maxBufferSize`;
+      this.#warnOnce(`grid-resolution-${key}`, `settings.shadowResolution ${resolution}: ${why} (the device: maxTextureDimension3D ${maxDim}, maxBufferSize ${maxMiB} MiB); clamped to ${fit.size}.`);
+    }
+    this.#gridFits.set(key, fit.size);
+    return fit.size;
   }
 
   /** The grid textures for this resolution and cascade count (a change retires the old ones and redraws). */

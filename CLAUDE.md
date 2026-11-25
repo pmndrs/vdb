@@ -493,3 +493,20 @@ From v1; details in docs/archive/handoffs/.
 - To re-render a "before" set from an older commit, `git archive <sha> | tar -x` into the scratchpad, `pnpm install`,
   copy the git-ignored fixtures and the current `e2e/k6-frames.spec.ts` in, and give it its own `WEBVDB_E2E_PORT`
   (K6.10 reproduced K6.8's 98/98 this way; the old tree still has the TSL path for core-vs-TSL A/Bs, `K6_CORE_AB=1`).
+- K6.10a: `VDBRetireQueue` (frame renderer, level-set and point passes, `vdbSparseSourceGpu`, `vdbDenseSource.replace`)
+  destroys due objects in a later task (`setTimeout(0)`), never inside `update()` / `record()`. A unit test that checks
+  `destroyed` after the second update must `await new Promise((r) => setTimeout(r, 0))` first; `drain()` / `dispose()`
+  still destroy at once. Hosts must submit in the task that recorded (no `await` between `update()` and `submit`).
+- `vdbFrameStackLayout` throws a `RangeError` when the sub-volumes don't tile `maxTextureDimension3D`: never call it to
+  test a size. `vdbFrameFitGridResolution` / `vdbFrameFitShadowMapSize` (`core/frame/limits.ts`) are the pure clamps,
+  unit-testable on a fake device's `limits` (no allocation).
+- k6-core `?mutate=wgsl-*` patches the kernel's WGSL text through a `createShaderModule` wrapper (`WGSL_PATCHES` in
+  `examples/src/harness/k6-core.ts`); a patch that matches no module makes the run report an error. Rewording the
+  gather's `stepTransmittance` / light-phase lines or the resolve's radiance step needs the patch text updated.
+- Editing `packages/vdb/src` or `examples/src` while a Playwright run is in progress can reload its pages (Vite serves
+  them live), not only during timing: finish or stop e2e runs before editing sources.
+- A fresh agent worktree has no `node_modules`; `npx vitest` then resolves the main checkout's install and fails
+  ("Projects definition references a non-existing file"). Run `pnpm install --frozen-lockfile --ignore-scripts` in the
+  worktree first.
+- The agent sandbox also refuses some Bash heredocs (a python edit script, a `cat >>` block): write the text to the
+  scratchpad with the Write tool and run or append it by path.

@@ -32,6 +32,7 @@
  */
 
 import { VDBError } from "../errors.js";
+import { VDBRetireQueue } from "../frame/resources.js";
 import type { VDBGridInfo, VDBGridPool } from "../pool/pool.js";
 import { VDB_ALL_SCALAR_TYPES, type VDBGridTypeName, type VDBSlot } from "../types.js";
 import { vdbModuleEntries, vdbModuleWgsl } from "../wgsl/generate.js";
@@ -391,6 +392,8 @@ class SparseSource implements VDBSparseSourceGpu {
   #tableDirty = true;
   #updates = 0;
   #retired: { at: number; destroy: () => void }[] = [];
+  /** K6.10a: due objects are destroyed in a later task (several updates may share one encoder and one submit). */
+  readonly #later = new VDBRetireQueue();
   readonly #mappings = new Set<Promise<void>>();
   #disposed = false;
 
@@ -674,10 +677,11 @@ class SparseSource implements VDBSparseSourceGpu {
   update(encoder: GPUCommandEncoder): VDBSparseSourceUpdate {
     this.#check();
     this.#updates++;
-    // Retire: destroyed two updates after they were replaced (an encoder recorded before may still name them).
+    // Retire: destroyed two updates after they were replaced (an encoder recorded before may still name them), in a
+    // later task (K6.10a: updates recorded into one encoder before its submit in this task)
     const keep: { at: number; destroy: () => void }[] = [];
     for (const r of this.#retired) {
-      if (this.#updates - r.at > RETIRE_UPDATES) r.destroy();
+      if (this.#updates - r.at > RETIRE_UPDATES) this.#later.retireAfterTask(r);
       else keep.push(r);
     }
     this.#retired = keep;
@@ -815,6 +819,7 @@ class SparseSource implements VDBSparseSourceGpu {
     this.#disposed = true;
     for (const r of this.#retired) r.destroy();
     this.#retired = [];
+    this.#later.drain();
     for (const e of this.#pyramids.values()) e.gpu?.destroy();
     this.#pyramids.clear();
     for (const s of this.volumes) {

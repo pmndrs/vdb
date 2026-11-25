@@ -41,6 +41,15 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
   `VDB_VOLUME_SHADOW_VIEW`), `vdbEmissionProbeWgsl` (`VDB_EMISSION_GRID`); the level-set and point passes
   (`vdbCreateLevelSetPassGpu`, `vdbLevelSetSurfaceWgsl`, `vdbCreatePointPassGpu`, `vdbPointSpriteWgsl`);
   `VDBFrameUpdateOptions.timestampWrites`.
+  - The defaults and limits: `vdbFrameDefaultSettings()` (the settings object, his defaults), `vdbFrameDefaultVolumeParams()`
+    (a volume's parameters), `VDB_VOLUME_SHADOW_MAX_CASCADES`, `VDB_FRAME_LIGHT_BITS` / `VDB_FRAME_ALL_LIGHTS`.
+  - The renderer's input types: `VDBFrameInput`, `VDBFrameCamera`, `VDBFrameLight`, `VDBFrameEnvironment`,
+    `VDBFrameOccluder`, `VDBFrameTargets`, `VDBFrameSettings`, `VDBFrameVolumeParams`, `VDBFrameEmissionLightSettings`,
+    `VDBEmissionColor`, `VDBFrameMlp` / `VDBFrameMlpLayer`, `VDBFramePhaseName`, `VDBFrameMultipleScatteringMode`,
+    `VDBFrameWrap`, `VDBFrameMat4`, `VDBFrameVec3`; its outputs `VDBFrameOutputs`, `VDBFrameEmissionProbes`,
+    `VDBFrameUpdate`, `VDBFrameRedrawStats`, `VDBFrameTimestamps`; `VDBFrameVolumeGpu`, `VDBFrameRendererGpuOptions`.
+  - `multipleScattering: 'neural'` (the default, his trained network) and `'mlp'` run the EXPERIMENTAL generic small MLP;
+    its data shape (`VDBFrameMlp`) may change before 1.0.
 
 - NanoVDB **Half** grids (`GridType::Half` = 9, raw IEEE binary16 values; implemented in NanoVDB 13.2, OpenVDB PR 2335), end
   to end (K7.H). Core: grid type `'half'` (`VDBGridTypeName`, `VDB_GRID_TYPE_IDS.half`, in `VDB_ALL_SCALAR_TYPES`); the pool
@@ -75,6 +84,14 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 
 ### Fixed
 
+- Core frame renderer (K6.10a): `settings.shadowResolution` whose transmittance stack does not tile in
+  `maxTextureDimension3D` (above 1024 with one cascade, 1024 with 3–4) clamps with a one-time warning; it threw a
+  `RangeError` on every update. Volume shadow maps (`castShadowMapSize`, `VDBFrameLight.shadow.size`) clamp to
+  `maxTextureDimension2D` and to a texture whose zero-fill staging fits `maxBufferSize` (a point light's 6 faces count),
+  warned once; a 4096 point map asked for 805 MB.
+- Core (K6.10a): replaced textures and buffers (the frame renderer, the level-set and point passes, `vdbSparseSourceGpu`,
+  `vdbDenseSource.replace` with a new size) are destroyed in a later task, so several updates recorded into one encoder
+  before its submit no longer submit a destroyed texture. `vdbDenseSource.replace` destroyed the old textures at once.
 - Tools: the unknown-codec error names the real `nanovdb_convert` flags (`-z/--zip`, `-b/--blosc`); it suggested
   `--codec=zip`, which doesn't exist.
 - Three: volume shadows of spot and point lights on meshes (`frameRenderer.settings.castShadows`) read each map with
