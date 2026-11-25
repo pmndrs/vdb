@@ -712,6 +712,41 @@ function patchShaders(device: GPUDevice): () => void {
   return () => (d.createShaderModule = saved);
 }
 
+/**
+ * K6.10a: `?mutate=wgsl-*` patches the kernel's WGSL text before it compiles (the K6.R / K6.7 style), so the probe proves
+ * the KERNEL computes the term, not only that the comparator would see a twin change. Each patch must match at least one
+ * module, or the run reports an error (a stale patch never passes silently).
+ * - `wgsl-gather-extinction`: every gather slice step attenuates by 1.25 × the extinction (every covered froxel);
+ * - `wgsl-gather-phase`: the gather's light phase reads −cos θ (the probe phase is anisotropic);
+ * - `wgsl-resolve-order`: the scan adds a slice's radiance after its own attenuation (T·(1 − α)·L instead of T·L).
+ */
+const WGSL_PATCHES: Record<string, [string, string]> = {
+  "wgsl-gather-extinction": ["let stepTransmittance = exp(-", "let stepTransmittance = exp(-1.25 * "],
+  "wgsl-gather-phase": ["dot(rayDirection, lightDirection)", "-dot(rayDirection, lightDirection)"],
+  "wgsl-resolve-order": ["radiance += transmittance * froxel.rgb;", "radiance += transmittance * (1.0 - alpha) * froxel.rgb;"],
+};
+
+/** Installs the `?mutate=wgsl-*` patch; the returned check throws when it matched no module. */
+function patchWgsl(device: GPUDevice): () => void {
+  const patch = WGSL_PATCHES[MUTATE];
+  if (!patch) {
+    if (MUTATE.startsWith("wgsl-")) throw new Error(`unknown WGSL mutation ${MUTATE}`);
+    return () => {};
+  }
+  const d = device as unknown as { createShaderModule: (desc: GPUShaderModuleDescriptor) => GPUShaderModule };
+  const saved = d.createShaderModule;
+  let matched = 0;
+  d.createShaderModule = (desc) => {
+    if (!desc.code.includes(patch[0])) return saved.call(device, desc);
+    matched++;
+    return saved.call(device, { ...desc, code: desc.code.replaceAll(patch[0], patch[1]) });
+  };
+  return () => {
+    d.createShaderModule = saved;
+    if (matched === 0) throw new Error(`WGSL mutation ${MUTATE} matched no shader module`);
+  };
+}
+
 /** The renderer's per-volume record twin of a volume (its params, slot and clip). */
 function twinRecord(handle: VDBFrameVolumeGpu, sampler: TwinSampler, c: { localToView: ArrayLike<number>; viewToLocal: ArrayLike<number>; worldToLocal: ArrayLike<number> }, rect: [number, number, number, number], slices: { first: number; count: number }, g: number, ms: VDBFrameMultipleScatteringMode = true): TwinVolume {
   // K6.3: the renderer's phase packing for ?phase= (dual-lobe back g −0.3, weight 0.2) and ?ms=
@@ -2903,6 +2938,7 @@ async function main(): Promise<void> {
   const tier1 = params.get("tier1") === "1" && adapter.features.has("texture-formats-tier1");
   const device = await adapter.requestDevice({ requiredLimits: VDBGridPool.requiredLimits(adapter), ...(tier1 ? { requiredFeatures: ["texture-formats-tier1" as GPUFeatureName] } : {}) });
   device.addEventListener("uncapturederror", (e) => result.uncaptured.push((e as GPUUncapturedErrorEvent).error.message));
+  const checkWgslPatch = patchWgsl(device);
   if (SCENE) await runRawScene(device, SCENE, params, result);
   else if (PROBE === "view") await probeView(device);
   else if (PROBE === "gather") await probeGather(device);
@@ -2914,6 +2950,7 @@ async function main(): Promise<void> {
   else if (PROBE === "shadow") await probeShadow(device);
   else if (PROBE === "emission") await probeEmission(device);
   else throw new Error(`unknown ?probe=${PROBE}`);
+  checkWgslPatch();
   await device.queue.onSubmittedWorkDone();
   const s = result.stats;
   if (s) log(`${PROBE}${MUTATE !== "none" ? ` (mutate ${MUTATE})` : ""}: ${s.compared} texels (${s.covered} non-zero), max ${s.maxUlp.toFixed(2)} f16 ulp, ${s.over} over ${s.bound}`, s.over === 0 ? "ok" : "fail");
