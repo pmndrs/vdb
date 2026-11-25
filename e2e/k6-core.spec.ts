@@ -624,3 +624,23 @@ for (const scene of RAW_HIS) {
     await rawVsCore(page, scene, "", "");
   });
 }
+
+// K6.8: `VDBFrameRenderer.passHook` brackets each core update: with `timestamp-query` the begin / end timestamps of the
+// update's kernels (two empty compute passes carry the writes), else the CPU callbacks. A check that the bracket is
+// recorded and resolves, on SwiftShader; no timing is taken (D25).
+test("K6.8 passHook: the core update is bracketed (timestamp writes when the adapter has timestamp-query)", async ({ page }) => {
+  test.setTimeout(600_000);
+  const errors = collectErrors(page);
+  await page.goto("/src/harness/k3-timing.html?asset=cloud04&source=dense&lighting=frame&w=320&h=180&froxels=96x64x16&timerCheck=1");
+  await page.waitForFunction(() => (window as { __VDB_K3_TIMING__?: { done: boolean } }).__VDB_K3_TIMING__?.done === true, undefined, { timeout: 600_000 });
+  const r = (await page.evaluate(() => (window as { __VDB_K3_TIMING__?: unknown }).__VDB_K3_TIMING__)) as { error?: string; uncaptured: string[]; timestampQuery?: boolean; timerCheck?: { updates: number[]; core: (number | null)[] } };
+  const d = JSON.stringify(r);
+  expect(r.error, d).toBeUndefined();
+  expect(r.uncaptured, d).toEqual([]);
+  // one core update per frame
+  expect(r.timerCheck!.updates, d).toEqual([1, 1, 1]);
+  if (r.timestampQuery) for (const ms of r.timerCheck!.core) expect(Number.isFinite(ms) && ms! >= 0, d).toBe(true);
+  else expect(r.timerCheck!.core, d).toEqual([null, null, null]);
+  console.log(`[k6-core] passHook on SwiftShader: timestamp-query ${r.timestampQuery}; ${JSON.stringify(r.timerCheck)}`);
+  expect(errors).toEqual([]);
+});

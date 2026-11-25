@@ -298,10 +298,14 @@ async function main(): Promise<void> {
 
   if (TIMER_CHECK) {
     const check = { updates: [] as number[], core: [] as (number | null)[], render: [] as number[] };
+    // without timestamp-query: the CPU bracket alone (begin / end around each core update)
+    let counted = 0;
+    if (!timer) frameRenderer.passHook = { end: () => void counted++ };
     for (let f = 0; f < 3; f++) {
       frame();
       await device.queue.onSubmittedWorkDone();
-      const t = timer ? await timer.collect() : { updates: 0, core: null, render: 0 };
+      const t = timer ? await timer.collect() : { updates: counted, core: null, render: 0 };
+      counted = 0;
       check.updates.push(t.updates);
       check.core.push(t.core);
       check.render.push(t.render);

@@ -3,7 +3,9 @@
  * or cube `GPUTexture` directly, so the adapter passes the scene environment's own texture (no readback, no PMREM):
  *
  * - an equirect texture (`EquirectangularReflectionMapping` / `RefractionMapping`): its GPUTexture; three uploads
- *   `flipY` data bottom row first, so the map's v runs up: a reflection of y joins the rotation;
+ *   `flipY` images bottom row first, and three samples GPU row 0 at v = 0 (the nadir: `equirectUV`) for every equirect,
+ *   `flipY` or not (a DataTexture's data row 0 is its v = 0): a reflection of y joins the rotation (K6.8: also for
+ *   `flipY: false` textures, which K6.2b left unflipped, so a synthetic data sky lit the volume from below);
  * - a cube texture: its GPUTexture as a 6-layer cube; three's WebGPU cube lookups negate x (`CubeTextureNode`), so a
  *   reflection of x joins the rotation;
  * - anything else (a PMREM `CubeUVReflectionMapping` atlas, a render-target cube): drawn once into a 1024 × 512 float
@@ -114,7 +116,7 @@ export class VDBCoreEnvironment {
         this.#initialized.set(t, t.version);
       }
       // world → map: F · Rᵀ (column-major; Rᵀ's column c is R's row c)
-      const flip = cube ? [-1, 1, 1] : [1, t.flipY ? -1 : 1, 1];
+      const flip = cube ? [-1, 1, 1] : [1, -1, 1];
       const rotation = new Float32Array(9);
       for (let c = 0; c < 3; c++) for (let r = 0; r < 3; r++) rotation[c * 3 + r] = flip[r]! * e[r * 4 + c]!;
       return { id: t, revision: t.version, texture: getGPUTexture(renderer as never, t), projection: cube ? "cube" : "equirect", rotation, intensity };

@@ -19,11 +19,10 @@
  * 4. `Light.registerNode(nodeClass)` sets the node class lights of a type are shaded with (`prototype._lightNode`).
  * 5. `renderer._precompilationState` exists (null outside `compileAsync`); light passes skip while it is set, as
  *    three's own `ShadowNode.updateBefore`.
- * 6. `RendererUtils.resetRendererState` / `restoreRendererState` save and restore the renderer around nested passes.
  */
 
 import * as THREE from "three";
-import { AnalyticLightNode, LightsNode, NodeUpdateType, REVISION, RendererUtils } from "three/webgpu";
+import { AnalyticLightNode, LightsNode, NodeUpdateType, REVISION } from "three/webgpu";
 import * as TSL from "three/tsl";
 import { VDBError } from "../../core/errors.js";
 
@@ -138,13 +137,6 @@ export function vdbFrameRegisterLightNode(lightClass: typeof THREE.Light, nodeCl
 export function vdbFramePrecompiling(renderer: object): boolean {
   if (!("_precompilationState" in renderer)) throw mismatch("has no renderer._precompilationState");
   return (renderer as { _precompilationState: unknown })._precompilationState != null;
-}
-
-/** Internal 6. @throws VDBError `VDB_ENGINE_MISMATCH` */
-export function vdbFrameRendererUtils(): { resetRendererState(renderer: unknown, state: object): object; restoreRendererState(renderer: unknown, state: object): void } {
-  const utils = RendererUtils as unknown as Record<string, unknown>;
-  if (typeof utils.resetRendererState !== "function" || typeof utils.restoreRendererState !== "function") throw mismatch("has no RendererUtils.resetRendererState / restoreRendererState");
-  return utils as never;
 }
 
 /** @internal Tests: forget the cached light-reset result. */

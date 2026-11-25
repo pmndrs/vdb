@@ -68,8 +68,9 @@ export class VDBFrameRenderer {
   settings: VDBFrameSettings = vdbFrameDefaultSettings();
 
   /**
-   * EXPERIMENTAL: the network of `multipleScattering` `'mlp'` / `'neural'` (default: mjurczyk's trained weights,
-   * `@pmndrs/vdb/tools` `vdbFrameMlpFromNeural(vdbFrameNeuralWeights)`). null: those modes run as 1D diffusion (warned).
+   * EXPERIMENTAL: the network of `multipleScattering` `'mlp'` / `'neural'` as `VDBFrameMlp` data (layer shapes,
+   * activations, weights; default: mjurczyk's trained weights). Assign another network of that form (no rebuild), or
+   * null to run those modes as 1D diffusion (warned).
    */
   mlp: VDBFrameMlp | null = DEFAULT_MLP;
 
@@ -101,7 +102,7 @@ export class VDBFrameRenderer {
   readonly #occluders = new VDBCoreOccluders();
   /** K6.2b: `scene.environment` as the core's environment input. */
   readonly #environment = new VDBCoreEnvironment();
-  /** K6.5: volume shadows on meshes: the shadow filter on each shadow light, reading the core's maps. */
+  /** @internal K6.5: volume shadows on meshes: the shadow filter on each shadow light, reading the core's maps. */
   readonly volumeShadows: VDBFrameVolumeShadowReceivers = new VDBFrameVolumeShadowReceivers(this);
 
   /** The core frame renderer (made at the first render, per device; null before). Read its `outputs`; set nothing on it. */

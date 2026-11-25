@@ -1101,8 +1101,9 @@ async function main(): Promise<void> {
 
   // --- K3.3 'frame' lighting: the grid layout and the redraw skips ---------
   if (LIGHTING === "frame") {
-    const g = vdbFrameRendererGrid(frameRenderer.core!)!;
-    result.grid = { count: g.count, resolution: frameRenderer.settings.shadowResolution, gridMin: g.gridMin.slice(0, g.count).map((v) => [...v]), gridVoxel: g.gridVoxel.slice(0, g.count).map((v) => [...v]) };
+    // no volume in the scene (`?novolume=1`): no core renderer, no grid
+    const g = frameRenderer.core ? vdbFrameRendererGrid(frameRenderer.core) : null;
+    if (g) result.grid = { count: g.count, resolution: frameRenderer.settings.shadowResolution, gridMin: g.gridMin.slice(0, g.count).map((v) => [...v]), gridVoxel: g.gridVoxel.slice(0, g.count).map((v) => [...v]) };
     for (let f = 0; f < REDRAW_FRAMES; f++) await frame();
     result.redraw = JSON.parse(JSON.stringify(frameRenderer.redrawStats)) as VDBFrameRedrawStats;
     log(`redraws (drawn/skipped): ${JSON.stringify(result.redraw)}`);
