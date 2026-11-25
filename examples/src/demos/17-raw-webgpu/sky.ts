@@ -5,7 +5,7 @@
  * sun is a directional light of its own (the background pass draws its disc), so the core's environment extraction
  * finds the sky, not a second sun.
  */
-import { vdbFloatToHalf } from "../../../../packages/vdb/src/tools/internal.js";
+import { vdbFloatToHalf } from "@pmndrs/vdb/tools";
 import type { Vec3 } from "./raw-frame.js";
 
 export const SKY_WIDTH = 512;

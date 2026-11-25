@@ -10,11 +10,9 @@ Live: [rendering without three](https://pmndrs.github.io/vdb/examples/src/demos/
 level set with no three.js: the page's own passes draw the sky, the ground and an obelisk, read the volumes' shadow map
 and fire light, and hand their own depth map back so the obelisk shadows the cloud.
 
-> [!WARNING]
-> The APIs on this page are **internal until 0.2.0**. They live in the core's internal entry point
-> (`packages/vdb/src/core/internal.ts`), which demo 17 and the samples below import by path; `@pmndrs/vdb` 0.1 does not
-> export them. K6.8 makes them public (one reviewed API change) and turns `@pmndrs/vdb/three`'s froxel renderer into a
-> thin adapter over them. Names and shapes may still move until then.
+Everything on this page is public in `@pmndrs/vdb` since 0.2.0: `vdbCreateFrameRenderer`, `vdbSparseSourceGpu`, the
+receiver WGSL (`vdbVolumeShadowWgsl`, `vdbEmissionProbeWgsl`, `vdbFrameIntegrateWgsl`) and the level-set and point
+passes. `@pmndrs/vdb/three`'s froxel renderer is a thin adapter over the same renderer.
 
 The froxel renderer (the same lighting as [Froxel renderer](/three/frame-renderer), ported from mjurczyk's
 `FrameRenderer`) runs in the core as WGSL compute kernels on 3D textures (D34). It takes the host's `GPUDevice`, records
