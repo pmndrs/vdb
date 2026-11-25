@@ -19,6 +19,7 @@
  */
 
 import { VDBError } from "../errors.js";
+import { VDBRetireQueue } from "../frame/resources.js";
 import type { VDBSlot } from "../types.js";
 import type { WvdbDenseTexture, WvdbDenseVolume } from "../../tools/wvdb/dense.js";
 import type { VDBVolumeChannels, VDBVolumeSlot, VDBVolumeSource, VDBVolumeSourceWgslOptions } from "./types.js";
@@ -127,6 +128,7 @@ class DenseSource implements VDBVolumeSource, VDBVolumeSlot {
   #textures: Partial<Record<ChannelName, Uploaded>> = {};
   #sampler: GPUSampler;
   #disposed = false;
+  readonly #retire = new VDBRetireQueue();
 
   constructor(device: GPUDevice, volume: WvdbDenseVolume, o: VDBDenseSourceOptions) {
     this.#device = device;
@@ -157,10 +159,15 @@ class DenseSource implements VDBVolumeSource, VDBVolumeSlot {
     }
   }
 
-  #destroyTextures(): void {
+  /**
+   * K6.10a: a replaced texture may be named by passes the host recorded but has not submitted yet (a `replace` between
+   * the frame's `update(encoder)` and `queue.submit`), so it is destroyed in a later task (the retire queue's rule).
+   * `dispose()` destroys at once.
+   */
+  #retireTextures(): void {
     for (const t of Object.values(this.#textures)) {
-      t.map.destroy();
-      t.mip?.destroy();
+      this.#retire.retireAfterTask(t.map);
+      this.#retire.retireAfterTask(t.mip);
     }
     this.#textures = {};
   }
@@ -177,7 +184,9 @@ class DenseSource implements VDBVolumeSource, VDBVolumeSlot {
   /**
    * Swap in another LOD (or frame) of the same grids. The channel set and mip
    * presence must match; a size change makes new textures and bumps `version`
-   * (rebuild bind groups; the WGSL does not change).
+   * (rebuild bind groups; the WGSL does not change). The replaced textures are
+   * destroyed in a later task (K6.10a): passes recorded with them before the
+   * call stay valid when the host submits in the same task.
    */
   replace(volume: WvdbDenseVolume): void {
     this.#check();
@@ -203,7 +212,7 @@ class DenseSource implements VDBVolumeSource, VDBVolumeSlot {
         }
       }
     } else {
-      this.#destroyTextures();
+      this.#retireTextures();
       this.#upload(volume);
       this.version++;
     }
@@ -305,7 +314,8 @@ fn vdbSrcMaxIn(v: u32, uvwMin: vec3f, uvwMax: vec3f) -> f32 {
 
   dispose(): void {
     if (this.#disposed) return;
-    this.#destroyTextures();
+    this.#retireTextures();
+    this.#retire.drain();
     this.#disposed = true;
   }
 }

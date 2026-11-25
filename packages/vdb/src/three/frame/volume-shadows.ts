@@ -267,7 +267,10 @@ export class VDBFrameVolumeShadowReceivers {
     this.frameRenderer = frameRenderer;
   }
 
-  /** The map size of the settings (`castShadowMapSize`, or his coarse size). */
+  /**
+   * The map size of the settings (`castShadowMapSize`, or his coarse size). The core clamps it to the device's limits
+   * (K6.10a); `sync` takes the size of the map the core made.
+   */
   getMapSize(): number {
     const { settings } = this.frameRenderer;
     return settings.castShadowCoarse ? frameShadowCoarseMapSize : Math.max(1, Math.round(settings.castShadowMapSize));

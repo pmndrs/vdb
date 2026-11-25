@@ -25,6 +25,7 @@ import {
 import { vdbMat4Invert, vdbMat4Multiply } from "../../tools/frame/view.js";
 import type { VDBCachedPipeline } from "./pipelines.js";
 import { BUFFER_USAGE, TEXTURE_USAGE, type VDBRetireQueue } from "./resources.js";
+import { VDB_FRAME_DEFAULT_LIMITS, vdbFrameFitShadowMapSize } from "./limits.js";
 import type { VDBFrameLight, VDBFrameVec3, VDBVolumeShadowDrawn, VDBVolumeShadowMap, VDBVolumeShadowRequest } from "./types.js";
 import { VDBUniformWriter } from "./uniforms.js";
 import { VDB_FRAME_SHADOW_PIECE, VDB_FRAME_SHADOW_PIECE_STRIDE, VDB_VOLUME_SHADOW_MAX_CASCADES, VDB_VOLUME_SHADOW_VIEW, VOLUME_SHADOW_BINDINGS } from "./wgsl/shadows.js";
@@ -145,6 +146,7 @@ export class VDBFrameShadowMaps {
   readonly #device: GPUDevice;
   readonly #label: string;
   readonly #retire: VDBRetireQueue;
+  readonly #warn: (key: string, message: string) => void;
   readonly #entries = new Map<number | string, Entry>();
   readonly #viewWriter = new VDBUniformWriter(VDB_VOLUME_SHADOW_VIEW.size);
   #pieceBuffer: GPUBuffer | null = null;
@@ -153,10 +155,31 @@ export class VDBFrameShadowMaps {
   #renderCount = 0;
   readonly #groups = new WeakMap<GPUTexture, { keys: readonly object[]; group: GPUBindGroup }>();
 
-  constructor(device: GPUDevice, label: string, retire: VDBRetireQueue) {
+  constructor(device: GPUDevice, label: string, retire: VDBRetireQueue, warn: (key: string, message: string) => void = (_key, message) => console.warn(`@pmndrs/vdb frame renderer: ${message}`)) {
     this.#device = device;
     this.#label = label;
     this.#retire = retire;
+    this.#warn = warn;
+  }
+
+  /**
+   * K6.10a: the map size the device can hold for a light of this kind (`vdbFrameFitShadowMapSize`: at most
+   * `maxTextureDimension2D`, and a staging buffer within `maxBufferSize`; a point light's 6 faces count). The renderer's
+   * warning is once per requested size and kind.
+   */
+  #mapSize(size: number, kind: Kind): number {
+    const layers = LAYERS[kind];
+    const limits = this.#device.limits ?? {};
+    const fit = vdbFrameFitShadowMapSize(size, layers, limits);
+    if (fit.reason) {
+      const maxDim = limits.maxTextureDimension2D ?? VDB_FRAME_DEFAULT_LIMITS.maxTextureDimension2D;
+      const maxMiB = Math.round((limits.maxBufferSize ?? VDB_FRAME_DEFAULT_LIMITS.maxBufferSize) / 1048576);
+      this.#warn(
+        `shadow-map-size-${size}-${kind}`,
+        `the volume shadow map size ${size} of a ${kind} light (${layers} rgba16float layers, ${Math.round((size * size * layers * 8) / 1048576)} MiB) exceeds the device (maxTextureDimension2D ${maxDim}, maxBufferSize ${maxMiB} MiB); clamped to ${fit.size}.`,
+      );
+    }
+    return fit.size;
   }
 
   /** True when some light this frame asks for a map (the renderer then draws the shadow grid). */
@@ -182,7 +205,7 @@ export class VDBFrameShadowMaps {
       if (light.kind !== "directional" && light.kind !== "spot" && light.kind !== "point") continue;
       if (!light.shadow || seen.has(light.id)) continue;
       seen.add(light.id);
-      const size = o.coarse ? frameShadowCoarseMapSize : Math.max(1, Math.round(light.shadow.size));
+      const size = this.#mapSize(o.coarse ? frameShadowCoarseMapSize : Math.max(1, Math.round(light.shadow.size)), light.kind);
       active.push({ entry: this.#entry(light.id, light.kind, size, !!o.spectral), light });
     }
     for (const e of [...this.#entries.values()]) if (!seen.has(e.id)) this.#free(e);

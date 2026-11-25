@@ -35,7 +35,9 @@ One frame is one command encoder, in this order:
 5. **Your opaque passes**, reading the volume shadow maps (volume → mesh) and the emission probes.
 6. **The composite**: `frame.render(encoder, targets)` draws the volumes over your colour target up to your depth, or
    your own shader calls `vdbFrameIntegrate` (the host-side seam).
-7. **Present** (tone mapping, sRGB) and `device.queue.submit`. The contract is one `update()` per submitted encoder.
+7. **Present** (tone mapping, sRGB) and `device.queue.submit`. The contract is one `update()` per submitted encoder,
+   submitted in the task that recorded it (no `await` between `update()` and `submit`): textures the renderer or a
+   dense source replaces are destroyed in a later task, so a submit in the same task never names a destroyed texture.
 
 ## Set up
 
