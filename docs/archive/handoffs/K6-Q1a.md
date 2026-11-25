@@ -105,9 +105,14 @@ read texels; the gather's one outlier is within the 0.1 % allowance).
 | probe term 'radiance': frame AO / frame no AO / spectral frame / gather / spectral gather | 0.50, 0 | ≤ 0.67, 0 | probe-term 585 / 581 / 584 / 585 / 584 |
 | gather, 4 pairs, ring turned (aoJitter=5) | — | 0.72, 0 | ao-ring 480 |
 
-- `e2e/k6-core.spec.ts`, grey and spectral compile probes run separately, and `e2e/k6-frames.spec.ts` (98 frames vs a
-  baseline rendered from main): see the commit notes below.
-- `pnpm typecheck` 0; `pnpm test` 0 (101 files, 2071 passed, 22 skipped); `pnpm build` 0.
+After merging main (K6.8a, 29d5095), SwiftShader, port 5321:
+- `e2e/k6-ambient.spec.ts` 19 passed (numbers above, unchanged).
+- `e2e/k6-core.spec.ts` without the compile tests: 87 passed, 6 skipped (opt-in A/Bs); the spectral compile
+  (`?probe=compile&spectral=1&tier1=1`) and the grey compile, run separately: 1 passed each.
+- `e2e/k6-frames.spec.ts`: 98 / 98 frames byte-identical (max 0/255) to a baseline rendered from main's sources (a copy of
+  this tree with main's versions of the changed files), `ambientOcclusion` off.
+- `e2e/k6-shadows.spec.ts` (with K6.8a's new cases): 12 passed.
+- `pnpm typecheck` 0; `pnpm test` 0 (101 files, 2073 passed, 22 skipped); `pnpm build` 0.
 - Frame size snapshot rewritten (`K6_WRITE_SIZES=1`), on purpose: spectral 'volume' gathers +1619 B (the AO items), spectral
   transmittance +1148 B, spectral 'frame' gathers +562 B, grey gathers +292 B (`vdbFrameSkyProbe` in the `sh` chunk); grey
   transmittance unchanged. Largest vs cap: spectral transmittance 19327 / 28672, spectral 'volume' gather 37769 / 57344,
