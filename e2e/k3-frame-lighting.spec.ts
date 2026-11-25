@@ -14,6 +14,9 @@ import { encodePng } from "../scripts/k3/png.mjs";
 // their CPU twins on read-back inputs; the signature skips redraws; deterministic; depth occlusion; cascades
 // change the image toward a finer grid; sparse ('coarse-pyramid') vs dense on identical voxels >= 35 dB; temporal
 // reprojection converges. PNGs go to artifacts/k3/ours/ (k3-frame-lighting-*.png).
+// K6.8: these scenes render through the core frame renderer (`./three` is a thin adapter); the TSL pass twins that
+// gated here are gone with the TSL passes, and the core kernels' twins (with fail-before mutations) are in
+// e2e/k6-core.spec.ts. What stays: clean, deterministic frames and the structural properties below.
 const PAGE_URL = "/src/harness/k3-frame.html";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OURS = path.join(repoRoot, "artifacts", "k3", "ours");
@@ -89,21 +92,14 @@ function expectTwin(t: Twin | undefined, minCompared: number, detail: string, ma
 // The e2e scene: the committed CC0 cloud, his sun + hemisphere + ambient light (frame.js), 2HG renderer phase.
 const BASE = "?w=160&h=96&froxels=96x64x24&lighting=frame";
 
-test("K3.3 'frame' lighting: grid chunks, transmittance, density and lighting passes match their CPU twins; redraws skipped; deterministic", async ({ page }) => {
+test("K3.3 'frame' lighting: renders; redraws skipped; deterministic; differs from 'volume'", async ({ page }) => {
   test.setTimeout(400_000);
-  const q = `${BASE}&lights=dir-hemi&twins=1&redraw=2`;
+  const q = `${BASE}&lights=dir-hemi&redraw=2`;
   const first = await run(page, q);
   const detail = detailOf(first);
   expectClean(first);
   expect(first.nonBackground!, detail).toBeGreaterThan(1_500);
-  expect(first.chunkProbe!.over, detail).toBe(0);
-  expectTwin(first.gridProbe, 1_000, detail);
-  expectTwin(first.transmittanceTwin, 10_000, detail);
-  expect(first.transmittanceTwin!.marched!, detail).toBeGreaterThan(500);
-  expectTwin(first.lightingTwin, 1_000, detail);
-  expect(first.lightingTwin!.lit!, detail).toBeGreaterThan(300);
   // The density pass through the dense source's CPU sampler (sampleWvdbDenseTexture), shadow slots from the grid.
-  expectTwin(first.densityTwin, 5_000, detail, 5e-4);
   // Static scene: the grid and the transmittance are drawn once; every later frame skips them (signatures).
   expect(first.redraw!.shadowDensity.drawn, detail).toBe(1);
   expect(first.redraw!.shadowDensity.skipped, detail).toBeGreaterThanOrEqual(3);
@@ -124,15 +120,12 @@ test("K3.3 'frame' lighting: grid chunks, transmittance, density and lighting pa
   expect(volume.error).toBeUndefined();
   const vs = compareImages(image(first), image(volume));
   expect(vs.mse, JSON.stringify(vs)).toBeGreaterThan(0);
-  console.log(
-    `[k3-frame-lighting] twins: grid probe ${first.gridProbe!.compared} (max ${first.gridProbe!.maxAbs.toExponential(2)}), transmittance ${first.transmittanceTwin!.compared} values / ${first.transmittanceTwin!.marched} voxels (max ${first.transmittanceTwin!.maxAbs.toExponential(2)}), lighting ${first.lightingTwin!.compared} values / ${first.lightingTwin!.lit} froxels (max ${first.lightingTwin!.maxAbs.toExponential(2)}); redraws ${JSON.stringify(first.redraw)}; 'frame' vs 'volume' ${vs.psnr.toFixed(2)} dB`,
-  );
 });
 
-test("K3.3 environment 'directional': lights from the PMREM readback, environment grid and environment slot match their twins", async ({ page }) => {
+test("K3.3 environment 'directional': the core's environment lights point at the sun and light the volume", async ({ page }) => {
   test.setTimeout(400_000);
   // Diffusion: every environment light goes to the environment grid.
-  const env = await run(page, `${BASE}&env=synthetic&lights=none&twins=1&redraw=2`);
+  const env = await run(page, `${BASE}&env=synthetic&lights=none&redraw=2`);
   const detail = detailOf(env);
   expectClean(env);
   expect(env.environment?.mode, detail).toBe("directional");
@@ -142,12 +135,7 @@ test("K3.3 environment 'directional': lights from the PMREM readback, environmen
   const n = Math.hypot(...sun);
   const d = env.environment!.directions[0]!;
   expect((d[0]! * sun[0]! + d[1]! * sun[1]! + d[2]! * sun[2]!) / n, detail).toBeGreaterThan(0.99);
-  expectTwin(env.environmentGridTwin, 10_000, detail);
-  expect(env.environmentGridTwin!.marched!, detail).toBeGreaterThan(500);
-  expectTwin(env.transmittanceTwin, 10_000, detail);
-  expectTwin(env.lightingTwin, 1_000, detail);
   // The density pass adds the environment grid at each volume's visible position.
-  expectTwin(env.densityTwin, 5_000, detail, 5e-4);
   expect(env.redraw!.environmentGrid.drawn, detail).toBe(1);
   expect(env.redraw!.environmentGrid.skipped, detail).toBeGreaterThanOrEqual(2);
   save("k3-frame-lighting-environment", env);
@@ -159,13 +147,9 @@ test("K3.3 environment 'directional': lights from the PMREM readback, environmen
 
   // Single scattering: the dominant environment light takes a shadow slot after the sun (the lighting pass's
   // environment slot), the others the grid.
-  const slot = await run(page, `${BASE}&env=synthetic&lights=dir-hemi&ms=0&twins=1`);
+  const slot = await run(page, `${BASE}&env=synthetic&lights=dir-hemi&ms=0`);
   const slotDetail = detailOf(slot);
   expectClean(slot);
-  expectTwin(slot.transmittanceTwin, 10_000, slotDetail);
-  expectTwin(slot.lightingTwin, 1_000, slotDetail);
-  expectTwin(slot.environmentGridTwin, 10_000, slotDetail);
-  expectTwin(slot.densityTwin, 5_000, slotDetail, 5e-4);
 });
 
 test("K3.3 'frame' lighting: an opaque mesh in front occludes the volume", async ({ page }) => {
@@ -197,7 +181,7 @@ test("K3.3 'frame' lighting: an opaque mesh in front occludes the volume", async
 test("K3.3 cascades: a camera inside the casters gets finer cascades; the image moves toward a finer grid", async ({ page }) => {
   test.setTimeout(500_000);
   const near = "?w=240&h=135&froxels=128x96x24&lighting=frame&lights=dir-hemi&dist=0.3";
-  const c4 = await run(page, `${near}&cascades=4&twins=1`);
+  const c4 = await run(page, `${near}&cascades=4`);
   const c1 = await run(page, `${near}&cascades=1`);
   const fine = await run(page, `${near}&cascades=1&shadowRes=256`);
   const detail = detailOf(c4);
@@ -205,11 +189,7 @@ test("K3.3 cascades: a camera inside the casters gets finer cascades; the image 
   for (const r of [c1, fine]) expect(r.error, detailOf(r)).toBeUndefined();
   expect(c4.grid!.count, detail).toBeGreaterThanOrEqual(2);
   expect(c1.grid!.count).toBe(1);
-  // The transmittance twin holds across the cascades (the march steps into coarser ones).
-  expectTwin(c4.transmittanceTwin, 10_000, detail);
-  expectTwin(c4.lightingTwin, 1_000, detail);
   // The density pass blends the shadows across cascade borders (sampleShadows).
-  expectTwin(c4.densityTwin, 5_000, detail, 5e-4);
   const diff = compareImages(image(c4), image(c1));
   expect(diff.mse, JSON.stringify(diff)).toBeGreaterThan(0);
   const toFine4 = compareImages(image(c4), image(fine));
@@ -220,16 +200,14 @@ test("K3.3 cascades: a camera inside the casters gets finer cascades; the image 
   console.log(`[k3-frame-lighting] cascades: ${c4.grid!.count} in use; vs a 256³ single grid: 4 cascades ${toFine4.psnr.toFixed(2)} dB, 1 cascade ${toFine1.psnr.toFixed(2)} dB`);
 });
 
-test("K3.3 sparse source: 'frame' lighting on identical voxels is >= 35 dB from dense, and its passes match their twins", async ({ page }) => {
+test("K3.3 sparse source: 'frame' lighting on identical voxels is >= 35 dB from dense", async ({ page }) => {
   test.setTimeout(500_000);
   const q = "?w=320&h=180&froxels=128x128x24&lighting=frame&lights=dir-hemi";
   const dense = await run(page, `${q}&source=dense`);
-  const sparse = await run(page, `${q}&source=sparse&twins=1&redraw=2`);
+  const sparse = await run(page, `${q}&source=sparse&redraw=2`);
   const detail = detailOf(sparse);
   expectClean(dense);
   expectClean(sparse);
-  expectTwin(sparse.transmittanceTwin, 10_000, detail);
-  expectTwin(sparse.lightingTwin, 1_000, detail);
   expect(sparse.redraw!.shadowDensity.skipped, detail).toBeGreaterThanOrEqual(3);
   const ab = compareImages(image(dense), image(sparse));
   expect(ab.psnr, JSON.stringify(ab)).toBeGreaterThanOrEqual(35);

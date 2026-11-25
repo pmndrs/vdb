@@ -4,13 +4,14 @@
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; takes a VDBVolumeSource (dense `.wvdb`, or the sparse pool since K3.2) instead of resampling grids
 // on the CPU (his L279–552: conversion, progressive upload, level sets, points, instances); one
-// volume per frame volume; the mean density is the source's. Divergences: DIVERGES.md (K3.1 rows),
-// V23–V25.
+// volume per frame volume; the mean density is the source's; K6.8: the props are the core's `VDBFrameVolumeParams`
+// (the renderer copies them each update), the emission colour is core data (`VDBEmissionColor`). Divergences:
+// DIVERGES.md (K3.1 rows), V23–V25.
 
 /**
  * A volume in the froxel renderer (his `FrameVolume`, R1 §2): a `Group` whose proxy mesh draws the
- * frame. Its props are his (same names and defaults) for the ported subset; density is read only
- * through the source's nodes (`vdbVolumeNodes`), so Step 2 swaps in the sparse source.
+ * frame. Its props are his (same names and defaults) for the ported subset; the renderer copies them into the core's
+ * `VDBFrameVolumeParams` at each render.
  *
  *   const source = vdbDenseTextures(wvdbDenseVolume(readWvdb(bytes)));
  *   const volume = new VDBFrameVolume(source, { extinction: 100 });  // box: the source's (volume.bbox)
@@ -28,17 +29,11 @@
 
 import * as THREE from "three";
 import { VDBError } from "../../core/errors.js";
-import type { VDBThreeVolumeSource, VDBVolumeNodesOptions, VDBVolumeUniforms } from "../volume-source.js";
-import { vdbVolumeUniforms } from "../volume-source.js";
-import type { VDBFrameDensityMaterial } from "./density-material.js";
-import type { VDBFrameInjectMaterial } from "./inject-material.js";
-import type { VDBFrameShadowDensityMaterial } from "./shadow-density-material.js";
-import type { VDBFrameEmissionDirectionMaterial } from "./emission-light.js";
-import { vdbFrameAllLights } from "./lights.js";
-import type { VDBFramePhase, VDBFramePhaseSource } from "./phase.js";
+import { VDB_FRAME_ALL_LIGHTS, type VDBEmissionColor } from "../../core/frame/types.js";
+import type { VDBFramePhaseName } from "../../core/frame/settings.js";
+import type { VDBThreeVolumeSource } from "../volume-source.js";
 import { getFrameMediumProps, type VDBFrameMediumVolumeProps } from "./medium.js";
 import { vdbFrameRenderer, type VDBFrameRenderer } from "./renderer.js";
-import type { FrameVolumeRecord } from "./view.js";
 
 // NOTE Draw the frame after all other transparent objects
 const frameRenderOrder = 1000000;
@@ -62,16 +57,16 @@ export interface VDBFrameVolumeProps {
   scatterColor?: THREE.ColorRepresentation;
   /** With normalizeDensity: optical depth of the longest box side at the mean density (default 100). */
   extinction?: number;
-  /** Extinction scale of each channel (renderer `settings.spectral`; with `angstromExponent`, spectrum.ts). */
+  /** Extinction scale of each channel (renderer `settings.spectral`; with `angstromExponent`). */
   extinctionScale?: [number, number, number] | THREE.Vector3Like;
-  /** Ångström exponent of the extinction spectrum: a number or a name of `frameAngstromExponents` (default 'cloud': 0, grey). */
+  /** Ångström exponent of the extinction spectrum: a number or a preset name (`'cloud'` 0, `'dust'`, `'smoke'`, `'air'`; default 'cloud': grey). */
   angstromExponent?: string | number;
   /**
    * `'volume'` lighting only: this volume's phase, overriding the renderer's `settings.phase` (default: unset, the
    * renderer's). `'frame'` lighting always uses the renderer's (one lighting pass for all volumes). The same for
    * `phaseG`, `phaseBackG`, `phaseBackWeight` and `phaseGExponent`, field by field.
    */
-  phase?: VDBFramePhase | null;
+  phase?: VDBFramePhaseName | null;
   /** Forward `g` of this volume's phase in `'volume'` lighting (null: the renderer's). */
   phaseG?: number | null;
   /** Backward-lobe `g` in `'volume'` lighting (null: the renderer's). */
@@ -107,14 +102,18 @@ export interface VDBFrameVolumeProps {
   offset3D?: THREE.Vector3Like;
   /** Texture wrapping of the lookup (default clamp to edge); wrapping turns a sparse source's HDDA skipping off. */
   wrap3D?: THREE.Wrapping;
-  /** Light types bitmask ({@link vdbFrameLights}); default all. */
+  /** Light types bitmask (`VDB_FRAME_LIGHT_BITS`); default all (`VDB_FRAME_ALL_LIGHTS`). */
   lights?: number;
   /** Steps of the shadow march toward each light in `'volume'` lighting (default 32). */
   shadowSteps?: number;
   /** Sample the source's mip levels (default true; needs a source with a mip atlas). */
   mipmaps?: boolean;
-  /** Emission colour hook (DIVERGES V24); default white. */
-  emissionColor?: VDBVolumeNodesOptions["emissionColor"];
+  /**
+   * The emission colour (K6.5, core data): `'white'` (default), `{ spectrum: 'planck' | 'soot', exponent }` (his
+   * blackbody spectra), `{ lut }` (a 256-texel rgb row over log temperature 500–40,000 K) or `{ wgsl }` (a validated
+   * WGSL hook, `fn vdbEmissionColor(temperature: f32) -> vec3f`).
+   */
+  emissionColor?: VDBEmissionColor;
   /**
    * HDDA empty-space skipping in the shadow march (sparse sources; K3.2). Skipped samples are exactly
    * 0, so the image does not change (within float noise); dense sources ignore it. Default false (D30: on the Apple GPU it
@@ -138,6 +137,15 @@ const boxMatrix = (box: THREE.Box3, target: THREE.Matrix4): THREE.Matrix4 => {
   return target.compose(center, new THREE.Quaternion(), size);
 };
 
+/** The phase a volume draws with in `'volume'` lighting (its own fields where set, else the renderer's). */
+export interface VDBFramePhaseSettings {
+  phase: VDBFramePhaseName;
+  phaseG: number;
+  phaseBackG: number;
+  phaseBackWeight: number;
+  phaseGExponent: number;
+}
+
 /**
  * A volume drawn by the froxel renderer: a `Group` whose proxy mesh composites the volume's density and light over
  * the scene (his `FrameVolume`). Add it to a scene and render as usual; its props are live fields.
@@ -147,24 +155,16 @@ export class VDBFrameVolume extends THREE.Group {
   readonly isVDBFrameVolume = true as const;
   /** The volume source the density (and emission) is read from. */
   readonly source: VDBThreeVolumeSource;
-  /** Uniforms of the source: extinction, density scale and normalisation. */
-  readonly sourceUniforms: VDBVolumeUniforms;
   /** The froxel renderer that draws this volume. */
   readonly frameRenderer: VDBFrameRenderer;
   /** The proxy mesh whose draw triggers the frame render and composites the volume. */
   readonly proxy: THREE.Mesh<THREE.InstancedBufferGeometry>;
-  /** The volume records (box matrices and per-render view data) the renderer reads. */
-  readonly volumes: FrameVolumeRecord[];
-  /** Built by the renderer on first use (the source is compiled into it). */
-  injectMaterial: VDBFrameInjectMaterial | null = null;
-  /** 'frame' lighting: the density and shadow density materials, built by the renderer on first use (K3.3). */
-  densityMaterial: VDBFrameDensityMaterial | null = null;
-  /** The shadow density material (`'frame'` lighting), built by the renderer on first use. */
-  shadowDensityMaterial: VDBFrameShadowDensityMaterial | null = null;
-  /** K3.6: the emission light's direction-pass material of this volume (made by the light on first use). */
-  emissionDirectionMaterial: VDBFrameEmissionDirectionMaterial | null = null;
-  /** Emission colour hook (default white); see {@link VDBFrameVolumeProps.emissionColor}. */
-  readonly emissionColor: VDBVolumeNodesOptions["emissionColor"];
+  /** The unit box → the volume box in local space (his `boxMatrix`); follows {@link VDBFrameVolume.bbox}. */
+  readonly boxMatrix: THREE.Matrix4;
+  /** `matrixWorld × boxMatrix` of the last render (the core's `params.matrixWorld`). */
+  readonly boxMatrixWorld = new THREE.Matrix4();
+  /** The emission colour; see {@link VDBFrameVolumeProps.emissionColor}. */
+  emissionColor: VDBEmissionColor | undefined;
 
   /** Albedo of the medium; see {@link VDBFrameVolumeProps.baseColor}. */
   baseColor: THREE.Color;
@@ -174,10 +174,10 @@ export class VDBFrameVolume extends THREE.Group {
   extinction: number;
   /** Extinction scale of each channel (spectral rendering). */
   extinctionScale: THREE.Vector3;
-  /** Angstrom exponent of the extinction spectrum: a number or a name of `frameAngstromExponents`. */
+  /** Ångström exponent of the extinction spectrum: a number or a preset name. */
   angstromExponent: string | number;
   /** `'volume'` lighting: phase overrides (null: the renderer's `settings`); see {@link VDBFrameVolumeProps.phase}. */
-  phase: VDBFramePhase | null;
+  phase: VDBFramePhaseName | null;
   /** Forward `g` override of `'volume'` lighting (null: the renderer's). */
   phaseG: number | null;
   /** Backward-lobe `g` override (null: the renderer's). */
@@ -206,7 +206,7 @@ export class VDBFrameVolume extends THREE.Group {
   offset3D: THREE.Vector3;
   /** Texture wrapping of the lookup. */
   wrap3D: THREE.Wrapping;
-  /** Light types bitmask ({@link vdbFrameLights}) this volume receives. */
+  /** Light types bitmask (`VDB_FRAME_LIGHT_BITS`) this volume receives. */
   lights: number;
   /** Steps of the shadow march in `'volume'` lighting. */
   shadowSteps: number;
@@ -224,11 +224,11 @@ export class VDBFrameVolume extends THREE.Group {
 
   /** The medium fields at construction, for `setMedium(null)`. */
   private readonly initialMedium: { baseColor: THREE.Color; extinctionScale: THREE.Vector3; angstromExponent: string | number };
-  /** `source.version` the uniforms were last updated for. */
+  /** `source.version` the box was last read at. */
   private sourceVersion: number;
   /** G16a / RV: the box is the source's (no `bbox` prop), so it follows the source. */
   private readonly boxFromSource: boolean;
-  private readonly resolvedPhase: VDBFramePhaseSource = { phase: "henyey-greenstein", phaseG: 0.8, phaseBackG: -0.3, phaseBackWeight: 0.2, phaseGExponent: 0.0 };
+  private readonly resolvedPhase: VDBFramePhaseSettings = { phase: "henyey-greenstein", phaseG: 0.8, phaseBackG: -0.3, phaseBackWeight: 0.2, phaseGExponent: 0.0 };
 
   /**
    * Makes a volume over a dense or sparse source. Throws `VDB_BAD_OPTION` for a source that is neither.
@@ -241,6 +241,10 @@ export class VDBFrameVolume extends THREE.Group {
     const ok = source && ((source.kind === "dense" && !!source.textures?.density) || (source.kind === "sparse" && typeof source.createNodes === "function"));
     if (!ok) {
       throw new VDBError("VDB_BAD_OPTION", "VDBFrameVolume: pass a volume source from vdbDenseTextures() or vdbSparseSource() (@pmndrs/vdb/three).");
+    }
+    const color = props.emissionColor as unknown;
+    if (typeof color === "function") {
+      throw new VDBError("VDB_BAD_OPTION", "VDBFrameVolume: emissionColor is core data since 0.2.0 ('white', { spectrum: 'planck' | 'soot', exponent }, { lut } or { wgsl }), not a TSL hook; vdbFrameBlackbodyEmission(s, e) is { spectrum: s, exponent: e }.");
     }
 
     const {
@@ -266,7 +270,7 @@ export class VDBFrameVolume extends THREE.Group {
       temperatureRange = [0.0, 6500.0],
       offset3D = new THREE.Vector3(),
       wrap3D = THREE.ClampToEdgeWrapping,
-      lights = vdbFrameAllLights,
+      lights = VDB_FRAME_ALL_LIGHTS,
       shadowSteps = 32,
       mipmaps = true,
       emissionColor,
@@ -301,8 +305,6 @@ export class VDBFrameVolume extends THREE.Group {
     this.mipmaps = mipmaps;
     this.hdda = hdda;
     this.initialMedium = { baseColor: this.baseColor.clone(), extinctionScale: this.extinctionScale.clone(), angstromExponent };
-
-    this.sourceUniforms = vdbVolumeUniforms(source, { extinction, densityScale, normalizeDensity });
     this.sourceVersion = source.version;
 
     this.proxy = new THREE.Mesh(frameRenderer.createProxyGeometry(), frameRenderer.proxyMaterial());
@@ -317,20 +319,7 @@ export class VDBFrameVolume extends THREE.Group {
     const box = toBox(bbox, source);
     this.bbox = box;
     this.boxFromSource = bbox === undefined;
-
-    this.volumes = [
-      {
-        matrix: boxMatrix(box, new THREE.Matrix4()),
-        matrixWorld: new THREE.Matrix4(),
-        localToView: new THREE.Matrix4(),
-        viewToLocal: new THREE.Matrix4(),
-        worldToLocal: new THREE.Matrix4(),
-        worldBox: new THREE.Box3(),
-        viewNear: 0.0,
-        viewFar: 0.0,
-        ready: true,
-      },
-    ];
+    this.boxMatrix = boxMatrix(box, new THREE.Matrix4());
   }
 
   /** The mean density `normalizeDensity` divides by: `densityMean` when set, else the source's mean of the non-zero texels (his `meanDensity`). */
@@ -339,7 +328,7 @@ export class VDBFrameVolume extends THREE.Group {
   }
 
   /** The phase this volume is drawn with in `'volume'` lighting: its own `phase*` fields where set, else the renderer's `settings` (a reused object). */
-  getPhase(): Readonly<VDBFramePhaseSource> {
+  getPhase(): Readonly<VDBFramePhaseSettings> {
     const s = this.frameRenderer.settings;
     const p = this.resolvedPhase;
     p.phase = this.phase ?? s.phase;
@@ -380,20 +369,19 @@ export class VDBFrameVolume extends THREE.Group {
     return props;
   }
 
-  /** densityScale for the shaders. normalizeDensity divides it by the mean density. */
+  /** The density scale the renderer draws with: `densityScale`, divided by the mean density with `normalizeDensity`. */
   getDensityScale(): number {
     const meanDensity = this.meanDensity;
-
     return this.normalizeDensity && meanDensity > 0.0 ? this.densityScale / meanDensity : this.densityScale;
   }
 
   /**
-   * Re-read the source (textures, sizes, LOD levels). The renderer calls {@link VDBFrameVolume.syncSource} before
-   * every draw, so a `source.replace()` needs no call; this forces it.
+   * Re-reads the source's box (a dense frame with another `.wvdb` box, or a `followImage` sparse source after its grid's
+   * image changed). The renderer calls {@link VDBFrameVolume.syncSource} before every render, so a `source.replace()`
+   * needs no call; this forces it.
    */
   updateSource(): void {
     this.sourceVersion = this.source.version;
-    this.sourceUniforms.update(this.source, { densityScale: this.densityScale, normalizeDensity: this.normalizeDensity });
     // G16a: a sparse source's box (a followImage source re-reads it after an image change). RV: a dense frame's
     // .wvdb box (his WVDB sequences give every frame its own box; a null box, an empty frame, keeps the last one).
     const sourceBox = this.source.kind === "sparse" ? this.source.bbox : this.source.volume.bbox;
@@ -403,27 +391,18 @@ export class VDBFrameVolume extends THREE.Group {
       if (b.min.x !== min[0] || b.min.y !== min[1] || b.min.z !== min[2] || b.max.x !== max[0] || b.max.y !== max[1] || b.max.z !== max[2]) {
         b.min.set(...min);
         b.max.set(...max);
-        for (const volume of this.volumes) boxMatrix(b, volume.matrix);
+        boxMatrix(b, this.boxMatrix);
       }
     }
   }
 
-  /** {@link VDBFrameVolume.updateSource} if the source changed since (its `version`: a resized dense frame, a replaced pool image). Cheap; called per draw. */
+  /** {@link VDBFrameVolume.updateSource} if the source changed since (its `version`: a resized dense frame, a replaced pool image). Cheap; called per render. */
   syncSource(): void {
     if (this.source.version !== this.sourceVersion) this.updateSource();
   }
 
-  /** Frees the proxy geometry and the pass materials, and stops following the source (its uniforms). The source belongs to the caller. */
+  /** Frees the proxy geometry. The source belongs to the caller; the renderer drops the volume when it leaves the scene. */
   dispose(): void {
-    this.sourceUniforms.dispose();
-    this.injectMaterial?.dispose();
-    this.injectMaterial = null;
-    this.densityMaterial?.dispose();
-    this.densityMaterial = null;
-    this.shadowDensityMaterial?.dispose();
-    this.shadowDensityMaterial = null;
-    this.emissionDirectionMaterial?.dispose();
-    this.emissionDirectionMaterial = null;
     this.proxy.geometry.dispose();
   }
 }

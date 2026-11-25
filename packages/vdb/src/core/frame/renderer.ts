@@ -108,6 +108,7 @@ import {
   type VDBFrameUpdate,
   type VDBFrameVolumeGpu,
   type VDBFrameVolumeParams,
+  type VDBFrameUpdateOptions,
   type VDBFroxelLayout,
   type VDBFrameEmissionProbes,
   type VDBVolumeShadowMap,
@@ -141,7 +142,13 @@ export interface VDBFrameRendererGpu {
   addVolume(slot: VDBVolumeSlot, params?: Partial<VDBFrameVolumeParams>): VDBFrameVolumeGpu;
   /** Builds every pipeline the current volumes and settings reach, with the async creators. */
   prepare(options?: { lighting?: ("volume" | "frame")[] }): Promise<void>;
-  update(encoder: GPUCommandEncoder, frame: VDBFrameInput, options?: { froxels?: boolean }): VDBFrameUpdate;
+  /**
+   * Records the frame's kernels into the host's encoder (one update per submitted encoder). `froxels: false` keeps the
+   * last froxels (no froxel work; the composite reads them again). `timestampWrites` brackets every kernel the update
+   * records: `beginningOfPassWriteIndex` is written before the first and `endOfPassWriteIndex` after the last (two empty
+   * compute passes carry them, so the bracket holds whatever the update records).
+   */
+  update(encoder: GPUCommandEncoder, frame: VDBFrameInput, options?: VDBFrameUpdateOptions): VDBFrameUpdate;
   render(encoder: GPUCommandEncoder, targets: VDBFrameTargets): void;
   dispose(): void;
 }
@@ -413,7 +420,15 @@ class FrameRenderer implements VDBFrameRendererGpu {
 
   // ---------------------------------------------------------------- update
 
-  update(encoder: GPUCommandEncoder, frame: VDBFrameInput, options: { froxels?: boolean } = {}): VDBFrameUpdate {
+  update(encoder: GPUCommandEncoder, frame: VDBFrameInput, options: VDBFrameUpdateOptions = {}): VDBFrameUpdate {
+    const t = options.timestampWrites;
+    if (t && t.beginningOfPassWriteIndex !== undefined) encoder.beginComputePass({ label: `${this.#label} begin`, timestampWrites: { querySet: t.querySet, beginningOfPassWriteIndex: t.beginningOfPassWriteIndex } }).end();
+    const u = this.#update(encoder, frame, options);
+    if (t && t.endOfPassWriteIndex !== undefined) encoder.beginComputePass({ label: `${this.#label} end`, timestampWrites: { querySet: t.querySet, endOfPassWriteIndex: t.endOfPassWriteIndex } }).end();
+    return u;
+  }
+
+  #update(encoder: GPUCommandEncoder, frame: VDBFrameInput, options: VDBFrameUpdateOptions): VDBFrameUpdate {
     this.#check();
     this.#retire.advance();
     const s = this.settings;

@@ -97,7 +97,9 @@ describe("vdbSparseSource", () => {
     const grids = { module: {}, options: { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd"] }, pool } as unknown as VDBGridNode;
     const s = vdbSparseSource(grids, { density: 0 }, { lod: "none", images: { density: grid.image } });
     const volume = new VDBFrameVolume(s, { frameRenderer: new VDBFrameRenderer() });
-    const u = volume.sourceUniforms.densityScale as unknown as { value: number; update(frame: unknown): void };
+    // K6.8: the frame renderer reads the source on the core side; the TSL uniforms are vdbVolumeUniforms' (custom materials)
+    const uniforms = vdbVolumeUniforms(s, { densityScale: 1 });
+    const u = uniforms.densityScale as unknown as { value: number; update(frame: unknown): void };
     const mean0 = s.stats.meanNonZero;
     // The frame renderer writes the volume's scale before each draw (setVolumeUniforms); the render update follows.
     volume.densityScale = 3;
@@ -116,6 +118,7 @@ describe("vdbSparseSource", () => {
     u.value = volume.getDensityScale();
     u.update({});
     expect(u.value).toBeCloseTo(3 / mean1, 6);
+    uniforms.dispose();
     volume.dispose();
   });
 
@@ -168,7 +171,8 @@ describe("vdbSparseSource", () => {
     const s = vdbSparseSource(grids, { density: 0 }, { ...base, followImage: true });
     expect([s.followImage, fixedSource.followImage]).toEqual([true, false]);
     const volume = new VDBFrameVolume(s, { frameRenderer: new VDBFrameRenderer() });
-    const u = volume.sourceUniforms as unknown as { boxes: { density: { min: { value: { toArray(): number[] } }; size: { value: { toArray(): number[] } } } }; gridTexels: { value: { toArray(): number[] } } };
+    const uniforms = vdbVolumeUniforms(s);
+    const u = uniforms as unknown as { boxes: { density: { min: { value: { toArray(): number[] } }; size: { value: { toArray(): number[] } } } }; gridTexels: { value: { toArray(): number[] } } };
     expect(s.version).toBe(1);
     expect(volume.bbox.min.toArray()).toEqual([-2, -2, -2]); // the preview's cell box [−½, max + ½] × 4
     expect(u.gridTexels.value.toArray()).toEqual([12, 24, 6]);
@@ -196,7 +200,7 @@ describe("vdbSparseSource", () => {
     expect(volume.bbox.min.toArray()).toEqual([-2.5, 0.5, -0.5]);
     expect(volume.bbox.max.toArray()).toEqual([47.5, 95.5, 23.5]);
     // The unit box maps onto the new box: its centre and size.
-    const e = volume.volumes[0]!.matrix.elements;
+    const e = volume.boxMatrix.elements;
     expect([e[0], e[5], e[10], e[12], e[13], e[14]]).toEqual([50, 95, 24, 22.5, 48, 11.5]);
     // Nothing more to do until the image changes again.
     volume.syncSource();
@@ -205,6 +209,7 @@ describe("vdbSparseSource", () => {
     // Without followImage the box stays as made (the K3 behaviour: a sequence keeps the first frame's box).
     expect(fixedSource.indexBox).toEqual(preview);
     expect(fixedSource.version).toBe(2);
+    uniforms.dispose();
     volume.dispose();
   });
 
@@ -276,7 +281,7 @@ describe("vdbSparseSource", () => {
     expect(Math.abs(s.stats.meanNonZero / f.stats.meanNonZero - 1)).toBeLessThan(2 ** -11);
   });
 
-  it("RV: uniforms dispose their listeners; volumes made and disposed over one source leave its listener counts flat", () => {
+  it("RV: uniforms dispose their listeners; volumes (K6.8: no TSL uniforms) add none", () => {
     const pool = {
       revision: 1,
       info: () => ({ indexBBox: grid.indexBBox, indexToWorld: new Float64Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]), hasStats: true, capacity: 64, type: "float", imageRevision: 1, resident: true }),
@@ -289,15 +294,14 @@ describe("vdbSparseSource", () => {
     };
     const frameRenderer = new VDBFrameRenderer();
     const keep = new VDBFrameVolume(s, { frameRenderer });
-    expect(counts()).toEqual([1, 1]);
+    expect(counts()).toEqual([0, 0]);
     for (let i = 0; i < 50; i++) new VDBFrameVolume(s, { frameRenderer }).dispose();
-    expect(counts()).toEqual([1, 1]);
+    expect(counts()).toEqual([0, 0]);
     const u = vdbVolumeUniforms(s);
-    expect(counts()).toEqual([2, 2]);
+    expect(counts()).toEqual([1, 1]);
     u.dispose();
     u.dispose(); // idempotent
-    expect(counts()).toEqual([1, 1]);
-    keep.dispose();
     expect(counts()).toEqual([0, 0]);
+    keep.dispose();
   });
 });

@@ -411,7 +411,7 @@ async function main(): Promise<void> {
       const times: number[] = [];
       const frames = Number(params.get("timingFrames") ?? 15);
       for (let f = 0; f < frames + 3; f++) {
-        frameRenderer.renderFroxels(renderer, scene, camera);
+        renderer.render(scene, camera);
         const ms = await renderer.resolveTimestampsAsync("render");
         if (f >= 3 && typeof ms === "number") times.push(ms);
       }

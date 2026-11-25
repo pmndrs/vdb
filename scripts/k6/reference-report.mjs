@@ -1,4 +1,4 @@
-// K6.R / K6.R1: quality report of the froxel renderer (TSL path and core frames, `./three` `backend: 'core'`) and his
+// K6.R / K6.R1: quality report of the froxel renderer (K6.8: the core frames through `./three`; the TSL path is deleted) and his
 // K3 captures against the reference renderer (a brute-force volumetric path tracer, core/reference; design
 // K6-core-renderer.md §7.4). REPORT ONLY: nothing gates on it, and no timing is measured.
 //
@@ -151,10 +151,8 @@ const GROUP_DEFS = {
     scenario: "step3-two-bunnies-dir-isolated",
     lighting: "volume",
     rows: [
-      k3("TSL ms off (draw order)", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=0", { lighting: "volume", vsSingle: true }),
       k3("core ms off, mixture", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=0&backend=core&froxelMix=mixture", { lighting: "volume", vsSingle: true }),
       k3("core ms off, over", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=0&backend=core&froxelMix=over", { lighting: "volume", vsSingle: true }),
-      k3("TSL ms on (draw order)", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=1", { lighting: "volume" }),
       k3("core ms on, mixture", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=1&backend=core&froxelMix=mixture", { lighting: "volume" }),
       k3("core ms on, over", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=1&backend=core&froxelMix=over", { lighting: "volume" }),
     ],
@@ -229,6 +227,23 @@ const GROUP_DEFS = {
     ].map(([scene, title, asset, falloff]) => [scene, { kind: "scene", title, scene, asset, falloff: !!falloff, rows: sceneRows(scene) }]),
   ),
 };
+// K6.8: the TSL path is deleted and every row renders through the core. A TSL row with a core twin (the same query and
+// `&backend=core`, which the pages now ignore) is dropped and its his-capture link moves to the twin; a TSL row without
+// one renders through the core under its label with "TSL" → "core". The core-vs-TSL numbers of earlier runs are in the
+// K6.R1 / K6.3 / K6.Q1 handoffs.
+for (const def of Object.values(GROUP_DEFS)) {
+  const norm = (q) => q.replace(/&backend=core/g, "");
+  const core = new Map(def.rows.filter((r) => !/\bTSL\b/.test(r.label)).map((r) => [norm(r.query ?? ""), r]));
+  def.rows = def.rows.flatMap((r) => {
+    if (!/\bTSL\b/.test(r.label)) return [r];
+    const twin = core.get(norm(r.query));
+    if (twin) {
+      if (r.capture && !twin.capture) twin.capture = r.capture;
+      return [];
+    }
+    return [{ ...r, label: r.label.replace(/\bTSL\b/, "core"), query: `${r.query}&backend=core` }];
+  });
+}
 const GROUPS = String(arg("groups", Object.keys(GROUP_DEFS).join(","))).split(",");
 
 // --- colour ------------------------------------------------------------------------------------------------------

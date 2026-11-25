@@ -369,6 +369,21 @@ export interface VDBFrameOutputs {
 }
 
 /** The result of `update()`. */
+/** Timestamp writes bracketing one update's kernels (WebGPU's `GPUComputePassTimestampWrites` fields; a `'timestamp'` query set). */
+export interface VDBFrameTimestamps {
+  readonly querySet: GPUQuerySet;
+  readonly beginningOfPassWriteIndex?: number;
+  readonly endOfPassWriteIndex?: number;
+}
+
+/** Options of `VDBFrameRendererGpu.update`. */
+export interface VDBFrameUpdateOptions {
+  /** False: keep the last froxels (no froxel work this update; the composite reads them again). Default true. */
+  readonly froxels?: boolean;
+  /** Timestamp writes before the first and after the last kernel of the update. */
+  readonly timestampWrites?: VDBFrameTimestamps | null;
+}
+
 export interface VDBFrameUpdate {
   readonly outputs: VDBFrameOutputs;
   /** True when kernels were recorded (some volume is in view); false: draw nothing this frame. */

@@ -20,10 +20,8 @@ import * as TSL from "three/tsl";
 import type { VDBTslNode } from "../grid-node.js";
 import type { VDBFrameEnvironment } from "../../core/frame/types.js";
 import { getGPUTexture } from "../device.js";
-import { VDBFrameEnvironmentMaterial } from "./environment-material.js";
-import { frameFullscreenVertex } from "./chunks.js";
 
-const { Fn, cos, float, screenCoordinate, sin, vec2, vec3, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
+const { Fn, cos, float, pmremTexture, positionGeometry, screenCoordinate, sin, vec2, vec3, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
 
 /** The lat-long fallback's size: about one texel per PMREM mip-0 texel (0.35°), so a small sun is not lost between point samples. */
 const LATLONG = [1024, 512] as const;
@@ -31,12 +29,20 @@ const LATLONG = [1024, 512] as const;
 type SceneLike = THREE.Object3D & { environment?: THREE.Texture | null; environmentIntensity?: number; environmentRotation?: THREE.Euler };
 type RendererLike = { initTexture?(t: THREE.Texture): void; setRenderTarget(t: THREE.RenderTarget | null): void; getRenderTarget(): THREE.RenderTarget | null; render(s: THREE.Object3D, c: THREE.Camera): void };
 
-/** A lat-long of the scene environment in the core's equirect convention (row 0 the zenith, u = atan2(z, x) / 2π + ½). */
-class VDBCoreLatLongMaterial extends VDBFrameEnvironmentMaterial {
+/**
+ * A lat-long of the scene environment in the core's equirect convention (row 0 the zenith, u = atan2(z, x) / 2π + ½),
+ * through three's PMREM sampler at roughness 0 (his FrameEnvironmentMaterial: the PMREM node needs a texture, so a new
+ * or removed environment builds the shader again; no own envMap, so the PMREM rotation reads the pass scene's).
+ */
+class VDBCoreLatLongMaterial extends NodeMaterial {
+  environment: THREE.Texture | null = null;
+  environmentNodes: VDBTslNode[] = [];
+
   constructor() {
     super();
+    (this as unknown as { envMap: THREE.Texture | null }).envMap = null;
     this.name = "VDBCoreLatLongMaterial";
-    this.vertexNode = frameFullscreenVertex;
+    this.vertexNode = vec4(positionGeometry.xy, 0.0, 1.0);
     this.fragmentNode = this.createFragmentNode();
     this.side = THREE.DoubleSide;
     this.forceSinglePass = true;
@@ -45,8 +51,26 @@ class VDBCoreLatLongMaterial extends VDBFrameEnvironmentMaterial {
     this.blending = THREE.NoBlending;
   }
 
-  override rebuildNodes(): void {
-    this.fragmentNode = this.createFragmentNode();
+  setEnvironment(environment: THREE.Texture | null | undefined): void {
+    const next = environment ?? null;
+    if (!!next !== !!this.environment) {
+      this.environment = next;
+      this.environmentNodes = [];
+      this.fragmentNode = this.createFragmentNode();
+      this.needsUpdate = true;
+    } else if (next && this.environment !== next) {
+      this.environment = next;
+      this.environmentNodes.forEach((node) => {
+        node.value = next;
+      });
+    }
+  }
+
+  // NOTE Radiance of the PMREM environment at the roughness. Rotation is from the pass scene, intensity is not applied.
+  environmentRadiance(direction: VDBTslNode, roughness: number): VDBTslNode {
+    const node = pmremTexture(this.environment, direction, float(roughness));
+    this.environmentNodes.push(node);
+    return node;
   }
 
   createFragmentNode(): VDBTslNode {

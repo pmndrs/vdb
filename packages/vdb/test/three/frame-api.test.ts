@@ -8,7 +8,7 @@ import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { readWvdb, writeWvdb, wvdbDenseToNvdb, wvdbDenseVolume, type WvdbDenseVolume } from "../../src/tools/index.js";
 import { VDBFrameRenderer, VDBFrameVolume, VDBSequence, vdbDenseTextures, vdbFrameMedium } from "../../src/three/index.js";
-import { setVolumeUniforms, vdbFrameChunks } from "../../src/three/frame/index.js";
+import { vdbVolumeUniforms } from "../../src/three/volume-source.js";
 import { fixture } from "../tools/wvdb-helpers.js";
 
 const cloud = wvdbDenseVolume(readWvdb(fixture("cloud_04_variant_0000.wvdb")));
@@ -73,11 +73,12 @@ describe("K5.9 VDBFrameVolume API", () => {
     given.dispose();
   });
 
-  it("dense frames: a replace reaches the uniforms by itself (syncSource), a frame without a channel reads its absent value, an extra channel is ignored", () => {
+  it("dense frames: a replace reaches the source's uniforms (update), a frame without a channel reads its absent value, an extra channel is ignored", () => {
     const first = frame([8, 8, 8], true);
     const source = vdbDenseTextures(first);
     const v = new VDBFrameVolume(source, { frameRenderer: new VDBFrameRenderer() });
-    const u = v.sourceUniforms;
+    // K6.8: the frame renderer reads the source on the core side; the TSL uniforms are vdbVolumeUniforms' (custom materials)
+    const u = vdbVolumeUniforms(source, { extinction: 100, densityScale: 1, normalizeDensity: true });
     // A frame of another size without flames: the emission texture is a constant 0 of the new size.
     source.replace(frame([16, 8, 8], false, 0.4));
     const emission = source.textures.emission!.map.image as { data: Uint8Array; width: number };
@@ -85,11 +86,12 @@ describe("K5.9 VDBFrameVolume API", () => {
     expect(emission.data.every((b) => b === 0)).toBe(true);
     expect(source.version).toBe(1);
     expect(u.gridTexels.value.x).toBe(8);
-    // The renderer's per-draw setter syncs the uniforms (no volume.updateSource()).
-    const fake = { volumeUniforms: vdbFrameChunks.createFrameVolumeUniforms(), sourceUniforms: u };
-    setVolumeUniforms(fake, v, v.volumes[0]!);
+    u.update(source);
     expect(u.gridTexels.value.x).toBe(16);
     expect(u.densityScale.value).toBeCloseTo(1 / 0.4, 2);
+    // the volume follows the source's mean (its density scale) by itself
+    expect(v.getDensityScale()).toBeCloseTo(1 / 0.4, 2);
+    u.dispose();
     // A source made without emission ignores a frame's flames (warned once) instead of throwing.
     const plain = vdbDenseTextures(frame([8, 8, 8], false));
     expect(() => plain.replace(frame([8, 8, 8], true))).not.toThrow();
@@ -104,7 +106,7 @@ describe("K5.9 VDBFrameVolume API", () => {
     const v = new VDBFrameVolume(source, { frameRenderer: new VDBFrameRenderer() });
     const fixed = new VDBFrameVolume(source, { frameRenderer: new VDBFrameRenderer(), bbox: [[0, 0, 0], [1, 1, 1]] });
     const m = (vol: VDBFrameVolume) => {
-      const e = vol.volumes[0]!.matrix.elements;
+      const e = vol.boxMatrix.elements;
       return [e[0], e[5], e[10], e[12], e[13], e[14]];
     };
     expect(m(v)).toEqual([8, 8, 8, 4, 4, 4]);

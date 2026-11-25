@@ -103,17 +103,17 @@ async function main(): Promise<void> {
 
   const asset = await k6LoadAsset(def.asset);
   const frameRenderer = new VDBFrameRenderer();
-  frameRenderer.backend = params.get("backend") === "core" ? "core" : "tsl";
-  frameRenderer.froxelMix = params.get("froxelMix") === "over" ? "over" : "mixture";
-  // K6.3: the core's 'multi-scale' settings (the V75 edge A/B)
-  if (params.has("msEdge")) frameRenderer.coreSettings.multiScaleEdge = params.get("msEdge") === "clamp" ? "clamp" : "zero";
-  if (params.has("msLevels")) frameRenderer.coreSettings.multiScaleLevels = Number(params.get("msLevels"));
-  // K6.Q1: the shadowed ambient (?ao=1, ?aoPairs=, ?aoSteps=)
-  if (params.has("ao")) frameRenderer.coreSettings.ambientOcclusion = params.get("ao") === "1";
-  if (params.has("aoPairs")) frameRenderer.coreSettings.ambientOcclusionPairs = Number(params.get("aoPairs"));
-  if (params.has("aoSteps")) frameRenderer.coreSettings.ambientOcclusionSteps = Number(params.get("aoSteps"));
-  result.backend = frameRenderer.backend;
-  result.froxelMix = frameRenderer.froxelMix;
+  // K6.8: always the core (`?backend=` ignored). `?froxelMix=`; K6.3 'multi-scale' (`?msEdge=`, `?msLevels=`); K6.Q1 shadowed
+  // ambient (`?ao=1`, `?aoPairs=`, `?aoSteps=`)
+  const cs = frameRenderer.settings;
+  cs.froxelMix = params.get("froxelMix") === "over" ? "over" : "mixture";
+  if (params.has("msEdge")) cs.multiScaleEdge = params.get("msEdge") === "clamp" ? "clamp" : "zero";
+  if (params.has("msLevels")) cs.multiScaleLevels = Number(params.get("msLevels"));
+  if (params.has("ao")) cs.ambientOcclusion = params.get("ao") === "1";
+  if (params.has("aoPairs")) cs.ambientOcclusionPairs = Number(params.get("aoPairs"));
+  if (params.has("aoSteps")) cs.ambientOcclusionSteps = Number(params.get("aoSteps"));
+  result.backend = "core";
+  result.froxelMix = cs.froxelMix;
   Object.assign(frameRenderer.settings, {
     width: FROXELS[0],
     height: FROXELS[1],
@@ -216,7 +216,7 @@ async function main(): Promise<void> {
   result.width = W;
   result.height = H;
   result.rgba = await readImage(renderer, rt);
-  log(`${NAME} ${LIGHTING} ms ${String(MS)} backend ${frameRenderer.backend} (${frameRenderer.froxelMix}): ${W}x${H}`, "ok");
+  log(`${NAME} ${LIGHTING} ms ${String(MS)} (${cs.froxelMix}): ${W}x${H}`, "ok");
   volume.dispose();
   source.dispose();
   rt.dispose();

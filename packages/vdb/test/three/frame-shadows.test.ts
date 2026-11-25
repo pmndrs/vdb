@@ -1,58 +1,19 @@
 /**
- * K3.6: the host side of the volume shadows and the emission light in Node (no GPU): his settings, the three r187
+ * K3.6 / K6.8: the host side of the volume shadows and the emission light in Node (no GPU): his settings, the three r187
  * internals self-tests (and that they throw VDB_ENGINE_MISMATCH when three behaves otherwise), the shadow filter
- * install / restore on lights, and the emission light's emitters, keys and probe cascades over a VDBFrameVolume with
- * an emission channel. The passes run in e2e/k3-frame-shadows.spec.ts.
+ * install / restore on lights, the receivers' copy of the core's drawn state, and the emission light's copy of the
+ * core's probe grid. The core's maps, budget and probes are tested in test/core/frame/shadows-emission.test.ts and
+ * e2e/k6-core.spec.ts; the frames in e2e/k3-frame-shadows.spec.ts and k6-shadows.spec.ts.
  */
 
 import * as THREE from "three";
 import { LightsNode } from "three/webgpu";
 import { afterEach, describe, expect, it } from "vitest";
-import { readWvdb, wvdbDenseVolume, writeWvdb } from "../../src/tools/index.js";
-import { vdbCie1931Fit, vdbFrameBlackbodyTable, type VDBColorMatchingFunctions, type VDBFrameVec3 } from "../../src/tools/internal.js";
-import { getFrameBlackbodyMap } from "../../src/three/frame/blackbody.js";
-import { VDBFrameEmissionLight, VDBFrameEmissionLightNode, VDBFrameRenderer, VDBFrameVolume, vdbDenseTextures, vdbFrameBlackbodyEmission, vdbFrameCheckLightReset } from "../../src/three/internal.js";
+import { VDBFrameEmissionLight, VDBFrameEmissionLightNode, VDBFrameRenderer, vdbFrameCheckLightReset } from "../../src/three/internal.js";
 import { vdbFrameRegisterLightNode, vdbFrameRenderId, vdbFrameResetInternalsCache, vdbFrameCheckFilterInputs, vdbFramePrecompiling } from "../../src/three/frame/three-internals.js";
+import type { VDBVolumeShadowMap } from "../../src/core/frame/types.js";
 
-// A renderer as far as the host code reaches without a draw (initTarget clears a new map)
-const fakeRenderer = () =>
-  ({
-    isWebGPURenderer: true,
-    coordinateSystem: THREE.WebGPUCoordinateSystem,
-    shadowMap: { type: THREE.PCFShadowMap, enabled: true },
-    getRenderTarget: () => null,
-    getActiveCubeFace: () => 0,
-    getActiveMipmapLevel: () => 0,
-    getClearAlpha: () => 1,
-    getClearColor: (c: THREE.Color) => c,
-    setClearColor: () => undefined,
-    setRenderTarget: () => undefined,
-    clear: () => undefined,
-  }) as never;
-
-/** A 16³ volume with density everywhere and emission in its middle (writeWvdb → the dense source). */
-const emissiveVolume = () => {
-  const n = 16;
-  const density = new Float32Array(n * n * n).fill(0.5);
-  const flames = new Float32Array(n * n * n).map((_, i) => {
-    const x = i % n;
-    const y = Math.floor(i / n) % n;
-    const z = Math.floor(i / (n * n));
-    return Math.max(0, 1 - Math.hypot(x - 7.5, y - 7.5, z - 7.5) / 6);
-  });
-  const bbox: [[number, number, number], [number, number, number]] = [
-    [-5, -5, -5],
-    [5, 5, 5],
-  ];
-  const { bytes } = writeWvdb(
-    [
-      { name: "density", class: "fog volume", background: 0, bbox, finest: { dimensions: [n, n, n], values: density } },
-      { name: "flames", class: "fog volume", background: 0, bbox, finest: { dimensions: [n, n, n], values: flames } },
-    ],
-    { lods: 1 },
-  );
-  return vdbDenseTextures(wvdbDenseVolume(readWvdb(bytes), { emission: "flames" }));
-};
+const fakeRenderer = () => ({ isWebGPURenderer: true, shadowMap: { type: THREE.PCFShadowMap, enabled: true } }) as never;
 
 afterEach(() => vdbFrameResetInternalsCache());
 
@@ -60,11 +21,9 @@ describe("K3.6 settings and three internals", () => {
   it("his castShadow* settings and defaults", () => {
     const fr = new VDBFrameRenderer();
     expect(fr.settings).toMatchObject({ castShadows: false, castShadowMapSize: 512, castShadowCascades: 1, castShadowDistance: 4000, castShadowSteps: 32, castShadowUpdatesPerFrame: 1, castShadowCoarse: false });
-    expect(fr.usesShadowGrid()).toBe(true);
-    fr.settings.lighting = "volume";
-    expect(fr.usesShadowGrid()).toBe(false);
-    fr.settings.castShadows = true;
-    expect(fr.usesShadowGrid()).toBe(true);
+    expect(fr.volumeShadows.getMapSize()).toBe(512);
+    fr.settings.castShadowCoarse = true;
+    expect(fr.volumeShadows.getMapSize()).toBe(64);
   });
 
   it("the light-shadow reset self-test passes on three r187", () => {
@@ -118,7 +77,6 @@ describe("K3.6 settings and three internals", () => {
 describe("K3.6 volume shadows: filters on lights", () => {
   it("castShadows puts the volume filter on each shadow light (keeping a user filter as its base); off restores it", () => {
     const fr = new VDBFrameRenderer();
-    fr.backend = "tsl"; // K6.8 Stage A: the TSL maps (deleted in Stage B)
     const scene = new THREE.Scene();
     const sun = new THREE.DirectionalLight();
     const spot = new THREE.SpotLight();
@@ -141,18 +99,17 @@ describe("K3.6 volume shadows: filters on lights", () => {
     expect(filterOf(spot)?.isVDBFrameVolumeShadowFilter).toBe(true);
     expect(filterOf(quiet)).toBeFalsy();
     expect(fr.volumeShadows.entries.get(spot)!.userFilter).toBe(userFilter);
-    // directional lights get 4 cascade tiles in one atlas; spot lights one map
-    expect(fr.volumeShadows.entries.get(sun)!.target.width).toBe(512 * 4);
-    expect(fr.volumeShadows.entries.get(spot)!.target.width).toBe(512);
+    // directional lights read cascades (layers of the core map); no map before the core drew one
+    expect(fr.volumeShadows.entries.get(sun)!.cascades?.length).toBe(4);
+    expect(fr.volumeShadows.entries.get(spot)!.cascades).toBeNull();
+    expect(fr.volumeShadows.entries.get(sun)!.map).toBeNull();
     // the filter checks what three passes it
     expect(() => (filterOf(sun) as unknown as (i: unknown) => unknown)({})).toThrow(/VDB_ENGINE_MISMATCH/);
 
-    // a new map size makes new maps; a removed light frees its entry
-    fr.settings.castShadowCoarse = true;
+    // a removed light frees its entry and gets its own filter back
     scene.remove(spot);
     fr.volumeShadows.update(renderer, scene);
     expect(fr.volumeShadows.entries.size).toBe(1);
-    expect(fr.volumeShadows.entries.get(sun)!.size).toBe(64);
     expect(filterOf(spot)).toBe(userFilter);
 
     fr.settings.castShadows = false;
@@ -163,95 +120,34 @@ describe("K3.6 volume shadows: filters on lights", () => {
   });
 });
 
-describe("K7.1 volume shadow update budget (his c13f2d5)", () => {
-  // updateMaps without a GPU: the shadow grid is "ready" and the map draws are recorded, not drawn
-  const budgetRig = () => {
+describe("K6.5 receivers read the core's drawn state", () => {
+  it("sync copies each map's drawn view (cascades, spot) and the budget counters; a light without a map reads none", () => {
     const fr = new VDBFrameRenderer();
-    fr.backend = "tsl"; // K6.8 Stage A: the TSL maps (deleted in Stage B)
     fr.settings.castShadows = true;
-    fr.settings.castShadowUpdatesPerFrame = 1;
-    const shadows = fr.volumeShadows;
-    const drawnLights: string[] = [];
-    Object.assign(fr, { prepareShadowGrid: () => true, shadowDensityTarget: { textures: [null], dispose() {} } });
-    shadows.drawPass = (_r, entry) => void drawnLights.push(entry.light.name);
-    const spot = (name: string, x: number) => {
-      const light = new THREE.SpotLight();
-      light.name = name;
-      light.castShadow = true;
-      light.position.set(x, 10, 0);
-      return light;
-    };
-    return { fr, shadows, drawnLights, spot, renderer: fakeRenderer(), camera: new THREE.PerspectiveCamera() };
-  };
-
-  it("fail-before: a shadow light of another scene takes no part of the budget (nor a light removed after update)", () => {
-    const { fr, shadows, drawnLights, spot, renderer, camera } = budgetRig();
-    const sceneA = new THREE.Scene();
-    const sceneB = new THREE.Scene();
-    const lightA = spot("A", 0);
-    const lightB = spot("B", 5);
-    sceneA.add(lightA);
-    sceneB.add(lightB);
-    sceneA.updateMatrixWorld(true);
-    sceneB.updateMatrixWorld(true);
-    // One frame renderer in two scenes: B's light gets its entry first (the oldest-first order then puts it first)
-    shadows.update(renderer, sceneB);
-    shadows.update(renderer, sceneA);
-    expect([...shadows.entries.keys()].map((l) => l.name)).toEqual(["B", "A"]);
-
-    // Rendering scene A: only A's light is in the rendered scene, so it is drawn and nothing waits
-    shadows.updateMaps(renderer, sceneA, camera, 1);
-    expect(drawnLights).toEqual(["A"]);
-    expect(shadows.lastUpdate).toEqual({ drawn: 1, waiting: 0 });
-    expect(shadows.entries.get(lightA)!.enabled.value).toBe(1);
-    expect(shadows.entries.get(lightB)!.enabled.value).toBe(0);
-
-    // Rendering scene B: B's light is drawn
-    drawnLights.length = 0;
-    shadows.updateMaps(renderer, sceneB, camera, 2);
-    expect(drawnLights).toEqual(["B"]);
-    expect(shadows.lastUpdate).toEqual({ drawn: 1, waiting: 0 });
-
-    // A light removed between update() (which would free it) and the maps: no draw, no budget
-    const lightC = spot("C", -5);
-    sceneA.add(lightC);
-    sceneA.updateMatrixWorld(true);
-    shadows.update(renderer, sceneA);
-    lightA.position.x = 1;
-    sceneA.updateMatrixWorld(true);
-    sceneA.remove(lightC);
-    drawnLights.length = 0;
-    shadows.updateMaps(renderer, sceneA, camera, 3);
-    expect(drawnLights).toEqual(["A"]);
-    expect(shadows.lastUpdate).toEqual({ drawn: 1, waiting: 0 });
-    fr.dispose();
-  });
-
-  it("lights of the rendered scene still share the budget (oldest first; the rest wait)", () => {
-    const { fr, shadows, drawnLights, spot, renderer, camera } = budgetRig();
     const scene = new THREE.Scene();
-    const a = spot("A", 0);
-    const b = spot("B", 5);
-    scene.add(a, b);
-    scene.updateMatrixWorld(true);
-    shadows.update(renderer, scene);
-    shadows.updateMaps(renderer, scene, camera, 1);
-    expect(drawnLights).toEqual(["A"]);
-    expect(shadows.lastUpdate).toEqual({ drawn: 1, waiting: 1 });
-    shadows.updateMaps(renderer, scene, camera, 2);
-    expect(drawnLights).toEqual(["A", "B"]);
-    expect(shadows.lastUpdate).toEqual({ drawn: 1, waiting: 0 });
-    // a hidden parent still takes the light out
-    const group = new THREE.Group();
-    scene.add(group);
-    group.add(b);
-    group.visible = false;
-    b.position.x = 6;
-    scene.updateMatrixWorld(true);
-    shadows.updateMaps(renderer, scene, camera, 3);
-    expect(shadows.entries.get(b)!.enabled.value).toBe(0);
-    expect(shadows.lastUpdate).toEqual({ drawn: 0, waiting: 0 });
+    const sun = new THREE.DirectionalLight();
+    const spot = new THREE.SpotLight();
+    sun.castShadow = spot.castShadow = true;
+    scene.add(sun, spot);
+    fr.volumeShadows.update(fakeRenderer(), scene);
+    const vp = (k: number) => Array.from({ length: 16 }, (_, i) => i + k);
+    const map = (o: Partial<VDBVolumeShadowMap>): VDBVolumeShadowMap => ({ texture: null as unknown as GPUTexture, rgbTexture: null, size: 256, enabled: true, lastDraw: [3, 4, 5], ...o }) as unknown as VDBVolumeShadowMap;
+    const drawn = { viewProjection: [vp(1), vp(2)], origin: [[1, 2, 3], [4, 5, 6]], forward: [0, -1, 0], far: [10, 20], perspective: false, cascadeCount: 2, breaks: [5, 50, 0, 0] };
+    const maps = new Map<number | string, VDBVolumeShadowMap>([[sun.id, map({ drawn } as never)]]);
+    fr.volumeShadows.sync(maps, { drawn: 1, waiting: 2 });
+    const e = fr.volumeShadows.entries.get(sun)!;
+    expect(e.enabled.value).toBe(1);
+    expect(e.drawn.cascadeCount).toBe(2);
+    expect(e.drawn.cascadeBreaks.toArray()).toEqual([5, 50, 0, 0]);
+    expect(e.cascades![1]!.drawn.viewProjection.elements).toEqual(vp(2));
+    expect(e.cascades![1]!.drawn.origin.toArray()).toEqual([4, 5, 6]);
+    expect(e.cascades![1]!.drawn.far).toBe(20);
+    expect(e.cascades![1]!.lastDraw).toBe(5);
+    expect(e.lastDraw).toBe(3);
+    expect(fr.volumeShadows.entries.get(spot)!.enabled.value).toBe(0);
+    expect(fr.volumeShadows.lastUpdate).toEqual({ drawn: 1, waiting: 2 });
     fr.dispose();
+    expect(fr.volumeShadows.entries.size).toBe(0);
   });
 });
 
@@ -260,75 +156,31 @@ describe("K3.6 emission light host side", () => {
     const light = new VDBFrameEmissionLight({ intensity: 25, resolution: 32 });
     expect((VDBFrameEmissionLight.prototype as unknown as { _lightNode: unknown })._lightNode).toBe(VDBFrameEmissionLightNode);
     expect(light).toMatchObject({ intensity: 25, resolution: 32, range: 3, cascades: 1, distance: 512, steps: 24, isLight: true });
-    expect(light.probeTarget.width).toBe(384);
-    expect(light.probeTarget.textures.length).toBe(3);
+    expect(light.getSteps()).toBe(24);
     light.dispose();
   });
 
-  it("the blackbody hook (D33): the analytic-fit table by default, the caller's colour matching functions when given", () => {
-    const planck = vdbFrameBlackbodyEmission("planck");
-    expect(planck.table).toBe(getFrameBlackbodyMap());
-    expect(planck.table.image.data).toBe(vdbFrameBlackbodyTable(vdbCie1931Fit));
-    expect(vdbFrameBlackbodyEmission("soot", 2).table).toBe(planck.table);
-    // e.g. the exact CIE table a parity harness injects (here: the fit with a red-shifted x̄)
-    const cmf: VDBColorMatchingFunctions = (w) => {
-      const [, y, z] = vdbCie1931Fit(w);
-      const shifted: VDBFrameVec3 = [vdbCie1931Fit(w - 5)[0], y, z];
-      return shifted;
-    };
-    const custom = vdbFrameBlackbodyEmission("soot", 1.39, { cmf });
-    expect(custom.table).not.toBe(planck.table);
-    expect(custom.table.image.data).toBe(vdbFrameBlackbodyTable(cmf));
-    expect(custom.table.image.data).not.toEqual(planck.table.image.data);
-    expect(vdbFrameBlackbodyEmission("planck", 0, { cmf }).table).toBe(custom.table);
-    expect(custom.spectrum).toBe("soot");
-    expect(custom.sootExponent.value).toBeCloseTo(1.39, 6);
-  });
-
-  it("emitters: visible volumes with an emission channel; keys change with the volume; cascades cover them", () => {
-    const source = emissiveVolume();
-    const fr = new VDBFrameRenderer();
-    const hook = vdbFrameBlackbodyEmission("soot", 1.39);
-    const volume = new VDBFrameVolume(source, { frameRenderer: fr, emissionColor: hook, temperatureRange: [0, 3000] });
-    const plain = new VDBFrameVolume(vdbDenseTextures(wvdbDenseVolume(readWvdb(writeWvdb([{ name: "density", background: 0, bbox: [[0, 0, 0], [1, 1, 1]], finest: { dimensions: [2, 2, 2], values: new Float32Array(8).fill(1) } }], { lods: 1 }).bytes))), { frameRenderer: fr });
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera();
+  it("updateProbes copies the core's probe grid of the scene's first volume's renderer (none: no probes)", () => {
     const light = new VDBFrameEmissionLight();
-    volume.position.set(20, 0, 0);
-    scene.add(volume, plain, light);
-    scene.updateMatrixWorld(true);
-
-    const first = light.prepareProbes(scene, camera)!;
-    expect(light.emitterCount).toBe(1);
-    expect(first.map((c) => c.slot)).toEqual([0]);
-    expect(light.slotCount).toBe(1);
-    expect(light.directionTarget.width).toBe(16);
-    expect(light.emitters[0]!.center.toArray()).toEqual([20, 0, 0]);
-    expect(light.emitters[0]!.radius).toBeCloseTo(5 * Math.sqrt(3), 9);
-    // the last cascade: the emitter box ([15, 25] × [−5, 5]²) grown by (3 − 1)/2 × 10
-    expect(light.cascadeCount).toBe(1);
-    expect(light.cascadeMin[0]!.toArray()).toEqual([5, -15, -15]);
-    expect(light.cascadeSize[0]!.toArray()).toEqual([30, 30, 30]);
-    // nothing changed: no passes
-    expect(light.prepareProbes(scene, camera)).toBeNull();
-    // the colour hook's soot exponent, a prop, or the transform change the key
-    hook.sootExponent.value = 2;
-    expect(light.prepareProbes(scene, camera)).toHaveLength(1);
-    volume.emissiveIntensity = 3;
-    expect(light.prepareProbes(scene, camera)).toHaveLength(1);
-    volume.position.x = 21;
-    scene.updateMatrixWorld(true);
-    expect(light.prepareProbes(scene, camera)).toHaveLength(1);
-    // a hidden volume is not an emitter
-    volume.visible = false;
-    expect(light.prepareProbes(scene, camera)).toBeNull();
-    expect(light.emitterCount).toBe(0);
-    // the direction material is the volume's (its source compiled in), made once
-    const material = light.getDirectionMaterial(volume);
-    expect(light.getDirectionMaterial(volume)).toBe(material);
-    expect(material.source).toBe(source);
+    const scene = new THREE.Scene();
+    const probes = {
+      texture: {} as GPUTexture,
+      layout: { origins: [[0, 0, 0]], size: [16, 16, 48] },
+      state: { emitters: 2, count: 1, resolution: 16, center: [1, 2, 3], min: [[-5, -6, -7]], size: [[10, 12, 14]] },
+      lastUpdate: { directions: 2, probes: true },
+    };
+    let calls = 0;
+    const fr = { coreFrame: () => void calls++, core: { outputs: { emissionProbes: probes } } };
+    scene.add(Object.assign(new THREE.Object3D(), { isVDBFrameVolume: true, frameRenderer: fr }));
+    light.updateProbes({}, scene, new THREE.PerspectiveCamera());
+    expect(calls).toBe(1);
+    expect([light.emitterCount, light.cascadeCount, light.probeResolution]).toEqual([2, 1, 16]);
+    expect(light.probeCenter.toArray()).toEqual([1, 2, 3]);
+    expect(light.cascadeMin[0]!.toArray()).toEqual([-5, -6, -7]);
+    expect(light.cascadeSize[0]!.toArray()).toEqual([10, 12, 14]);
+    expect(light.lastUpdate).toEqual({ directions: 2, probes: true });
+    light.updateProbes({}, new THREE.Scene(), new THREE.PerspectiveCamera());
+    expect([light.emitterCount, light.cascadeCount, light.coreProbes]).toEqual([0, 0, null]);
     light.dispose();
-    volume.dispose();
-    expect(volume.emissionDirectionMaterial).toBeNull();
   });
 });

@@ -369,24 +369,12 @@ test("K6.1 a second identical update builds no pipeline or module; two loads agr
 });
 
 // ---------------------------------------------------------------------------------------------------------------
-// Gate 2 (design §7.2): his K3 Step 1 scenes through the k3-frame harness with `?backend=core` vs `?backend=tsl` on
-// the same device: PSNR ≥ 45 dB and ≤ 0.2 % pixels > 4/255, with froxelMix 'mixture' and 'over'. The scenes need his
-// CC BY-SA bunny (fixtures/k3/bunny_cloud.wvdb); full size (1280x720, 512x512x24): opt in with K6_CORE_AB=1.
-// 'frame'-lighting scenes render with ?lighting=volume (K6.1 has 'volume' lighting only). PNGs, diff heatmaps and a
-// JSON per scene go to artifacts/k6/ab/.
+// K6.8: the core-vs-TSL A/B rows (K6.1 Step 1, K6.2 Step 3, K6.3 Step 4, K6.4 Step 5, K6.1d WDAS, K6.2b environment) are
+// gone with the TSL path. Their scenes render through the core in e2e/k6-frames.spec.ts, which compares them with the
+// frames before a change (K6_FRAMES_BASELINE) and writes artifacts/k6/ours-core/ for scripts/k3/compare.mjs against his
+// captures (the regression report). The last core-vs-TSL numbers are in docs/archive/handoffs/K6-*.md and K6-8.md.
 // ---------------------------------------------------------------------------------------------------------------
-const AB_SCENES = [
-  "step1-lighting-volume",
-  "step1-lights-directional",
-  "step1-multiple-scattering-off",
-  "step1-volume-dir-ms-off",
-  "step1-volume-dir-ms-off-isolated",
-  "step1-volume-dir-ms-on",
-  "step1-volume-dir-ms-on-isolated",
-];
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const AB_DIR = path.join(REPO, "artifacts", "k6", "ab");
-
 interface K3Result {
   done: boolean;
   error?: string;
@@ -405,220 +393,6 @@ async function k3(page: Page, query: string): Promise<K3Result> {
 }
 const k3Image = (r: K3Result) => ({ width: r.width!, height: r.height!, data: new Uint8Array(Buffer.from(r.rgba!, "base64")) });
 const k3Detail = (r: K3Result) => JSON.stringify({ ...r, rgba: undefined });
-
-for (const scene of AB_SCENES) {
-  for (const mix of ["mixture", "over"] as const) {
-    test(`K6.1 A/B core vs TSL: ${scene} (${mix})`, async ({ page }) => {
-      test.skip(process.env.K6_CORE_AB !== "1", "set K6_CORE_AB=1 (needs fixtures/k3/bunny_cloud.wvdb)");
-      test.skip(!existsSync(path.join(REPO, "fixtures", "k3", "bunny_cloud.wvdb")), "fixtures/k3/bunny_cloud.wvdb missing");
-      test.setTimeout(1_200_000);
-      const base = `?scene=${scene}&lighting=volume`;
-      const tsl = await k3(page, `${base}&backend=tsl`);
-      const core = await k3(page, `${base}&backend=core&froxelMix=${mix}`);
-      expect(tsl.error, k3Detail(tsl)).toBeUndefined();
-      expect(core.error, k3Detail(core)).toBeUndefined();
-      expect(core.uncaptured, k3Detail(core)).toEqual([]);
-      expect(core.inPageIdentical, k3Detail(core)).toBe(true);
-      const cmp = compareImages(k3Image(core), k3Image(tsl), { minPsnr: 45, threshold: 4, maxFraction: 0.002 });
-      mkdirSync(AB_DIR, { recursive: true });
-      writeFileSync(path.join(AB_DIR, `${scene}-tsl.png`), encodePng(k3Image(tsl)));
-      writeFileSync(path.join(AB_DIR, `${scene}-core-${mix}.png`), encodePng(k3Image(core)));
-      writeFileSync(path.join(AB_DIR, `${scene}-core-${mix}-diff.png`), encodePng(diffHeatmap(k3Image(core), k3Image(tsl), { threshold: 4, fullScale: 16 })));
-      writeFileSync(path.join(AB_DIR, `${scene}-${mix}.json`), JSON.stringify({ scene, mix, ...cmp, coreWarnings: core.warnings }, null, 2));
-      if (mix === "mixture") {
-        // Gate 3 (his captures): scripts/k3/compare.mjs --ours artifacts/k6/ours-{core,tsl} --reference fixtures/k3-reference/75e7345
-        for (const [dir, r] of [["ours-core", core], ["ours-tsl", tsl]] as const) {
-          mkdirSync(path.join(REPO, "artifacts", "k6", dir), { recursive: true });
-          writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.png`), encodePng(k3Image(r)));
-          writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.json`), JSON.stringify({ ...r, rgba: undefined }, null, 2));
-        }
-      }
-      console.log(`[k6-ab] ${scene} ${mix}: PSNR ${cmp.psnr.toFixed(2)} dB, ${(cmp.fraction * 100).toFixed(3)}% > 4/255 (max ${cmp.maxDiff})`);
-      expect(cmp.failures, JSON.stringify(cmp)).toEqual([]);
-    });
-  }
-}
-
-// ---------------------------------------------------------------------------------------------------------------
-// K6.2 gate 2 (design §7.2): his K3 Step 3 'frame' lighting scenes through `?backend=core` vs `?backend=tsl` (same
-// device, same bar: PSNR ≥ 45 dB, ≤ 0.2 % pixels > 4/255), dense and (K6.1d) sparse sources. The environment scene
-// (`*-env-isolated`) needs K6.2b's GPU environment and is not here. Opt in with K6_CORE_AB=1; PNGs, heatmaps and JSON
-// go to artifacts/k6/ab-frame/, and the mixture images to artifacts/k6/ours-{core,tsl}/ for scripts/k3/compare.mjs.
-// ---------------------------------------------------------------------------------------------------------------
-const AB_FRAME = [
-  { scene: "step3-default-dir-isolated", source: "dense" },
-  { scene: "step3-shadow-cascades-4-dir-isolated", source: "dense" },
-  { scene: "step3-shadow-grid-high-dir-isolated", source: "dense" },
-  { scene: "step3-two-bunnies-dir-isolated", source: "dense" },
-  { scene: "step3-default-dir-isolated", source: "sparse" },
-  { scene: "step3-two-bunnies-dir-isolated", source: "sparse" },
-  { scene: "step1-volume-dir-ms-on-isolated", source: "sparse" },
-] as const;
-const AB_FRAME_DIR = path.join(REPO, "artifacts", "k6", "ab-frame");
-
-for (const { scene, source } of AB_FRAME) {
-  test(`K6.2 A/B core vs TSL: ${scene} (${source})`, async ({ page }) => {
-    test.skip(process.env.K6_CORE_AB !== "1", "set K6_CORE_AB=1 (needs fixtures/k3/bunny_cloud.wvdb)");
-    test.skip(!existsSync(path.join(REPO, "fixtures", "k3", "bunny_cloud.wvdb")), "fixtures/k3/bunny_cloud.wvdb missing");
-    test.setTimeout(1_800_000);
-    const base = `?scene=${scene}&source=${source}`;
-    const tsl = await k3(page, `${base}&backend=tsl`);
-    const core = await k3(page, `${base}&backend=core`);
-    expect(tsl.error, k3Detail(tsl)).toBeUndefined();
-    expect(core.error, k3Detail(core)).toBeUndefined();
-    expect(core.uncaptured, k3Detail(core)).toEqual([]);
-    expect(core.inPageIdentical, k3Detail(core)).toBe(true);
-    const cmp = compareImages(k3Image(core), k3Image(tsl), { minPsnr: 45, threshold: 4, maxFraction: 0.002 });
-    const name = `${scene}-${source}`;
-    mkdirSync(AB_FRAME_DIR, { recursive: true });
-    writeFileSync(path.join(AB_FRAME_DIR, `${name}-tsl.png`), encodePng(k3Image(tsl)));
-    writeFileSync(path.join(AB_FRAME_DIR, `${name}-core.png`), encodePng(k3Image(core)));
-    writeFileSync(path.join(AB_FRAME_DIR, `${name}-diff.png`), encodePng(diffHeatmap(k3Image(core), k3Image(tsl), { threshold: 4, fullScale: 16 })));
-    writeFileSync(path.join(AB_FRAME_DIR, `${name}.json`), JSON.stringify({ scene, source, ...cmp, coreWarnings: core.warnings }, null, 2));
-    if (source === "dense") {
-      for (const [dir, r] of [["ours-core", core], ["ours-tsl", tsl]] as const) {
-        mkdirSync(path.join(REPO, "artifacts", "k6", dir), { recursive: true });
-        writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.png`), encodePng(k3Image(r)));
-        writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.json`), JSON.stringify({ ...r, rgba: undefined }, null, 2));
-      }
-    }
-    console.log(`[k6-ab-frame] ${name}: PSNR ${cmp.psnr.toFixed(2)} dB, ${(cmp.fraction * 100).toFixed(3)}% > 4/255 (max ${cmp.maxDiff})`);
-    expect(cmp.failures, JSON.stringify(cmp)).toEqual([]);
-  });
-}
-
-// ---------------------------------------------------------------------------------------------------------------
-// K6.3 gate 2 (design §7.2): his K3 Step 4 scenes (phase functions, multiple scattering modes, octave settings, his
-// 'neural' default) through `?backend=core` vs `?backend=tsl`, same device, same bar (PSNR ≥ 45 dB, ≤ 0.2 % pixels >
-// 4/255). Opt in with K6_CORE_AB=1; images and JSON go to artifacts/k6/ab-step4/ and the core / TSL frames to
-// artifacts/k6/ours-{core,tsl}/ for scripts/k3/compare.mjs (his captures: the regression report).
-// ---------------------------------------------------------------------------------------------------------------
-const AB_STEP4 = [
-  "step4-default-neural-dir-isolated",
-  "step4-frame-phase-dual-lobe-dir-isolated",
-  "step4-frame-phase-dual-lobe-back-g-high-dir-isolated",
-  "step4-frame-phase-dual-lobe-back-weight-high-dir-isolated",
-  "step4-frame-phase-g-exponent-dir-isolated",
-  "step4-frame-phase-g-low-dir-isolated",
-  "step4-frame-phase-isotropic-dir-isolated",
-  "step4-frame-phase-lorenz-mie-dir-isolated",
-  "step4-frame-phase-lorenz-mie-rgb-dir-isolated",
-  "step4-lighting-volume-phase-g-low-dir-isolated",
-  "step4-multiple-scattering-octaves-dir-isolated",
-  "step4-multiple-scattering-two-sided-dir-isolated",
-  "step4-octave-contribution-high-dir-isolated",
-  "step4-octave-extinction-high-dir-isolated",
-  "step4-octave-phase-low-dir-isolated",
-  "step4-octaves-1-dir-isolated",
-  "step4-octaves-8-dir-isolated",
-];
-const AB_STEP4_DIR = path.join(REPO, "artifacts", "k6", "ab-step4");
-
-for (const scene of AB_STEP4) {
-  test(`K6.3 A/B core vs TSL: ${scene}`, async ({ page }) => {
-    test.skip(process.env.K6_CORE_AB !== "1", "set K6_CORE_AB=1 (needs fixtures/k3/bunny_cloud.wvdb)");
-    test.skip(!existsSync(path.join(REPO, "fixtures", "k3", "bunny_cloud.wvdb")), "fixtures/k3/bunny_cloud.wvdb missing");
-    test.setTimeout(1_800_000);
-    const tsl = await k3(page, `?scene=${scene}&backend=tsl`);
-    const core = await k3(page, `?scene=${scene}&backend=core`);
-    expect(tsl.error, k3Detail(tsl)).toBeUndefined();
-    expect(core.error, k3Detail(core)).toBeUndefined();
-    expect(core.uncaptured, k3Detail(core)).toEqual([]);
-    expect(core.inPageIdentical, k3Detail(core)).toBe(true);
-    // K6.3: no 'not in the core yet' warnings (phase, multiple scattering)
-    expect(core.warnings.filter((w) => /K6\.3/.test(w)), k3Detail(core)).toEqual([]);
-    const cmp = compareImages(k3Image(core), k3Image(tsl), { minPsnr: 45, threshold: 4, maxFraction: 0.002 });
-    mkdirSync(AB_STEP4_DIR, { recursive: true });
-    writeFileSync(path.join(AB_STEP4_DIR, `${scene}-tsl.png`), encodePng(k3Image(tsl)));
-    writeFileSync(path.join(AB_STEP4_DIR, `${scene}-core.png`), encodePng(k3Image(core)));
-    writeFileSync(path.join(AB_STEP4_DIR, `${scene}-diff.png`), encodePng(diffHeatmap(k3Image(core), k3Image(tsl), { threshold: 4, fullScale: 16 })));
-    writeFileSync(path.join(AB_STEP4_DIR, `${scene}.json`), JSON.stringify({ scene, ...cmp, coreWarnings: core.warnings }, null, 2));
-    for (const [dir, r] of [["ours-core", core], ["ours-tsl", tsl]] as const) {
-      mkdirSync(path.join(REPO, "artifacts", "k6", dir), { recursive: true });
-      writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.png`), encodePng(k3Image(r)));
-      writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.json`), JSON.stringify({ ...r, rgba: undefined }, null, 2));
-    }
-    console.log(`[k6-ab-step4] ${scene}: PSNR ${cmp.psnr.toFixed(2)} dB, ${(cmp.fraction * 100).toFixed(3)}% > 4/255 (max ${cmp.maxDiff})`);
-    expect(cmp.failures, JSON.stringify(cmp)).toEqual([]);
-  });
-}
-
-// ---------------------------------------------------------------------------------------------------------------
-// K6.4 gate 2 (design §7.2): his K3 Step 5 scenes (spectral media, the presets, Ångström air, 'volume' lighting spectral,
-// the environment scenes) through `?backend=core` vs `?backend=tsl`, same device, same bar (PSNR ≥ 45 dB, ≤ 0.2 % pixels
-// > 4/255). Opt in with K6_CORE_AB=1; images and JSON go to artifacts/k6/ab-step5/ and the frames to
-// artifacts/k6/ours-{core,tsl}/ for scripts/k3/compare.mjs (his captures: the regression report). `K6_AB_ONLY=<substring>`
-// narrows the list.
-// ---------------------------------------------------------------------------------------------------------------
-const AB_STEP5 = [
-  "step5-spectral-dir-isolated",
-  ...["cloud", "fog", "ice", "soot", "white-smoke", "dark-smoke", "haze", "dust"].map((m) => `step5-medium-${m}-dir-isolated`),
-  "step5-angstrom-air-dir-isolated",
-  "step5-lighting-volume-medium-dark-smoke-dir-isolated",
-  "step5-lighting-volume-sky-midday-env-isolated",
-  "step5-lighting-volume-medium-cloud-sky-midday-env-isolated",
-].filter((s) => !process.env.K6_AB_ONLY || s.includes(process.env.K6_AB_ONLY));
-const AB_STEP5_DIR = path.join(REPO, "artifacts", "k6", "ab-step5");
-
-for (const scene of AB_STEP5) {
-  test(`K6.4 A/B core vs TSL: ${scene}`, async ({ page }) => {
-    test.skip(process.env.K6_CORE_AB !== "1", "set K6_CORE_AB=1 (needs fixtures/k3/bunny_cloud.wvdb)");
-    test.skip(!existsSync(path.join(REPO, "fixtures", "k3", "bunny_cloud.wvdb")), "fixtures/k3/bunny_cloud.wvdb missing");
-    test.setTimeout(2_400_000);
-    const tsl = await k3(page, `?scene=${scene}&backend=tsl`);
-    const core = await k3(page, `?scene=${scene}&backend=core`);
-    expect(tsl.error, k3Detail(tsl)).toBeUndefined();
-    expect(core.error, k3Detail(core)).toBeUndefined();
-    expect(core.uncaptured, k3Detail(core)).toEqual([]);
-    expect(core.inPageIdentical, k3Detail(core)).toBe(true);
-    // K6.4: no 'spectral is K6.4' warning from the core
-    expect(core.warnings.filter((w) => /K6\.4/.test(w)), k3Detail(core)).toEqual([]);
-    const cmp = compareImages(k3Image(core), k3Image(tsl), { minPsnr: 45, threshold: 4, maxFraction: 0.002 });
-    mkdirSync(AB_STEP5_DIR, { recursive: true });
-    writeFileSync(path.join(AB_STEP5_DIR, `${scene}-tsl.png`), encodePng(k3Image(tsl)));
-    writeFileSync(path.join(AB_STEP5_DIR, `${scene}-core.png`), encodePng(k3Image(core)));
-    writeFileSync(path.join(AB_STEP5_DIR, `${scene}-diff.png`), encodePng(diffHeatmap(k3Image(core), k3Image(tsl), { threshold: 4, fullScale: 16 })));
-    writeFileSync(path.join(AB_STEP5_DIR, `${scene}.json`), JSON.stringify({ scene, ...cmp, coreWarnings: core.warnings }, null, 2));
-    for (const [dir, r] of [["ours-core", core], ["ours-tsl", tsl]] as const) {
-      mkdirSync(path.join(REPO, "artifacts", "k6", dir), { recursive: true });
-      writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.png`), encodePng(k3Image(r)));
-      writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.json`), JSON.stringify({ ...r, rgba: undefined }, null, 2));
-    }
-    console.log(`[k6-ab-step5] ${scene}: PSNR ${cmp.psnr.toFixed(2)} dB, ${(cmp.fraction * 100).toFixed(3)}% > 4/255 (max ${cmp.maxDiff})`);
-    expect(cmp.failures, JSON.stringify(cmp)).toEqual([]);
-  });
-}
-
-// K6.1d (design §7.2): the WDAS cloud (fixtures/wdas/wdas_cloud_quarter_fp8.nvdb, Fp8, sparse at full resolution) through
-// examples/src/harness/k3-timing.html `?image=1`, core vs TSL on the same device, 'volume' and 'frame' lighting, the
-// sparse source ('coarse-pyramid', HDDA on), 1280x720 with his 512x512x24 froxels (at 640x360 with 160² froxels the
-// silhouette band of V80 alone is 0.3 % of the pixels). Opt in with K6_CORE_AB=1; skipped without the fixture.
-for (const lighting of ["volume", "frame"] as const) {
-  test(`K6.1d A/B core vs TSL: WDAS cloud, sparse, ${lighting} lighting`, async ({ page }) => {
-    test.skip(process.env.K6_CORE_AB !== "1", "set K6_CORE_AB=1");
-    test.skip(!existsSync(path.join(REPO, "fixtures", "wdas", "wdas_cloud_quarter_fp8.nvdb")), "fixtures/wdas/wdas_cloud_quarter_fp8.nvdb missing");
-    test.setTimeout(1_800_000);
-    const shot = async (backend: string) => {
-      await page.goto(`/src/harness/k3-timing.html?asset=wdas&source=sparse&lod=pyramid&hdda=1&lighting=${lighting}&w=1280&h=720&froxels=512x512x24&image=1&backend=${backend}`);
-      await page.waitForFunction(() => (window as { __VDB_K3_TIMING__?: { done: boolean } }).__VDB_K3_TIMING__?.done === true, undefined, { timeout: 1_800_000 });
-      return (await page.evaluate(() => (window as { __VDB_K3_TIMING__?: unknown }).__VDB_K3_TIMING__)) as K3Result;
-    };
-    const tsl = await shot("tsl");
-    const core = await shot("core");
-    expect(tsl.error, k3Detail(tsl)).toBeUndefined();
-    expect(core.error, k3Detail(core)).toBeUndefined();
-    expect(core.uncaptured, k3Detail(core)).toEqual([]);
-    const cmp = compareImages(k3Image(core), k3Image(tsl), { minPsnr: 45, threshold: 4, maxFraction: 0.002 });
-    const name = `wdas-sparse-${lighting}`;
-    mkdirSync(AB_FRAME_DIR, { recursive: true });
-    writeFileSync(path.join(AB_FRAME_DIR, `${name}-tsl.png`), encodePng(k3Image(tsl)));
-    writeFileSync(path.join(AB_FRAME_DIR, `${name}-core.png`), encodePng(k3Image(core)));
-    writeFileSync(path.join(AB_FRAME_DIR, `${name}-diff.png`), encodePng(diffHeatmap(k3Image(core), k3Image(tsl), { threshold: 4, fullScale: 16 })));
-    writeFileSync(path.join(AB_FRAME_DIR, `${name}.json`), JSON.stringify({ lighting, ...cmp, coreWarnings: core.warnings }, null, 2));
-    console.log(`[k6-ab-wdas] ${name}: PSNR ${cmp.psnr.toFixed(2)} dB, ${(cmp.fraction * 100).toFixed(3)}% > 4/255 (max ${cmp.maxDiff})`);
-    expect(cmp.failures, JSON.stringify(cmp)).toEqual([]);
-  });
-}
 
 // K6.2b (design §3.5, Q3): the environment reduction on the GPU, each stage against its twin from the read-back input of
 // the stage before it: the work map (exact-area equirect / supersampled cube), his 64 x 32 map (the GGX roughness-0.4
@@ -779,64 +553,10 @@ for (const p of OCCLUDER_PROBES) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// K6.2b gate 2 (design §7.2): the environment scenes through `?backend=core` vs `?backend=tsl`, same bar (PSNR ≥ 45 dB,
-// ≤ 0.2 % pixels > 4/255). The TSL path reads its lights back from the GPU (they arrive frames later); its harness waits
-// for them, so both images are settled frames. Extra rows exercise the slot (single scattering), SH lights, 'outward'
-// and three's PMREM atlas as scene.environment (the core's lat-long fallback). Opt in with K6_CORE_AB=1; the
-// environment needs his map in fixtures/k3/sky-midday-HDR.jpg. Images and JSON (with both backends' lights) go to
-// artifacts/k6/ab-env/; the his-capture scenes' images to artifacts/k6/ours-{core,tsl}/.
-// ---------------------------------------------------------------------------------------------------------------
-const AB_ENV = [
-  { scene: "step3-environment-sky-midday-env-isolated", extra: "", capture: true },
-  { scene: "step3-environment-sky-midday-env-isolated", extra: "&source=sparse", capture: false },
-  { scene: "step5-lighting-volume-sky-midday-env-isolated", extra: "", capture: true },
-  { scene: "step5-lighting-volume-medium-cloud-sky-midday-env-isolated", extra: "", capture: true },
-  { scene: "step3-environment-sky-midday-env-isolated", extra: "&ms=false", capture: false },
-  { scene: "step3-environment-sky-midday-env-isolated", extra: "&envMode=spherical-harmonics", capture: false },
-  { scene: "step3-environment-sky-midday-env-isolated", extra: "&envMode=outward", capture: false },
-  { scene: "step5-lighting-volume-sky-midday-env-isolated", extra: "&envMode=outward", capture: false },
-  { scene: "step3-environment-sky-midday-env-isolated", extra: "&envPmrem=1", capture: false },
-] as const;
-const AB_ENV_DIR = path.join(REPO, "artifacts", "k6", "ab-env");
-
-for (const { scene, extra, capture } of AB_ENV) {
-  test(`K6.2b A/B core vs TSL: ${scene}${extra}`, async ({ page }) => {
-    test.skip(process.env.K6_CORE_AB !== "1", "set K6_CORE_AB=1 (needs fixtures/k3/bunny_cloud.wvdb and sky-midday-HDR.jpg)");
-    test.skip(!existsSync(path.join(REPO, "fixtures", "k3", "sky-midday-HDR.jpg")), "fixtures/k3/sky-midday-HDR.jpg missing");
-    test.setTimeout(1_800_000);
-    const base = `?scene=${scene}${extra}`;
-    const tsl = await k3(page, `${base}&backend=tsl`);
-    const core = await k3(page, `${base}&backend=core`);
-    expect(tsl.error, k3Detail(tsl)).toBeUndefined();
-    expect(core.error, k3Detail(core)).toBeUndefined();
-    expect(core.uncaptured, k3Detail(core)).toEqual([]);
-    expect(core.inPageIdentical, k3Detail(core)).toBe(true);
-    const cmp = compareImages(k3Image(core), k3Image(tsl), { minPsnr: 45, threshold: 4, maxFraction: 0.002 });
-    const name = `${scene}${extra.replace(/[&=]/g, "-")}`;
-    mkdirSync(AB_ENV_DIR, { recursive: true });
-    writeFileSync(path.join(AB_ENV_DIR, `${name}-tsl.png`), encodePng(k3Image(tsl)));
-    writeFileSync(path.join(AB_ENV_DIR, `${name}-core.png`), encodePng(k3Image(core)));
-    writeFileSync(path.join(AB_ENV_DIR, `${name}-diff.png`), encodePng(diffHeatmap(k3Image(core), k3Image(tsl), { threshold: 4, fullScale: 16 })));
-    const lights = (r: K3Result) => (r as unknown as { environment?: unknown }).environment ?? null;
-    writeFileSync(path.join(AB_ENV_DIR, `${name}.json`), JSON.stringify({ scene, extra, ...cmp, coreEnvironment: lights(core), tslEnvironment: lights(tsl), coreWarnings: core.warnings }, null, 2));
-    if (capture) {
-      for (const [dir, r] of [["ours-core", core], ["ours-tsl", tsl]] as const) {
-        mkdirSync(path.join(REPO, "artifacts", "k6", dir), { recursive: true });
-        writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.png`), encodePng(k3Image(r)));
-        writeFileSync(path.join(REPO, "artifacts", "k6", dir, `${scene}.json`), JSON.stringify({ ...r, rgba: undefined }, null, 2));
-      }
-    }
-    console.log(`[k6-ab-env] ${name}: PSNR ${cmp.psnr.toFixed(2)} dB, ${(cmp.fraction * 100).toFixed(3)}% > 4/255 (max ${cmp.maxDiff})`);
-    // Rows that exercise an intentional divergence ('outward' SH irradiance vs PMREM roughness 1, DIVERGES) report only
-    if (!extra.includes("outward")) expect(cmp.failures, JSON.stringify(cmp)).toEqual([]);
-  });
-}
-
-// ---------------------------------------------------------------------------------------------------------------
 // K6.1c: the raw `?scene=` mode (no three.js; the host frame loop of demo 17) vs the same scene through `./three`'s
-// core path (`k3-frame ?backend=core`), same device and kernels: the host seams (camera, lights, targets, composite)
+// core path (`k3-frame`), same device and kernels: the host seams (camera, lights, targets, composite)
 // must add nothing, so the bar is the K6.1 A/B's (PSNR ≥ 45 dB, ≤ 0.2 % pixels > 4/255). `smoke` is k3-frame's own
-// CC0 scene (runs on CI); his Step 1 / Step 3 isolated scenes need the bunny and run with K6_CORE_AB=1 (1280 × 720,
+// CC0 scene (runs on CI); his Step 1 / Step 3 isolated scenes need the bunny and run with K6_HIS_SCENES=1 (1280 × 720,
 // 512 × 512 × 24), writing PNGs to artifacts/k6/ours-raw/ for scripts/k3/compare.mjs against his captures.
 // ---------------------------------------------------------------------------------------------------------------
 interface RawScene {
@@ -859,7 +579,7 @@ async function rawVsCore(page: Page, scene: string, query: string, k3Query: stri
   expect(raw.scene!.inPageIdentical, rawDetail).toBe(true);
   expect(raw.scene!.secondBuilds, rawDetail).toBe(0);
   expect(raw.scene!.nonBackground, rawDetail).toBeGreaterThan(500);
-  const core = await k3(page, `?scene=${scene}${k3Query}&backend=core`);
+  const core = await k3(page, `?scene=${scene}${k3Query}`);
   expect(core.error, k3Detail(core)).toBeUndefined();
   const cmp = compareImages(rawImage(raw), k3Image(core), { minPsnr: 45, threshold: 4, maxFraction: 0.002 });
   mkdirSync(RAW_DIR, { recursive: true });
@@ -897,7 +617,7 @@ const RAW_HIS = [
 ];
 for (const scene of RAW_HIS) {
   test(`K6.1c raw scene vs ./three core: ${scene}`, async ({ page }) => {
-    test.skip(process.env.K6_CORE_AB !== "1", "set K6_CORE_AB=1 (needs fixtures/k3/bunny_cloud.wvdb)");
+    test.skip(process.env.K6_HIS_SCENES !== "1", "set K6_HIS_SCENES=1 (needs fixtures/k3/bunny_cloud.wvdb)");
     test.skip(!existsSync(path.join(REPO, "fixtures", "k3", "bunny_cloud.wvdb")), "fixtures/k3/bunny_cloud.wvdb missing");
     test.setTimeout(1_800_000);
     // k3-frame renders his scenes with 4× MSAA (his page); the volume-only isolated frames have no mesh edges

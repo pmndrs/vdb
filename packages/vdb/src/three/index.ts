@@ -99,28 +99,17 @@ export type {
   VDBCoarseFirstSource,
 } from "./coarse-first.js";
 
-// K3.1–K3.6: the froxel renderer (his FrameVolume / FrameRenderer) on a volume source: the volume, the
-// renderer, the light-mask flags, the measured media, the emission light and its blackbody colour hook.
+// K3.1–K3.6, K6.8: the froxel renderer (his FrameVolume / FrameRenderer) over the core frame renderer: the volume, the
+// renderer, the measured media and the emission light.
 export {
   VDBFrameVolume,
   VDBFrameRenderer,
   vdbFrameRenderer,
-  vdbFrameLights,
-  vdbFrameAllLights,
   // His helper name stays inside frame/ (diffable with upstream); the public name follows D17.
   getFrameMediumProps as vdbFrameMedium,
   VDBFrameEmissionLight,
-  vdbFrameBlackbodyEmission,
 } from "./frame/index.js";
-export type {
-  VDBFrameVolumeProps,
-  VDBFrameRendererSettings,
-  VDBFramePassHook,
-  VDBFramePass,
-  VDBFrameRedrawStats,
-  VDBFramePhase,
-  VDBFrameMultipleScattering,
-  VDBFrameMediumVolumeProps,
-  VDBFrameEmissionLightProps,
-  VDBFrameBlackbodyHook,
-} from "./frame/index.js";
+export type { VDBFrameVolumeProps, VDBFramePassHook, VDBFrameMediumVolumeProps, VDBFrameEmissionLightProps } from "./frame/index.js";
+// K6.8 Stage B: the 0.1 names until the 0.2.0 API lands (Stage C removes them with the api-surface update).
+export { vdbFrameLights, vdbFrameAllLights, vdbFrameBlackbodyEmission } from "./frame/stage-b.js";
+export type { VDBFrameRendererSettings, VDBFramePass, VDBFrameRedrawStats, VDBFramePhase, VDBFrameMultipleScattering, VDBFrameBlackbodyHook } from "./frame/stage-b.js";

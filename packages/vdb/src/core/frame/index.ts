@@ -64,6 +64,8 @@ export type {
   VDBFrameRedrawStats,
   VDBFrameTargets,
   VDBFrameUpdate,
+  VDBFrameUpdateOptions,
+  VDBFrameTimestamps,
   VDBFrameVec3,
   VDBFrameVolumeGpu,
   VDBFrameVolumeParams,

@@ -7,10 +7,10 @@ import { compareImages } from "../scripts/k3/metrics.mjs";
 // @ts-expect-error -- see above
 import { encodePng } from "../scripts/k3/png.mjs";
 
-// K3.1 (R1 §6 Step 1): mjurczyk's froxel pipeline with 'volume' lighting, ported onto the dense source
-// (examples/src/harness/k3-frame.ts). Gates until his reference captures exist (K3.0a): no validation
-// errors; the TSL chunks match their CPU twins; the integrate pass matches its CPU twin; the volume renders
-// non-trivially; it is deterministic (two page loads byte-identical); an opaque mesh in front occludes it.
+// K3.1 (R1 §6 Step 1): mjurczyk's froxel pipeline with 'volume' lighting on the dense source
+// (examples/src/harness/k3-frame.ts; K6.8: the core frame renderer through ./three, the TSL passes and their chunk /
+// integrate twins are gone: the core kernels' twins are in e2e/k6-core.spec.ts). Gates: no validation errors; the
+// volume renders non-trivially; it is deterministic (two page loads byte-identical); an opaque mesh in front occludes it.
 // PNGs go to artifacts/k3/ours/ (k3-frame-*.png) for scripts/k3/compare.mjs.
 const PAGE_URL = "/src/harness/k3-frame.html";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -52,10 +52,9 @@ function save(name: string, r: Result): Uint8Array {
   return png;
 }
 
-test("K3.1 froxels, 'volume' lighting: renders, chunks and integrate match their CPU twins, deterministic", async ({ page }) => {
+test("K3.1 froxels, 'volume' lighting: renders, deterministic", async ({ page }) => {
   test.setTimeout(400_000);
-  // Froxel grid = screen size, so the integrate twin reads one unfiltered froxel column per pixel.
-  const q = "?w=160&h=96&froxels=160x96x24&twin=1";
+  const q = "?w=160&h=96&froxels=160x96x24";
   const first = await run(page, q);
   const detail = detailOf(first);
   expect(first.error, detail).toBeUndefined();
@@ -63,10 +62,6 @@ test("K3.1 froxels, 'volume' lighting: renders, chunks and integrate match their
   expect(first.inPageIdentical, detail).toBe(true);
   // The cloud covers a good part of the 160x96 frame.
   expect(first.nonBackground!, detail).toBeGreaterThan(2_000);
-  expect(first.chunkProbe!.count, detail).toBe(1024);
-  expect(first.chunkProbe!.over, detail).toBe(0);
-  expect(first.twin!.covered, detail).toBeGreaterThan(50);
-  expect(first.twin!.over, detail).toBe(0);
   // Unported features must not warn in the e2e scene (no environment, 'volume' lighting).
   expect(first.warnings, detail).toEqual([]);
 
@@ -77,9 +72,7 @@ test("K3.1 froxels, 'volume' lighting: renders, chunks and integrate match their
   const a = save("k3-frame-smoke-run1", first);
   const b = save("k3-frame-smoke-run2", second);
   expect(Buffer.from(a).equals(Buffer.from(b))).toBe(true);
-  console.log(
-    `[k3-frame] ${first.adapter}: ${first.nonBackground} volume px; chunk probe max rel ${first.chunkProbe!.maxRel.toExponential(2)}; integrate twin max ${first.twin!.maxAbs.toExponential(2)} over ${first.twin!.covered} covered px; two loads identical`,
-  );
+  console.log(`[k3-frame] ${first.adapter}: ${first.nonBackground} volume px; two loads identical`);
 });
 
 test("K3.1 froxels: multiple scattering on and off differ; an opaque mesh in front occludes the volume", async ({ page }) => {
@@ -198,7 +191,8 @@ for (const scene of PARITY_SCENES) {
       "fixtures/k3/ground_explosion/ missing (copy src/docs/examples/public/assets/ground_explosion/ from his clone; CC0 EmberGen)",
     );
     test.setTimeout(1_200_000);
-    const r1 = await run(page, `?scene=${scene}`);
+    // K6.5b: his renderer has no mesh → volume shadows; his Step 6 scenes render with the core's occlusion off
+    const r1 = await run(page, `?scene=${scene}${scene.startsWith("step6") ? "&occlusion=0" : ""}`);
     expect(r1.error, detailOf(r1)).toBeUndefined();
     expect(r1.uncaptured).toEqual([]);
     expect(r1.inPageIdentical).toBe(true);
