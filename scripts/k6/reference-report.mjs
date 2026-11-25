@@ -11,8 +11,9 @@
 //            check the adapter it reports) --swiftshader (bundled Chromium + SwiftShader: script debugging, never a result)
 //
 // K6.3a: groups v80-phase-g-low, v80-octave-extinction-high, v80-octaves-1 (his Step 4 strict-bar failures through the
-// core at 640 × 360, with columns for the pixels where core and TSL differ) and a 'multi-scale' σ = 2^k row
-// (`msSigma=paper`) in every scene group.
+// core at 640 × 360) and a 'multi-scale' σ = 2^k row (`msSigma=paper`) in every scene group. K6.10a: every row renders the
+// core (the pages ignore `?backend=`); the TSL rows and the core-vs-TSL (V80) pixel columns are gone. The core-vs-TSL
+// numbers of earlier runs are in the K6.R1 / K6.3 / K6.3a / K6.Q1 handoffs.
 //
 // Needs (local, git-ignored): fixtures/k3/bunny_cloud.wvdb, fixtures/k3-reference/75e7345/ (his captures + manifest),
 // fixtures/wdas/wdas_cloud_quarter_fp8.nvdb, fixtures/vdb-samples/smoke.vdb. Groups whose fixtures are missing are skipped.
@@ -83,31 +84,26 @@ const MANIFEST = existsSync(need.captures) ? JSON.parse(readFileSync(need.captur
 // 'volume' lighting uses the volume's phase (k3-frame: his frame.js dual-lobe 0.8 / −0.3 / 0.2); 'frame' lighting the
 // renderer's settings phase (read from the frame's `settings`; k3-frame sets 0.8 / −0.3 / 0.2 too).
 const VOLUME_PHASE = [0.8, -0.3, 0.2];
-// K6.3: the core's own MS modes ('multi-scale' both edge modes, the A/B for V75; the core's two-sided / octaves / neural)
-const coreMsRows = (make, base) => [
-  make("core ms two-sided", `${base}&ms=two-sided&backend=core`, { lighting: "frame" }),
-  make("core ms octaves", `${base}&ms=octaves&backend=core`, { lighting: "frame" }),
-  make("core ms neural (generic MLP, his weights)", `${base}&ms=neural&backend=core`, { lighting: "frame" }),
-  make("core ms multi-scale (edge zero)", `${base}&ms=multi-scale&msEdge=zero&backend=core`, { lighting: "frame" }),
-  make("core ms multi-scale (edge clamp, his)", `${base}&ms=multi-scale&msEdge=clamp&backend=core`, { lighting: "frame" }),
-  // K6.3a: the paper's wider levels (σ ≈ 2^k voxels: level k reads mip k + 1), edge zero (V75 item 5)
-  make("core ms multi-scale (σ = 2^k, paper)", `${base}&ms=multi-scale&msEdge=zero&msSigma=paper&backend=core`, { lighting: "frame" }),
-];
+// K6.3: the MS modes ('multi-scale' both edge modes, the A/B for V75; two-sided / octaves / neural)
+// `captures`: his capture of a mode, when he has one (keyed by the `ms` value).
+const coreMsRows = (make, base, captures = {}) =>
+  [
+    ["core ms two-sided", "two-sided", ""],
+    ["core ms octaves", "octaves", ""],
+    ["core ms neural (generic MLP, his weights)", "neural", ""],
+    ["core ms multi-scale (edge zero)", "multi-scale", "&msEdge=zero"],
+    ["core ms multi-scale (edge clamp, his)", "multi-scale", "&msEdge=clamp"],
+    // K6.3a: the paper's wider levels (σ ≈ 2^k voxels: level k reads mip k + 1), edge zero (V75 item 5)
+    ["core ms multi-scale (σ = 2^k, paper)", "multi-scale", "&msEdge=zero&msSigma=paper"],
+  ].map(([label, ms, extra]) => make(label, `${base}&ms=${ms}${extra}`, { lighting: "frame", ...(captures[ms] && !extra ? { capture: captures[ms] } : {}) }));
 const k3 = (label, query, extra = {}) => ({ label, page: "k3-frame", query, ...extra });
 const k6 = (label, query, extra = {}) => ({ label, page: "k6-scene", query, ...extra });
-// The renderer rows of a scene group: both lightings, TSL and core, every multiple-scattering mode each path has.
+// The renderer rows of a scene group: both lightings, every multiple-scattering mode.
 const sceneRows = (scene) => [
-  k6("volume TSL ms off", `scene=${scene}&lighting=volume&ms=0`, { lighting: "volume", vsSingle: true }),
-  k6("volume core ms off", `scene=${scene}&lighting=volume&ms=0&backend=core`, { lighting: "volume", vsSingle: true }),
-  k6("volume TSL ms on", `scene=${scene}&lighting=volume&ms=1`, { lighting: "volume" }),
-  k6("volume core ms on", `scene=${scene}&lighting=volume&ms=1&backend=core`, { lighting: "volume" }),
-  k6("frame TSL ms off", `scene=${scene}&lighting=frame&ms=0`, { lighting: "frame", vsSingle: true }),
-  k6("frame core ms off", `scene=${scene}&lighting=frame&ms=0&backend=core`, { lighting: "frame", vsSingle: true }),
-  k6("frame TSL ms diffusion", `scene=${scene}&lighting=frame&ms=1`, { lighting: "frame" }),
-  k6("frame core ms diffusion", `scene=${scene}&lighting=frame&ms=1&backend=core`, { lighting: "frame" }),
-  k6("frame TSL ms two-sided", `scene=${scene}&lighting=frame&ms=two-sided`, { lighting: "frame" }),
-  k6("frame TSL ms octaves", `scene=${scene}&lighting=frame&ms=octaves`, { lighting: "frame" }),
-  k6("frame TSL ms neural", `scene=${scene}&lighting=frame&ms=neural`, { lighting: "frame" }),
+  k6("volume core ms off", `scene=${scene}&lighting=volume&ms=0`, { lighting: "volume", vsSingle: true }),
+  k6("volume core ms on", `scene=${scene}&lighting=volume&ms=1`, { lighting: "volume" }),
+  k6("frame core ms off", `scene=${scene}&lighting=frame&ms=0`, { lighting: "frame", vsSingle: true }),
+  k6("frame core ms diffusion", `scene=${scene}&lighting=frame&ms=1`, { lighting: "frame" }),
   ...coreMsRows((label, query, extra) => k6(`frame ${label}`, query, extra), `scene=${scene}&lighting=frame`),
 ];
 const GROUP_DEFS = {
@@ -117,10 +113,8 @@ const GROUP_DEFS = {
     scenario: "step1-volume-dir-ms-on-isolated",
     lighting: "volume",
     rows: [
-      k3("TSL ms off", "scene=step1-volume-dir-ms-off-isolated", { lighting: "volume", capture: "step1-volume-dir-ms-off-isolated", vsSingle: true }),
-      k3("core ms off", "scene=step1-volume-dir-ms-off-isolated&backend=core", { lighting: "volume", vsSingle: true }),
-      k3("TSL ms on (diffusion)", "scene=step1-volume-dir-ms-on-isolated", { lighting: "volume", capture: "step1-volume-dir-ms-on-isolated" }),
-      k3("core ms on (diffusion)", "scene=step1-volume-dir-ms-on-isolated&backend=core", { lighting: "volume" }),
+      k3("core ms off", "scene=step1-volume-dir-ms-off-isolated", { lighting: "volume", capture: "step1-volume-dir-ms-off-isolated", vsSingle: true }),
+      k3("core ms on (diffusion)", "scene=step1-volume-dir-ms-on-isolated", { lighting: "volume", capture: "step1-volume-dir-ms-on-isolated" }),
     ],
   },
   frame: {
@@ -129,38 +123,35 @@ const GROUP_DEFS = {
     scenario: "step3-default-dir-isolated",
     lighting: "frame",
     rows: [
-      k3("TSL ms off", "scene=step3-default-dir-isolated&ms=0", { lighting: "frame", vsSingle: true }),
-      k3("core ms off", "scene=step3-default-dir-isolated&ms=0&backend=core", { lighting: "frame", vsSingle: true }),
-      k3("TSL ms diffusion", "scene=step3-default-dir-isolated&ms=1", { lighting: "frame", capture: "step3-default-dir-isolated" }),
-      k3("core ms diffusion", "scene=step3-default-dir-isolated&ms=1&backend=core", { lighting: "frame" }),
-      k3("TSL ms two-sided", "scene=step3-default-dir-isolated&ms=two-sided", { lighting: "frame", capture: "step4-multiple-scattering-two-sided-dir-isolated" }),
-      k3("TSL ms octaves", "scene=step3-default-dir-isolated&ms=octaves", { lighting: "frame", capture: "step4-multiple-scattering-octaves-dir-isolated" }),
-      k3("TSL ms neural (his v0.26 default)", "scene=step3-default-dir-isolated&ms=neural", { lighting: "frame", capture: "step4-default-neural-dir-isolated" }),
-      ...coreMsRows(k3, "scene=step3-default-dir-isolated"),
+      k3("core ms off", "scene=step3-default-dir-isolated&ms=0", { lighting: "frame", vsSingle: true }),
+      k3("core ms diffusion", "scene=step3-default-dir-isolated&ms=1", { lighting: "frame", capture: "step3-default-dir-isolated" }),
+      ...coreMsRows(k3, "scene=step3-default-dir-isolated", {
+        "two-sided": "step4-multiple-scattering-two-sided-dir-isolated",
+        octaves: "step4-multiple-scattering-octaves-dir-isolated",
+        neural: "step4-default-neural-dir-isolated",
+      }),
     ],
   },
   two: {
     kind: "his",
-    title: "two overlapping bunnies, 'frame' lighting (density sums: order-independent in both paths, V90)",
+    title: "two overlapping bunnies, 'frame' lighting (density sums: order-independent, V90)",
     scenario: "step3-two-bunnies-dir-isolated",
     lighting: "frame",
     rows: [
-      k3("TSL diffusion", "scene=step3-two-bunnies-dir-isolated", { lighting: "frame", capture: "step3-two-bunnies-dir-isolated" }),
-      k3("core diffusion", "scene=step3-two-bunnies-dir-isolated&backend=core", { lighting: "frame" }),
-      k3("TSL ms off", "scene=step3-two-bunnies-dir-isolated&ms=0", { lighting: "frame", vsSingle: true }),
-      k3("core ms off", "scene=step3-two-bunnies-dir-isolated&ms=0&backend=core", { lighting: "frame", vsSingle: true }),
+      k3("core diffusion", "scene=step3-two-bunnies-dir-isolated", { lighting: "frame", capture: "step3-two-bunnies-dir-isolated" }),
+      k3("core ms off", "scene=step3-two-bunnies-dir-isolated&ms=0", { lighting: "frame", vsSingle: true }),
     ],
   },
   mix: {
     kind: "his",
-    title: "V79: two overlapping bunnies, 'volume' lighting: core froxelMix 'mixture' vs 'over' (and the TSL path's draw order)",
+    title: "V79: two overlapping bunnies, 'volume' lighting: froxelMix 'mixture' vs 'over'",
     scenario: "step3-two-bunnies-dir-isolated",
     lighting: "volume",
     rows: [
-      k3("core ms off, mixture", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=0&backend=core&froxelMix=mixture", { lighting: "volume", vsSingle: true }),
-      k3("core ms off, over", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=0&backend=core&froxelMix=over", { lighting: "volume", vsSingle: true }),
-      k3("core ms on, mixture", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=1&backend=core&froxelMix=mixture", { lighting: "volume" }),
-      k3("core ms on, over", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=1&backend=core&froxelMix=over", { lighting: "volume" }),
+      k3("core ms off, mixture", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=0&froxelMix=mixture", { lighting: "volume", vsSingle: true }),
+      k3("core ms off, over", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=0&froxelMix=over", { lighting: "volume", vsSingle: true }),
+      k3("core ms on, mixture", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=1&froxelMix=mixture", { lighting: "volume" }),
+      k3("core ms on, over", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=1&froxelMix=over", { lighting: "volume" }),
     ],
   },
   silhouette: {
@@ -172,8 +163,7 @@ const GROUP_DEFS = {
     scale: 2,
     singleOnly: true,
     rows: [
-      k3("TSL ms off (per-slice)", "scene=step1-volume-dir-ms-off-isolated", { lighting: "volume", capture: "step1-volume-dir-ms-off-isolated", vsSingle: true }),
-      k3("core ms off (prefix)", "scene=step1-volume-dir-ms-off-isolated&backend=core", { lighting: "volume", vsSingle: true }),
+      k3("core ms off (prefix)", "scene=step1-volume-dir-ms-off-isolated", { lighting: "volume", capture: "step1-volume-dir-ms-off-isolated", vsSingle: true }),
     ],
   },
   mie: {
@@ -183,9 +173,9 @@ const GROUP_DEFS = {
     lighting: "frame",
     mie: "mono",
     rows: [
-      k3("TSL ms neural", "scene=step4-frame-phase-lorenz-mie-dir-isolated", { lighting: "frame", capture: "step4-frame-phase-lorenz-mie-dir-isolated" }),
-      k3("TSL ms diffusion", "scene=step4-frame-phase-lorenz-mie-dir-isolated&ms=1", { lighting: "frame" }),
-      k3("TSL ms off", "scene=step4-frame-phase-lorenz-mie-dir-isolated&ms=0", { lighting: "frame", vsSingle: true }),
+      k3("core ms neural", "scene=step4-frame-phase-lorenz-mie-dir-isolated", { lighting: "frame", capture: "step4-frame-phase-lorenz-mie-dir-isolated" }),
+      k3("core ms diffusion", "scene=step4-frame-phase-lorenz-mie-dir-isolated&ms=1", { lighting: "frame" }),
+      k3("core ms off", "scene=step4-frame-phase-lorenz-mie-dir-isolated&ms=0", { lighting: "frame", vsSingle: true }),
     ],
   },
   "mie-rgb": {
@@ -195,28 +185,25 @@ const GROUP_DEFS = {
     lighting: "frame",
     mie: "rgb",
     rows: [
-      k3("TSL ms neural", "scene=step4-frame-phase-lorenz-mie-rgb-dir-isolated", { lighting: "frame", capture: "step4-frame-phase-lorenz-mie-rgb-dir-isolated" }),
-      k3("TSL ms diffusion", "scene=step4-frame-phase-lorenz-mie-rgb-dir-isolated&ms=1", { lighting: "frame" }),
-      k3("TSL ms off", "scene=step4-frame-phase-lorenz-mie-rgb-dir-isolated&ms=0", { lighting: "frame", vsSingle: true }),
+      k3("core ms neural", "scene=step4-frame-phase-lorenz-mie-rgb-dir-isolated", { lighting: "frame", capture: "step4-frame-phase-lorenz-mie-rgb-dir-isolated" }),
+      k3("core ms diffusion", "scene=step4-frame-phase-lorenz-mie-rgb-dir-isolated&ms=1", { lighting: "frame" }),
+      k3("core ms off", "scene=step4-frame-phase-lorenz-mie-rgb-dir-isolated&ms=0", { lighting: "frame", vsSingle: true }),
     ],
   },
   env: {
     kind: "his",
-    title: "V96: his sky-midday environment only, 'frame' lighting: 'outward' irradiance (core SH L2 vs TSL PMREM roughness 1 × π) and 'directional'",
+    title: "V96: his sky-midday environment only, 'frame' lighting: 'outward' irradiance (SH L2) and 'directional'",
     scenario: "step3-environment-sky-midday-env-isolated",
     lighting: "frame",
     env: "/fixtures/k3/sky-midday-HDR.jpg",
     rows: [
-      k3("TSL outward, ms off", "scene=step3-environment-sky-midday-env-isolated&envMode=outward&ms=0", { lighting: "frame", vsSingle: true }),
-      k3("core outward, ms off", "scene=step3-environment-sky-midday-env-isolated&envMode=outward&ms=0&backend=core", { lighting: "frame", vsSingle: true }),
-      k3("TSL outward, ms diffusion", "scene=step3-environment-sky-midday-env-isolated&envMode=outward&ms=1", { lighting: "frame" }),
-      k3("core outward, ms diffusion", "scene=step3-environment-sky-midday-env-isolated&envMode=outward&ms=1&backend=core", { lighting: "frame" }),
-      k3("TSL directional, ms diffusion", "scene=step3-environment-sky-midday-env-isolated&envMode=directional&ms=1", { lighting: "frame", capture: "step3-environment-sky-midday-env-isolated" }),
-      k3("core directional, ms diffusion", "scene=step3-environment-sky-midday-env-isolated&envMode=directional&ms=1&backend=core", { lighting: "frame" }),
+      k3("core outward, ms off", "scene=step3-environment-sky-midday-env-isolated&envMode=outward&ms=0", { lighting: "frame", vsSingle: true }),
+      k3("core outward, ms diffusion", "scene=step3-environment-sky-midday-env-isolated&envMode=outward&ms=1", { lighting: "frame" }),
+      k3("core directional, ms diffusion", "scene=step3-environment-sky-midday-env-isolated&envMode=directional&ms=1", { lighting: "frame", capture: "step3-environment-sky-midday-env-isolated" }),
     ],
   },
   // K6.3a: the three Step 4 scenes the core fails his strict bar on, at 640 × 360 (frames 2× down) so the 2.5 × 1.4 px
-  // froxel footprint is resolved. `v80`: the pixels where core and TSL differ (> 4/255) get their own columns.
+  // froxel footprint is resolved.
   ...Object.fromEntries(
     [
       ["v80-phase-g-low", "step4-lighting-volume-phase-g-low-dir-isolated", "volume", [-0.5, -0.3, 0.2]],
@@ -232,8 +219,7 @@ const GROUP_DEFS = {
         ...(phase ? { phase } : {}),
         size: [640, 360],
         scale: 2,
-        v80: true,
-        rows: [k3("TSL (per-slice)", `scene=${scenario}`, { lighting, capture: scenario }), k3("core (prefix)", `scene=${scenario}&backend=core`, { lighting })],
+        rows: [k3("core (prefix)", `scene=${scenario}`, { lighting, capture: scenario })],
       },
     ]),
   ),
@@ -255,23 +241,6 @@ const GROUP_DEFS = {
     ].map(([scene, title, asset, falloff]) => [scene, { kind: "scene", title, scene, asset, falloff: !!falloff, rows: sceneRows(scene) }]),
   ),
 };
-// K6.8: the TSL path is deleted and every row renders through the core. A TSL row with a core twin (the same query and
-// `&backend=core`, which the pages now ignore) is dropped and its his-capture link moves to the twin; a TSL row without
-// one renders through the core under its label with "TSL" → "core". The core-vs-TSL numbers of earlier runs are in the
-// K6.R1 / K6.3 / K6.Q1 handoffs.
-for (const def of Object.values(GROUP_DEFS)) {
-  const norm = (q) => q.replace(/&backend=core/g, "");
-  const core = new Map(def.rows.filter((r) => !/\bTSL\b/.test(r.label)).map((r) => [norm(r.query ?? ""), r]));
-  def.rows = def.rows.flatMap((r) => {
-    if (!/\bTSL\b/.test(r.label)) return [r];
-    const twin = core.get(norm(r.query));
-    if (twin) {
-      if (r.capture && !twin.capture) twin.capture = r.capture;
-      return [];
-    }
-    return [{ ...r, label: r.label.replace(/\bTSL\b/, "core"), query: `${r.query}&backend=core` }];
-  });
-}
 const GROUPS = String(arg("groups", Object.keys(GROUP_DEFS).join(","))).split(",");
 
 // --- colour ------------------------------------------------------------------------------------------------------
@@ -397,40 +366,7 @@ function regionStats(a, ref, inMask) {
   };
 }
 
-/**
- * K6.3a: luminance error of `a` over the pixels of `mask` (and reference alpha > 0.02): Σ|Y_A − Y_R| / Σ Y_R as is and
- * with Y_A scaled by `scale` (the volume's energy matched to the reference: an image's global MS bias would otherwise
- * decide which of two images is closer on a small region), and the bias Σ Y_A / Σ Y_R − 1 there.
- */
-function maskStats(a, ref, mask, scale) {
-  let n = 0;
-  let err = 0;
-  let matched = 0;
-  let yA = 0;
-  let yR = 0;
-  for (let i = 0; i < ref.width * ref.height; i++) {
-    if (!mask[i] || !(ref.alpha[i] > 0.02)) continue;
-    const ya = lum(...unblend(a.rgb, i, ref.alpha[i]));
-    const yr = lum(...unblend(ref.rgb, i, ref.alpha[i]));
-    n++;
-    err += Math.abs(ya - yr);
-    matched += Math.abs(ya * scale - yr);
-    yA += ya;
-    yR += yr;
-  }
-  return { pixels: n, relError: yR > 0 ? err / yR : null, relErrorMatched: yR > 0 ? matched / yR : null, lumBias: yR > 0 ? yA / yR - 1 : null };
-}
-
-/** K6.3a: pixels where two frames (linear RGB) differ by more than `t`/255 in sRGB 8-bit. */
-function diffMask(a, b, t = 4) {
-  const A = toRgba8(a);
-  const B = toRgba8(b);
-  const m = new Uint8Array(a.width * a.height);
-  for (let i = 0; i < m.length; i++) for (let c = 0; c < 3; c++) if (Math.abs(A.data[i * 4 + c] - B.data[i * 4 + c]) > t) m[i] = 1;
-  return m;
-}
-
-function compare(a, ref, v80Mask = null) {
+function compare(a, ref) {
   if (a.width !== ref.width || a.height !== ref.height) throw new Error(`size ${a.width}x${a.height} vs ${ref.width}x${ref.height}`);
   const n = ref.width * ref.height;
   const A8 = toRgba8(a);
@@ -462,7 +398,6 @@ function compare(a, ref, v80Mask = null) {
     lumBias: vol.lumBias,
     silhouette: { pixels: sil.pixels, relError: sil.relError, rmseLinear: sil.rmseLinear, lumBias: sil.lumBias },
     overlap: ovl && { pixels: ovl.pixels, lumBias: ovl.lumBias, medianRelLum: ovl.medianRelLum, rmseLinear: ovl.rmseLinear },
-    v80: v80Mask && vol.lumBias !== null ? maskStats(a, ref, v80Mask, 1 / (1 + vol.lumBias)) : null,
   };
 }
 
@@ -572,24 +507,12 @@ try {
       refs[lighting] = entry;
     }
     const rows = [];
-    // K6.3a: the V80 pixels (core vs TSL > 4/255) of a `v80` group (K6.8: the TSL path is deleted, so no mask: the groups
-    // report the core rows only; the K6.3a numbers are in docs/archive/handoffs/K6-3a.md)
-    const coreFrame = frames.find((t) => t.img && t.backend === "core");
-    const tslFrame = frames.find((t) => t.img && t.backend !== "core");
-    const v80Mask = g.v80 && coreFrame && tslFrame ? diffMask(coreFrame.img, tslFrame.img) : null;
-    if (v80Mask) {
-      const count = v80Mask.reduce((s, v) => s + v, 0);
-      console.log(`  V80 pixels (core vs TSL > 4/255): ${count}`);
-      const vis = toRgba8(tslFrame.img);
-      for (let i = 0; i < v80Mask.length; i++) if (v80Mask[i]) vis.data.set([255, 0, 0, 255], i * 4);
-      writeFileSync(path.join(dir, "v80-mask.png"), encodePng(vis));
-    }
     const add = (label, img, kind, lighting, extra = {}) => {
       const ref = refs[lightings.includes(lighting) ? lighting : lightings[0]];
       const file = label.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
       writeFileSync(path.join(dir, `${file}.png`), encodePng(toRgba8(img)));
-      const vsFull = ref.full ? compare(img, ref.full.img, v80Mask) : null;
-      const vsSingle = compare(img, ref.single.img, v80Mask);
+      const vsFull = ref.full ? compare(img, ref.full.img) : null;
+      const vsSingle = compare(img, ref.single.img);
       writeFileSync(path.join(dir, `${file}.err.png`), encodePng(diffHeatmap(toRgba8(img), toRgba8((ref.full ?? ref.single).img))));
       rows.push({ label, kind, lighting, vsFull, vsSingle, ...extra });
     };
@@ -598,7 +521,7 @@ try {
         rows.push({ label: t.label, kind: "slot", vsFull: null, vsSingle: null });
         continue;
       }
-      add(t.label, t.img, t.backend === "core" ? "core" : "tsl", t.lighting, { vsSingleExpected: !!t.vsSingle });
+      add(t.label, t.img, "core", t.lighting, { vsSingleExpected: !!t.vsSingle });
       if (t.capture && existsSync(path.join(CAPTURES, `${t.capture}.png`))) {
         const png = decodePng(readFileSync(path.join(CAPTURES, `${t.capture}.png`)));
         add(`his ${t.capture}`, fromRgba8(png.data, png.width, png.height, Math.round(png.width / gw)), "his", t.lighting, { vsSingleExpected: !!t.vsSingle });
@@ -649,19 +572,6 @@ function markdown(g) {
     md.push(`| ${r.label} | ${a ? pct(a.lumBias) : "—"} | ${a ? pct(a.medianRelLum) : "—"} | ${a ? f(a.ssimRect, 3) : "—"} | ${a ? f(a.psnr) : "—"} | ${a ? pct(a.silhouette.relError) : "—"} | ${pct(s.lumBias)} | ${pct(s.medianRelLum)} | ${pct(s.silhouette.relError)} |${ovl}`);
   }
   md.push("");
-  // K6.3a: the V80 pixels' own table
-  if (g.rows.some((r) => r.vsSingle?.v80)) {
-    const n = g.rows.find((r) => r.vsSingle?.v80)?.vsSingle.v80.pixels;
-    md.push(`V80 pixels (core vs TSL > 4/255, reference alpha > 0.02): ${n}. Σ|Y − Y_ref| / Σ Y_ref there, as rendered and with the image's volume energy matched to the reference (Y × Σ Y_ref / Σ Y over the volume), and the bias there.`, "");
-    md.push("| Image | vs MS: rel. err | energy-matched | bias | vs SS: rel. err | energy-matched | bias |", "|---|---|---|---|---|---|---|");
-    for (const r of g.rows) {
-      if (!r.vsSingle?.v80) continue;
-      const a = r.vsFull?.v80;
-      const s = r.vsSingle.v80;
-      md.push(`| ${r.label} | ${a ? pct(a.relError) : "—"} | ${a ? pct(a.relErrorMatched) : "—"} | ${a ? pct(a.lumBias) : "—"} | ${pct(s.relError)} | ${pct(s.relErrorMatched)} | ${pct(s.lumBias)} |`);
-    }
-    md.push("");
-  }
   return md;
 }
 

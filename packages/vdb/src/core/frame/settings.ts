@@ -4,64 +4,135 @@
 // Changes: engine-free (K6.1); `froxelMix` added (design §3.4). Divergences: DIVERGES.md V33, V67, K6.1 rows.
 
 /**
- * The settings of the core frame renderer (K6.1, design §2.2): his `frameRenderer.settings` (the same
- * names, meanings and v0.26 defaults as `@pmndrs/vdb/three` `VDBFrameRendererSettings`, which a unit test
- * checks field by field), plus the K6 fields. `./three` keeps its own declaration until K6.8.
+ * The settings of the core frame renderer (K6.1, design §2.2): his `frameRenderer.settings` (the same names, meanings
+ * and v0.26 defaults), plus the K6 fields. Since K6.8 `@pmndrs/vdb/three`'s `VDBFrameRenderer.settings` is this type
+ * (one declaration).
  */
 
 /** Phase functions (his `phase`). */
 export type VDBFramePhaseName = "isotropic" | "henyey-greenstein" | "dual-lobe" | "lorenz-mie" | "lorenz-mie-rgb";
 
-/** Multiple scattering modes (his `multipleScattering`). */
 /**
- * Multiple scattering modes (his `multipleScattering`, plus K6.3: `'mlp'` the EXPERIMENTAL generic MLP evaluator of
- * `renderer.mlp` (his `'neural'` runs his network through it) and `'multi-scale'` (K7.3, his 4e2d46f)).
+ * Multiple scattering modes (his `multipleScattering`, plus K6.3: `'mlp'` and `'multi-scale'` (K7.3, his 4e2d46f)).
+ * `'neural'` and `'mlp'` are EXPERIMENTAL: both run the core's generic small-MLP evaluator on `renderer.mlp` (his
+ * trained network by default), whose data shape may change before 1.0.
  */
 export type VDBFrameMultipleScatteringMode = boolean | "two-sided" | "octaves" | "neural" | "mlp" | "multi-scale";
 
-/** The settings; see `VDBFrameRendererSettings` in `./three` for each of his fields. */
+/**
+ * The renderer's settings (`vdbFrameDefaultSettings()`; his `frameRenderer.settings`, K6.10a: each field's doc ported
+ * from the deleted `./three` `VDBFrameRendererSettings`). Values out of the device's range clamp with a one-time
+ * warning (`shadowResolution`, `castShadowMapSize`).
+ */
 export interface VDBFrameSettings {
+  /** Froxel grid width (default 512). */
   width: number;
+  /** Froxel grid height (default 512). */
   height: number;
+  /** N > 0: at most one froxel per N x N viewport pixels. 0: no cap. */
   pixelsPerFroxel: number;
+  /** Slices (default 24). */
   depth: number;
+  /** Most sub-steps across one slice (default 32). */
   subSteps: number;
+  /** Near distance of the froxel slices in view units (default 0.1). */
   near: number;
+  /** Far distance of the froxel slices in view units (default Infinity: the camera far plane). */
   far: number;
+  /** View distance where the density fades to 0 (FogExp2-like). Infinity: no fade. */
   fadeRadius: number;
+  /** Golden-ratio jitter of the sub-steps, shadow start and grid marches (default false). */
   jitter: boolean;
+  /** His froxel reprojection with a neighbourhood clamp (default true, his; V33). */
   temporal: boolean;
+  /** History weight of the temporal pass (0.01–1; his default 0.2). */
   temporalBlend: number;
+  /** `'volume'`: each volume lights itself with its own shadow march. `'frame'`: the world shadow grid (default, his; V33). */
   lighting: "volume" | "frame";
+  /**
+   * `'frame'` lighting: voxels on each side of each shadow grid cascade (default 64). Clamped (warned once) to what the
+   * device holds: the transmittance stack must tile in `maxTextureDimension3D` and fit `maxBufferSize` (K6.8, K6.10a).
+   */
   shadowResolution: number;
+  /** `'frame'` lighting: shadow grid cascades, 1–4 (default 1). */
   shadowCascades: number;
+  /** `'frame'` lighting: half size of the finest cascades around the camera (default 512). */
   shadowDistance: number;
+  /**
+   * The phase of every volume this renderer draws (default 'henyey-greenstein', g 0.8; his demos set 'dual-lobe'), and
+   * of `phaseG` … `phaseGExponent`: `'frame'` lighting lights all volumes with it in one pass; in `'volume'` lighting
+   * a volume's own phase parameters override it where set.
+   */
   phase: VDBFramePhaseName;
+  /** Henyey-Greenstein asymmetry `g` of the forward lobe (default 0.8). */
   phaseG: number;
+  /** `g` of the backward lobe of the dual-lobe phases (default -0.3). */
   phaseBackG: number;
+  /** Weight of the backward lobe of the dual-lobe phases (default 0.2). */
   phaseBackWeight: number;
+  /** Wavelength exponent of `g` in spectral rendering (default 0: the same `g` in every channel). */
   phaseGExponent: number;
+  /** Blend the volumes over the scene in sRGB, as WebGLRenderer (default true). false blends in linear space. */
   srgbBlending: boolean;
+  /**
+   * `'frame'` lighting: the environment as lights: `'outward'` (SH irradiance along each volume's outward direction),
+   * `'directional'` (≤ 8 lights from a 64 × 32 map, default) or `'spherical-harmonics'` (SH quadrature lights).
+   */
   environmentLighting: "outward" | "directional" | "spherical-harmonics";
+  /** Lights of `'directional'` (1–8, default 8). */
   environmentSamples: number;
+  /** SH order of `'spherical-harmonics'` (1 or 2, default 1). */
   environmentShOrder: number;
+  /**
+   * Multiple scattering in the shadow marches: false (single scattering), true (1D diffusion toward the light),
+   * `'two-sided'` (2D slab diffusion toward and away from the light), `'octaves'` (indirect light octaves,
+   * `scatteringOctave*`), `'multi-scale'` (diffusion from mips of the shadow grid, `multiScaleLevels`; 'frame'
+   * lighting) or `'neural'` (default, his: the scattered light of the scene light slots from his small trained network
+   * in `'frame'` lighting, diffusion elsewhere). `'neural'` and `'mlp'` (the same evaluator by its own name) are
+   * EXPERIMENTAL: they run the generic small-MLP evaluator on `renderer.mlp` (null: 1D diffusion), whose data shape may
+   * change before 1.0.
+   */
   multipleScattering: VDBFrameMultipleScatteringMode;
+  /** `'octaves'`: octaves N (1–8, default 4). Octave n has extinction × aⁿ, light × bⁿ, phase g × cⁿ. */
   scatteringOctaves: number;
+  /** `'octaves'`: a (0–1, default 0.5). */
   scatteringOctaveExtinction: number;
+  /** `'octaves'`: b (0–1, default 0.5). */
   scatteringOctaveContribution: number;
+  /** `'octaves'`: c (0–1, default 0.5). */
   scatteringOctavePhase: number;
+  /**
+   * Spectral media (his `spectral`, default false): per-channel extinction (each volume's `extinctionScale` ×
+   * (λ / 550)^−`angstromExponent`), per-channel albedo and multiple scattering. 'frame' lighting draws one
+   * transmittance pass per slot group; the froxels get a second texture. `'neural'` / `'mlp'` run as 1D diffusion.
+   */
   spectral: boolean;
+  /**
+   * Volumes cast shadows on meshes (his `castShadows`, default false), for directional, point and spot lights that ask
+   * for a map: Beer shadow maps from the world shadow grid's last cascade, read by the host's receivers
+   * (`vdbVolumeShadowWgsl`; `./three` multiplies them into each light's shadow).
+   */
   castShadows: boolean;
+  /**
+   * Texels on each side of a volume shadow map (each cascade tile and cube face; default 512). Clamped (warned once)
+   * to `maxTextureDimension2D` and to a map whose zero-fill staging fits `maxBufferSize` (a point light's 6 faces
+   * count; K6.10a).
+   */
   castShadowMapSize: number;
+  /** Directional lights: cascades of the volume shadow map (1–4, default 1). */
   castShadowCascades: number;
+  /** Directional lights: the largest view distance the cascades cover (default 4000). */
   castShadowDistance: number;
+  /** Grid samples on each light ray of a volume shadow map (1–256, default 32). */
   castShadowSteps: number;
+  /** Map pieces drawn again in one update (a cascade tile or spot map 1, a cube map 6; default 1). */
   castShadowUpdatesPerFrame: number;
+  /** Very small maps (64) and few samples (8): soft blob shadows at almost no cost (default false). */
   castShadowCoarse: boolean;
   /**
    * K6: how overlapping volumes combine in a froxel (design §3.4). `'mixture'` (default): co-located media,
-   * order-independent (Σ τᵢ, Σ τᵢLᵢ). `'over'`: his draw-order premultiplied "over", in record order; internal,
-   * for the A/B against the TSL path (K6.R decides; K6.8 deletes the loser). One volume per froxel: the same values.
+   * order-independent (Σ τᵢ, Σ τᵢLᵢ). `'over'`: his draw-order premultiplied "over", in record order (V79). One volume
+   * per froxel: the same values.
    */
   froxelMix: "mixture" | "over";
   /** K6.3 `'multi-scale'`: levels read, base included (2–8; his `multiScaleLevels`, default 6). */

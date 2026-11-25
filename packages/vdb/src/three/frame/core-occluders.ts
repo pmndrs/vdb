@@ -54,8 +54,8 @@ const TEXTURE_BINDING = 0x04;
 const mismatch = (what: string): VDBError =>
   new VDBError(
     "VDB_ENGINE_MISMATCH",
-    `three adapter (core occluder maps): three r${REVISION} ${what}. backend 'core' reads three's light shadow maps through three r187 ` +
-      "internals (peer range >=0.187.0 <0.188.0); this three version is unsupported for mesh → volume shadows (set frameRenderer.occlusion = false).",
+    `three adapter (core occluder maps): three r${REVISION} ${what}. The frame renderer reads three's light shadow maps through three r187 ` +
+      "internals (peer range >=0.187.0 <0.188.0); this three version is unsupported for mesh → volume shadows (set frameRenderer.settings.occlusion = false).",
   );
 
 const near = (a: ArrayLike<number>, b: ArrayLike<number>, eps: number) => {
@@ -104,7 +104,7 @@ export class VDBCoreOccluders {
   input(renderer: RendererLike, scene: THREE.Object3D, camera: THREE.Camera, lights: readonly THREE.Light[]): VDBFrameOccluder[] {
     if (!renderer.shadowMap?.enabled) return [];
     if (renderer.logarithmicDepthBuffer) {
-      this.#warnOnce("log", "backend 'core': mesh → volume shadows do not read logarithmic-depth shadow maps; occlusion is off.");
+      this.#warnOnce("log", "mesh → volume shadows do not read logarithmic-depth shadow maps; occlusion is off.");
       return [];
     }
     const backend = renderer.backend as BackendLike;
