@@ -87,8 +87,17 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
   pyramid at creation). Until then a sparse source's `gpuBytes.pyramid` / `pyramidScratch` and `pyramidBuilds` are 0.
 - Three (K6.8a): the volume shadow receivers on meshes call the core's `vdbVolumeShadowWgsl` (one implementation),
   binding the map's `view` buffer through a storage stand-in; `VDBVolumeShadowMap.view` gains `STORAGE` usage.
+- Three (K6.8b): `VDBFrameEmissionLight` lights meshes with the core's `vdbEmissionProbeWgsl` (one implementation; frames
+  unchanged), binding the probe `grid` buffer through a storage stand-in; `VDBFrameEmissionProbes.grid` gains `STORAGE`
+  usage. The light's `castShadow` is always `true` (it casts no shadow): three r187 rebuilds the receivers of a
+  `castShadow` light when its node changes, which the light needs when the core makes a new probe stack.
 
 ### Fixed
+
+- Three (K6.8b): changing a `VDBFrameEmissionLight`'s `resolution` mid-run left plain lit materials (`MeshLambertMaterial`,
+  `MeshStandardMaterial`) bound to the retired, destroyed probe stack ("Destroyed texture … used in a submit", and a wrong
+  frame after); the same class as K6.10 finding 8. Receivers now bind placeholders while the core has no probes and
+  rebuild when it makes a new stack or grid.
 
 - Three (K6.8a): a shadow light whose core map went away (hidden for a few renders, or out of the camera's layers) and
   came back left its mesh receivers bound to the retired, destroyed map texture ("Destroyed texture … used in a

@@ -4,8 +4,11 @@
 //   cascade blend and the falloff past the last cascade; FrameEmissionLight: props, the node registration).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; K6.8: the emitters and probes are the core frame renderer's (its emission kernels, a stacked 3D
-// texture read with hardware trilinear); this light carries the settings and lights meshes; every three r187 internal
-// goes through `three-internals.ts` (VDB_ENGINE_MISMATCH on another three). Divergences: DIVERGES.md (K3.6, K6.5 rows).
+// texture read with hardware trilinear); this light carries the settings and lights meshes; K6.8b: the lookup is the
+// core's own WGSL (`vdbEmissionIrradiance` of `vdbEmissionProbeWgsl()`) through a `wgslFn`, the probe grid read from the
+// core's buffer through a storage stand-in, instead of a TSL port; every three r187 internal goes through
+// `three-internals.ts` or the stand-in self-tests (VDB_ENGINE_MISMATCH on another three). Divergences: DIVERGES.md (K3.6,
+// K6.5, K6.8b rows).
 
 /**
  * K3.6 / K6.5: light from the emissive grids of every visible `VDBFrameVolume` (his `FrameEmissionLight`). Add one to
@@ -15,53 +18,79 @@
  *
  *   const light = new VDBFrameEmissionLight({ intensity: 25, resolution: 32 });
  *   scene.add(light);   // volumes need an emission channel; colour: VDBFrameVolume `emissionColor`
+ *
+ * K6.8b: a lit pixel runs the core's `vdbEmissionIrradiance(probes, smp, grid, world, normal)` (`vdbEmissionProbeWgsl()`,
+ * twin `vdbFrameEmissionLookup` + `vdbFrameEmissionIrradiance`) through a `wgslFn`: `probes` is the core's probe stack
+ * (`outputs.emissionProbes.texture`, a 3D texture stand-in) and `grid` its `VdbEmissionGrid` buffer
+ * (`outputs.emissionProbes.grid`, bound through a storage stand-in and unpacked from `array<vec4u>`; the core rewrites it
+ * each update). The texture and storage nodes are made once; their `value` follows the core (placeholders while it has no
+ * probes: a 1³ texture and a zero grid, which lights nothing). three r187 re-reads a plain material's texture and storage
+ * bindings only on a full refresh, so a new core object (a new probe resolution, a released stack, another frame
+ * renderer) also rebuilds the receivers: the light keeps `castShadow` on (it casts no shadow) and its node bumps
+ * `version`, which three's lights cache key holds for a `castShadow` light. They rebuild at their next render; the core
+ * keeps the old stack alive two more updates (the K6.10 finding-8 class).
  */
 
 import * as THREE from "three";
-import { AnalyticLightNode } from "three/webgpu";
+import { AnalyticLightNode, type StorageBufferAttribute } from "three/webgpu";
 import * as TSL from "three/tsl";
-import type { VDBTslNode } from "../grid-node.js";
-import { vdbMaxComponent, vdbMinComponent } from "../volume-source.js";
+import { vdbThreeStorageStandIn, type VDBTslNode } from "../grid-node.js";
+import { getDevice } from "../device.js";
 import { frameEmissionMaxCascades as maxCascades } from "../../tools/frame/emission.js";
-import { vdbFramePrecompiling, vdbFrameRegisterLightNode, vdbFrameRenderUpdateType } from "./three-internals.js";
-import { VDBCoreTextureBinding } from "./core-textures.js";
+import { vdbFrameCheckLightReset, vdbFramePrecompiling, vdbFrameRegisterLightNode, vdbFrameRenderUpdateType } from "./three-internals.js";
+import { VDBCoreTextureBinding, vdbCoreTextureSelfTest } from "./core-textures.js";
+import { VDBFrameStructLoaderNode, vdbFrameStructWords, type VDBFrameStorageNode } from "./core-structs.js";
+import { VDB_EMISSION_GRID, vdbEmissionProbeWgsl } from "../../core/frame/wgsl/emission.js";
 import type { VDBFrameEmissionProbes } from "../../core/frame/types.js";
 import type { VDBFrameRenderer } from "./renderer.js";
 import type { VDBFrameVolume } from "./volume.js";
 
-const { Fn, If, clamp, dot, float, int, max, min, mix, normalWorld, positionWorld, renderGroup, select, smoothstep, texture3D, uniform, uniformArray, vec3, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
+const { code, normalWorld, positionWorld, sampler, storage, texture3D, wgslFn } = TSL as unknown as Record<string, VDBTslNode>;
 
 type N = VDBTslNode;
 
-/** A 1³ zero placeholder until the core binds its probe stack. */
-function stackPlaceholder(): THREE.Data3DTexture {
-  const t = new THREE.Data3DTexture(new Uint16Array(4), 1, 1, 1);
-  t.type = THREE.HalfFloatType;
-  t.format = THREE.RGBAFormat;
-  t.minFilter = t.magFilter = THREE.LinearFilter;
-  t.needsUpdate = true;
-  return t;
+/** `vec4u` words of the grid struct. */
+const GRID_WORDS = vdbFrameStructWords(VDB_EMISSION_GRID);
+
+/** The core's receiver function and the grid struct, one code node shared by every receiver (once per shader). */
+let receiverCode: N | null = null;
+const receiverCodeNode = (): N => (receiverCode ??= code(vdbEmissionProbeWgsl()));
+
+/** Light nodes made so far: names each one's storage binding and WGSL functions. */
+let names = 0;
+
+/** What the receivers bind while the core has no probes: a 1³ stack and a zero grid (`info.x` 0: no light, no sample). */
+interface Placeholders {
+  texture: GPUTexture;
+  grid: GPUBuffer;
+}
+
+/** A light node's three nodes; made at its first receiver build, their values follow the core. */
+interface ReceiverNodes {
+  renderer: object;
+  placeholders: Placeholders;
+  probes: N;
+  grid: VDBFrameStorageNode;
+  /** The grid buffer bound now (the core's or the placeholder). */
+  gridBuffer: GPUBuffer;
+  fn: (inputs: Record<string, N>) => N;
 }
 
 /**
- * The irradiance at a lit point from the finest probe cascade that contains it; near a cascade side the next one
- * blends in (as the shadow grid); past the last cascade its clamped edge probes fall off with distance squared.
+ * The irradiance at a lit point from the core's probe cascades (`vdbEmissionIrradiance`: the finest cascade that holds
+ * it, blended into the next one near its sides; past the last cascade its clamped edge probes fall off with distance
+ * squared), times the light's colour × intensity.
  */
 export class VDBFrameEmissionLightNode extends AnalyticLightNode<THREE.Light> {
   static get type(): string {
     return "VDBFrameEmissionLightNode";
   }
 
-  readonly gridMin: N;
-  readonly gridSize: N;
-  readonly gridCount: N;
-  readonly gridResolution: N;
-  readonly probeCenter: N;
-  readonly probeActive: N;
-  /** The core's probe stack (a 3D texture, 3 sub-volumes per cascade) and its layout. */
-  readonly probeStack: N;
-  readonly stackOrigins: N;
-  readonly stackSize: N;
+  /** Unique per light node: names the storage binding and the WGSL functions. */
+  readonly k = names++;
+  #nodes: ReceiverNodes | null = null;
+  // NOTE Replaced grid stand-ins. update() runs mid-render, so the next update() disposes them.
+  #retired: StorageBufferAttribute[] = [];
 
   constructor(light: VDBFrameEmissionLight | null = null) {
     super(light as never);
@@ -69,29 +98,17 @@ export class VDBFrameEmissionLightNode extends AnalyticLightNode<THREE.Light> {
     const render = vdbFrameRenderUpdateType();
     (this as unknown as { updateType: string; updateBeforeType: string }).updateType = render;
     (this as unknown as { updateType: string; updateBeforeType: string }).updateBeforeType = render;
-    // NOTE Render group, as three's lights: lit materials without node changes update only shared uniforms
-    this.gridMin = uniformArray(
-      Array.from({ length: maxCascades }, () => new THREE.Vector3()),
-      "vec3",
-    ).setGroup(renderGroup);
-    this.gridSize = uniformArray(
-      Array.from({ length: maxCascades }, () => new THREE.Vector3(1.0, 1.0, 1.0)),
-      "vec3",
-    ).setGroup(renderGroup);
-    this.gridCount = uniform(0, "int").setGroup(renderGroup);
-    this.gridResolution = uniform(1.0).setGroup(renderGroup);
-    this.probeCenter = uniform(new THREE.Vector3()).setGroup(renderGroup);
-    this.probeActive = uniform(0.0).setGroup(renderGroup);
-    this.probeStack = texture3D(stackPlaceholder());
-    this.stackOrigins = uniformArray(
-      Array.from({ length: 3 * maxCascades }, () => new THREE.Vector3()),
-      "vec3",
-    ).setGroup(renderGroup);
-    this.stackSize = uniform(new THREE.Vector3(1, 1, 1)).setGroup(renderGroup);
   }
 
   private get emissionLight(): VDBFrameEmissionLight {
     return (this as unknown as { light: VDBFrameEmissionLight }).light;
+  }
+
+  /** The probe stack and grid bound now (null before the first receiver build); tests and harnesses. @internal */
+  get bound(): { texture: GPUTexture | null; grid: GPUBuffer; placeholder: boolean } | null {
+    const nodes = this.#nodes;
+    if (!nodes) return null;
+    return { texture: this.emissionLight.coreBinding.gpu, grid: nodes.gridBuffer, placeholder: nodes.gridBuffer === nodes.placeholders.grid };
   }
 
   override updateBefore(frame: never): boolean | undefined {
@@ -104,93 +121,88 @@ export class VDBFrameEmissionLightNode extends AnalyticLightNode<THREE.Light> {
 
   override update(frame: never): boolean | undefined {
     super.update(frame);
-    const light = this.emissionLight;
-    const gridMin = this.gridMin.array as THREE.Vector3[];
-    const gridSize = this.gridSize.array as THREE.Vector3[];
-    for (let i = 0; i < maxCascades; i++) {
-      gridMin[i]!.copy(light.cascadeMin[i]!);
-      gridSize[i]!.copy(light.cascadeSize[i]!);
-    }
-    this.gridCount.value = light.cascadeCount;
-    this.gridResolution.value = light.probeResolution;
-    this.probeCenter.value.copy(light.probeCenter);
-    this.probeActive.value = light.emitterCount > 0 ? 1.0 : 0.0;
-    // the core stack and its sub-volume origins (a new stack: a new stand-in)
-    const probes = light.coreProbes;
-    if (probes) {
-      if (light.coreBinding.set(probes.texture)) this.probeStack.value = light.coreBinding.texture;
-      const origins = this.stackOrigins.array as THREE.Vector3[];
-      probes.layout.origins.forEach((o, i) => origins[i]?.set(o[0], o[1], o[2]));
-      this.stackSize.value.set(probes.layout.size[0], probes.layout.size[1], probes.layout.size[2]);
-    }
+    this.#retired.forEach((a) => a.dispose());
+    this.#retired.length = 0;
+    this.#bind(this.emissionLight.coreProbes);
     return undefined;
   }
 
+  /**
+   * Points the nodes at the core's probes (null: the placeholders). A new core object gets a new stand-in as the node's
+   * `value` and bumps this node's `version`, so the receivers rebuild at their next render (see the file comment).
+   */
+  #bind(probes: VDBFrameEmissionProbes | null): void {
+    const nodes = this.#nodes;
+    if (!nodes) return;
+    const p = nodes.placeholders;
+    let changed = false;
+    const binding = this.emissionLight.coreBinding;
+    if (binding.set(probes?.texture ?? p.texture)) {
+      nodes.probes.value = binding.texture;
+      changed = true;
+    }
+    const grid = probes?.grid ?? p.grid;
+    if (grid !== nodes.gridBuffer) {
+      this.#retired.push(nodes.grid.value as StorageBufferAttribute);
+      nodes.grid.value = vdbThreeStorageStandIn(nodes.renderer, grid, `vdbEmissionGrid${this.k}`);
+      nodes.gridBuffer = grid;
+      changed = true;
+    }
+    if (changed) (this as unknown as { needsUpdate: boolean }).needsUpdate = true;
+  }
+
+  #nodesOf(renderer: object): ReceiverNodes {
+    if (this.#nodes) {
+      if (this.#nodes.renderer === renderer) return this.#nodes;
+      throw new Error("VDBFrameEmissionLight: its receivers were built by a second renderer; a light (and its scene) belongs to one renderer");
+    }
+    // NOTE The rebuild on a new core object needs three's lights cache key to follow this node's version (internal 1)
+    vdbFrameCheckLightReset();
+    const device = getDevice(renderer as never);
+    vdbCoreTextureSelfTest(renderer as never, device);
+    const placeholders: Placeholders = {
+      texture: device.createTexture({ label: "@pmndrs/vdb/three emission probes placeholder", size: [1, 1, 1], dimension: "3d", format: "rgba16float", usage: 0x04 /* TEXTURE_BINDING */ }),
+      // A zero grid: info.x (cascades) 0, so vdbEmissionIrradiance returns 0 without sampling
+      grid: device.createBuffer({ label: "@pmndrs/vdb/three emission grid placeholder", size: VDB_EMISSION_GRID.size, usage: 0x80 /* STORAGE */ }),
+    };
+    const light = this.emissionLight;
+    const probes = light.coreProbes;
+    light.coreBinding.set(probes?.texture ?? placeholders.texture);
+    const gridBuffer = probes?.grid ?? placeholders.grid;
+    const grid = storage(vdbThreeStorageStandIn(renderer, gridBuffer, `vdbEmissionGrid${this.k}`), "uvec4", GRID_WORDS).toReadOnly() as VDBFrameStorageNode;
+    grid.setName(`vdbEmissionGrid${this.k}`);
+    const loader = new VDBFrameStructLoaderNode(grid, VDB_EMISSION_GRID, `vdbFrameEmissionGrid${this.k}`);
+    const name = `vdbFrameEmissionReceiver${this.k}`;
+    const source = `fn ${name}(probes: texture_3d<f32>, smp: sampler, world: vec3f, normal: vec3f) -> vec3f {\n  return vdbEmissionIrradiance(probes, smp, ${loader.fnName}(), world, normal);\n}`;
+    const fn = wgslFn(source, [receiverCodeNode(), loader]) as (inputs: Record<string, N>) => N;
+    this.#nodes = { renderer, placeholders, probes: texture3D(light.coreBinding.texture), grid, gridBuffer, fn };
+    return this.#nodes;
+  }
+
   override setup(builder: never): null {
-    const { gridMin, gridSize, gridCount, gridResolution, probeCenter, probeActive } = this;
-    const gridUvw = (cascade: N, position: N): N => position.sub(gridMin.element(cascade)).div(gridSize.element(cascade));
-    // NOTE Half a probe inside the cascade. Then the linear filter does not read the clamped edge.
-    const insideGrid = (uvw: N): N => {
-      const inset = float(0.5).div(gridResolution);
-      return vdbMinComponent(uvw).greaterThanEqual(inset).and(vdbMaxComponent(uvw).lessThanEqual(float(1.0).sub(inset)));
-    };
-    // NOTE Finest cascade from the first cascade that contains the position, or -1
-    const findCascade = (position: N, first: N): N => {
-      let cascade: N = int(-1);
-      for (let i = maxCascades - 1; i >= 0; i--) cascade = select(int(i).lessThan(gridCount).and(int(i).greaterThanEqual(first)).and(insideGrid(gridUvw(int(i), position))), int(i), cascade);
-      return cascade;
-    };
-
-    const irradiance = Fn(() => {
-      const position = positionWorld.toVar();
-      const red = vec4(0.0).toVar();
-      const green = vec4(0.0).toVar();
-      const blue = vec4(0.0).toVar();
-      const falloff = float(1.0).toVar();
-      // one channel of a cascade in the stack, hardware trilinear clamped to its half-texel box
-      const sampleStack = (cascade: N, channel: number, uvw: N): N => {
-        const r = gridResolution;
-        const p = this.stackOrigins.element(cascade.mul(3).add(channel)).add(clamp(uvw.mul(r), vec3(0.5), vec3(r.sub(0.5))));
-        return this.probeStack.sample(p.div(this.stackSize)).level(0);
-      };
-      const sampleProbes = (cascade: N, uvw: N, weight: N) => {
-        red.assign(mix(red, sampleStack(cascade, 0, uvw), weight));
-        green.assign(mix(green, sampleStack(cascade, 1, uvw), weight));
-        blue.assign(mix(blue, sampleStack(cascade, 2, uvw), weight));
-      };
-
-      If(gridCount.greaterThan(0), () => {
-        const cascade = findCascade(position, int(0)).toVar();
-        If(cascade.greaterThanEqual(0), () => {
-          const uvw = gridUvw(cascade, position).toVar();
-          sampleProbes(cascade, uvw, float(1.0));
-          const sideDistance = min(uvw, vec3(1.0).sub(uvw));
-          const blend = float(1.0).sub(smoothstep(0.0, 0.1, min(sideDistance.x, min(sideDistance.y, sideDistance.z)))).toVar();
-          If(blend.greaterThan(0.0), () => {
-            const nextCascade = findCascade(position, cascade.add(1)).toVar();
-            If(nextCascade.greaterThanEqual(0), () => {
-              sampleProbes(nextCascade, gridUvw(nextCascade, position), blend);
-            });
-          });
-        }).Else(() => {
-          const lastCascade = gridCount.sub(1).toVar();
-          const inset = float(0.5).div(gridResolution);
-          const uvw = clamp(gridUvw(lastCascade, position), vec3(inset), vec3(float(1.0).sub(inset))).toVar();
-          const toEdge = gridMin.element(lastCascade).add(uvw.mul(gridSize.element(lastCascade))).sub(probeCenter);
-          const toPoint = position.sub(probeCenter);
-          sampleProbes(lastCascade, uvw, float(1.0));
-          falloff.assign(min(1.0, dot(toEdge, toEdge).div(max(dot(toPoint, toPoint), 1e-6))));
-        });
-      });
-
-      const normal = normalWorld;
-      return max(vec3(red.x.add(dot(red.yzw, normal)), green.x.add(dot(green.yzw, normal)), blue.x.add(dot(blue.yzw, normal))), vec3(0.0)).mul(falloff.mul(probeActive));
-    })();
-
-    const b = builder as unknown as { context: { irradiance: N } };
+    const b = builder as unknown as { renderer: object; context: { irradiance: N } };
+    const nodes = this.#nodesOf(b.renderer);
+    const irradiance = nodes.fn({ probes: nodes.probes, smp: sampler(nodes.probes), world: positionWorld, normal: normalWorld });
     const colorNode = (this as unknown as { colorNode: N }).colorNode;
     b.context.irradiance.addAssign(colorNode.mul(irradiance));
     return null;
+  }
+
+  override dispose(): void {
+    const nodes = this.#nodes;
+    if (nodes) {
+      this.#retired.push(nodes.grid.value as StorageBufferAttribute);
+      const p = nodes.placeholders;
+      // NOTE A bind group of this render may still name them: destroy after the task that submits it
+      setTimeout(() => {
+        p.texture.destroy();
+        p.grid.destroy();
+      }, 0);
+      this.#nodes = null;
+    }
+    this.#retired.forEach((a) => a.dispose());
+    this.#retired.length = 0;
+    super.dispose();
   }
 }
 
@@ -266,6 +278,9 @@ export class VDBFrameEmissionLight extends THREE.Light {
       registered = true;
     }
     (this as { type: string }).type = "VDBFrameEmissionLight";
+    // K6.8b: always on, and the light casts no shadow (its node draws none). three r187's lights cache key holds the node
+    // version of a castShadow light only; the node bumps it to rebuild its receivers when the core makes new probes.
+    Object.defineProperty(this, "castShadow", { get: () => true, set: () => {}, configurable: true, enumerable: true });
     this.resolution = resolution;
     this.range = range;
     this.cascades = cascades;

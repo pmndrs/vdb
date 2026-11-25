@@ -105,6 +105,11 @@ export class VDBCoreTextureBinding {
     return this.#standIn;
   }
 
+  /** The core texture of the current stand-in (null before the first {@link set}). */
+  get gpu(): GPUTexture | null {
+    return this.#gpu;
+  }
+
   /** Points the binding at `gpu`; returns true when the stand-in changed (swap the node's `value`). */
   set(gpu: GPUTexture): boolean {
     if (gpu === this.#gpu) return false;

@@ -297,7 +297,8 @@ export class VDBFrameEmissionProbeSet {
     this.#label = label;
     this.#retire = retire;
     this.#listBuffer = device.createBuffer({ label: `${label} emitter list`, size: VDB_FRAME_EMITTERS_STRIDE, usage: BUFFER_USAGE.UNIFORM | BUFFER_USAGE.COPY_DST });
-    this.#gridBuffer = device.createBuffer({ label: `${label} emission grid`, size: VDB_EMISSION_GRID.size, usage: BUFFER_USAGE.UNIFORM | BUFFER_USAGE.COPY_DST });
+    // K6.8b: also STORAGE, so an engine that binds uniform data only through storage buffers (`./three`) can bind it as is
+    this.#gridBuffer = device.createBuffer({ label: `${label} emission grid`, size: VDB_EMISSION_GRID.size, usage: BUFFER_USAGE.UNIFORM | BUFFER_USAGE.STORAGE | BUFFER_USAGE.COPY_DST });
   }
 
   get listBuffer(): GPUBuffer {
