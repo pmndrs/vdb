@@ -29,8 +29,8 @@ interface Result {
   uncaptured: string[];
 }
 
-async function run(page: Page): Promise<Result> {
-  await page.goto(PAGE_URL);
+async function run(page: Page, query = ""): Promise<Result> {
+  await page.goto(`${PAGE_URL}${query}`);
   await page.waitForFunction(() => (window as { __VDB_K7_MULTI_SCALE__?: { done: boolean } }).__VDB_K7_MULTI_SCALE__?.done === true, undefined, { timeout: 240_000 });
   return (await page.evaluate(() => (window as { __VDB_K7_MULTI_SCALE__?: unknown }).__VDB_K7_MULTI_SCALE__)) as Result;
 }
@@ -75,4 +75,17 @@ test("K7.3 multi-scale: GPU mips = CPU twin (≤ 1 f16 ulp), GPU lookup = CPU tw
   expect(r.lookups[2]!.mutated, detail).toBeGreaterThan(1e-3);
   console.log(`[k7] ${r.lookups.map((l) => `${l.name}: max |gpu − twin| ${l.light.maxAbs.toExponential(2)}, ${l.light.nonZero} lit${l.mutated !== undefined ? `, vs the offset-0 twin ${l.mutated.toFixed(4)}` : ""}`).join("; ")}`);
   expect(r.retire, detail).toEqual({ version: 1, errors: [] });
+});
+
+// K6.10b (fail-before, GPU side): csMsLevel and csMsPack patched (examples/src/harness/k7-multi-scale.ts WGSL_PATCHES)
+// must fail the build gate: the level's divisor moves texels by more than 1 ulp; a truncating pack stays within 1 ulp
+// but puts far more than 1 % of the texels at 1 ulp.
+test("K6.10b multi-scale: WGSL mutations of csMsLevel and csMsPack fail the build gate", async ({ page }) => {
+  const level = await run(page, "?mutate=wgsl-ms-level");
+  expect(level.error, JSON.stringify(level, null, 2)).toBeUndefined();
+  expect(level.builds.some((b) => b.compare.over > 0), JSON.stringify(level.builds, null, 2)).toBe(true);
+  const pack = await run(page, "?mutate=wgsl-ms-pack");
+  expect(pack.error, JSON.stringify(pack, null, 2)).toBeUndefined();
+  expect(pack.builds.some((b) => b.compare.ulp1 > b.compare.texels * 0.01), JSON.stringify(pack.builds, null, 2)).toBe(true);
+  console.log(`[k7] mutations: level over ${level.builds.map((b) => b.compare.over).join(", ")}; pack 1-ulp ${pack.builds.map((b) => `${b.compare.ulp1}/${b.compare.texels}`).join(", ")}`);
 });

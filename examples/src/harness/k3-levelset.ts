@@ -36,6 +36,7 @@
  * Results: `window.__VDB_K3_LEVELSET__` (e2e/k3-levelset.spec.ts writes PNGs to artifacts/k3/ours-step7/).
  */
 import * as THREE from "three";
+import { installWgslPatch, type VDBWgslPatches } from "./wgsl-patch.js";
 import { Mesh, WebGPURenderer } from "three/webgpu";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { VDBGridNode, VDBLevelSetMaterial, VDBPoints, vdbProxyGeometry, type VDBTslNode } from "@pmndrs/vdb/three";
@@ -166,29 +167,10 @@ const MUTATE = params.get("mutate") ?? "none";
 const VS_THREE = params.get("vsThree") === "1";
 const ORTHO = params.get("ortho") === "1";
 
-/** K6.10b `?mutate=wgsl-*`: the pass's WGSL patched before it compiles (the K6.10a k6-core style); unmatched: an error. */
-const WGSL_PATCHES: Record<string, [string, string]> = {
+/** K6.10b `?mutate=wgsl-*`: the pass's WGSL patched before it compiles (wgsl-patch.ts). */
+const WGSL_PATCHES: VDBWgslPatches = {
   "wgsl-ls-ortho": ["vdbLsFrame.cameraWorld, vdbLsFrame.flags.x != 0u)", "vdbLsFrame.cameraWorld, false)"],
 };
-function patchWgsl(device: GPUDevice): () => void {
-  const patch = WGSL_PATCHES[MUTATE];
-  if (!patch) {
-    if (MUTATE.startsWith("wgsl-")) throw new Error(`unknown WGSL mutation ${MUTATE}`);
-    return () => {};
-  }
-  const d = device as unknown as { createShaderModule: (desc: GPUShaderModuleDescriptor) => GPUShaderModule };
-  const saved = d.createShaderModule;
-  let matched = 0;
-  d.createShaderModule = (desc) => {
-    if (!desc.code.includes(patch[0])) return saved.call(device, desc);
-    matched++;
-    return saved.call(device, { ...desc, code: desc.code.replaceAll(patch[0], patch[1]) });
-  };
-  return () => {
-    d.createShaderModule = saved;
-    if (matched === 0) throw new Error(`WGSL mutation ${MUTATE} matched no shader module`);
-  };
-}
 
 /**
  * K6.10b: an orthographic camera with the perspective camera's pose, framing at `target` what the perspective camera
@@ -956,7 +938,7 @@ async function main(): Promise<void> {
     log(`sprite probe${MUTATE !== "none" ? ` (mutate ${MUTATE})` : ""}: ${JSON.stringify(result.sprite)}`, result.sprite.over === 0 ? "ok" : "fail");
     return;
   }
-  const checkWgslPatch = patchWgsl(device);
+  const checkWgslPatch = installWgslPatch(device, WGSL_PATCHES, MUTATE);
   const display = def.kind === "levelset" ? await levelSetScene(renderer, device) : await pointsScene(renderer, device);
   checkWgslPatch();
   result.width = W;

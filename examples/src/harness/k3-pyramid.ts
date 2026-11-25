@@ -22,6 +22,7 @@
  * Results: `window.__VDB_K3_PYRAMID__` (e2e/k3-pyramid.spec.ts, scripts/k3/time-hardware.mjs).
  */
 import * as THREE from "three";
+import { installWgslPatch, type VDBWgslPatches } from "./wgsl-patch.js";
 import { NodeMaterial, WebGPURenderer } from "three/webgpu";
 import * as TSL from "three/tsl";
 import { VDBGridPool, vdbCreateBoxPyramid, type VDBBoxPyramidGpu } from "@pmndrs/vdb";
@@ -99,6 +100,18 @@ declare global {
 }
 
 const params = new URLSearchParams(location.search);
+/**
+ * K6.10b `?mutate=wgsl-*` (fail-before, GPU side; wgsl-patch.ts): the base box filter scaled by 3/4; the empty-block mask
+ * off; the 2x2x2 level mean divided by 7; the pack writes each word's low texel twice.
+ */
+const MUTATE = params.get("mutate") ?? "none";
+const WGSL_PATCHES: VDBWgslPatches = {
+  "wgsl-pyr-base": ["sz += wz * sy;", "sz += wz * sy * 0.75;"],
+  "wgsl-pyr-mask": ["if atomicLoad(&pyrFlags[pyrBlock(j)]) == 0u {", "if false {"],
+  "wgsl-pyr-level": ["] = sum / 8.0;", "] = sum / 7.0;"],
+  "wgsl-pyr-pack": ["= lo | (hi << 16u);", "= lo | (lo << 16u);"],
+};
+let checkWgslPatch = (): void => {};
 const ASSETS = (params.get("assets") ?? "cloud04,cloud04@32,sphere,sphere8").split(",").filter(Boolean);
 const REPEAT = Math.max(1, Number(params.get("repeat") ?? 3));
 const SEQUENCE = params.get("sequence") === "1";
@@ -221,6 +234,7 @@ async function main(): Promise<void> {
   result.timestampQuery = timestamps;
   const device = await adapter.requestDevice({ requiredFeatures: timestamps ? ["timestamp-query"] : [], requiredLimits: VDBGridPool.requiredLimits(adapter) });
   device.addEventListener("uncapturederror", (e) => result.uncaptured.push((e as GPUUncapturedErrorEvent).error.message));
+  checkWgslPatch = installWgslPatch(device, WGSL_PATCHES, MUTATE);
   const querySet = timestamps ? device.createQuerySet({ type: "timestamp", count: 2 }) : null;
   const resolveBuffer = timestamps ? device.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC }) : null;
   const readBuffer = timestamps ? device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }) : null;
@@ -420,6 +434,7 @@ async function threeCheck(device: GPUDevice): Promise<void> {
 }
 
 main()
+  .then(() => checkWgslPatch())
   .catch((e: unknown) => {
     result.error = e instanceof Error ? `${e.message}\n${e.stack ?? ""}` : String(e);
     log(result.error, "fail");

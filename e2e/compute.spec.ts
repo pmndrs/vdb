@@ -105,3 +105,26 @@ test("core compute tools match their CPU twins on the GPU", async ({ page }) => 
   const total = r.atlas.reduce((n, a) => n + a.voxels, 0);
   test.info().annotations.push({ type: "compute", description: `${r.adapter}; atlas raw ${exact}/${total} bit-exact vs f32 twin` });
 });
+
+// K6.10b (fail-before, GPU side): each kernel's WGSL patched (examples/src/harness/compute.ts WGSL_PATCHES) must fail the
+// gate above that covers it.
+const COMPUTE_MUTATIONS: { mutate: string; fails: (r: ComputeReport) => boolean }[] = [
+  { mutate: "wgsl-atlas-trilinear", fails: (r) => r.atlas.some((a) => a.maxAbs >= 1e-5) },
+  { mutate: "wgsl-atlas-nearest", fails: (r) => r.atlas.some((a) => a.maxAbs >= 1e-5) },
+  { mutate: "wgsl-stats-bin", fails: (r) => r.stats.some((s) => s.histogramL1 > Math.max(2, s.count * 1e-4)) },
+  { mutate: "wgsl-stats-sum", fails: (r) => r.stats.some((s) => s.meanAbs >= 1e-5) },
+  { mutate: "wgsl-stats-dump", fails: (r) => r.stats.some((s) => !s.fastPath && s.count !== s.countTwin) },
+];
+
+test("K6.10b core compute tools: each WGSL mutation (atlas, stats fast path, stats dump) fails its gate", async ({ page }) => {
+  const probe = await page.request.get(PROBE_FIXTURE_URL);
+  test.skip(!probe.ok(), `fixtures missing (${PROBE_FIXTURE_URL} -> ${probe.status()})`);
+  test.setTimeout(900_000);
+  for (const m of COMPUTE_MUTATIONS) {
+    await page.goto(`${PAGE_URL}?mutate=${m.mutate}`);
+    await page.waitForFunction(() => (window as { __VDB_COMPUTE__?: { done: boolean } }).__VDB_COMPUTE__?.done === true, undefined, { timeout: 170_000 });
+    const r = (await page.evaluate(() => (window as { __VDB_COMPUTE__?: unknown }).__VDB_COMPUTE__)) as ComputeReport;
+    expect(r.error, `${m.mutate}: ${JSON.stringify(r, null, 2)}`).toBeUndefined();
+    expect(m.fails(r), `${m.mutate} must fail: ${JSON.stringify(r, null, 2)}`).toBe(true);
+  }
+});

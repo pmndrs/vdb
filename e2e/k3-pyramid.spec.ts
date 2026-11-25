@@ -116,3 +116,22 @@ test("K3.2a GPU pyramid = CPU pyramid on smoke.vdb (fractional box weights) and 
     expectParity(a.atlas, `${a.name} atlas\n${detail}`);
   }
 });
+
+// K6.10b (fail-before, GPU side): each pyramid kernel's WGSL patched (examples/src/harness/k3-pyramid.ts WGSL_PATCHES)
+// must break the parity above: csPyrBase and csPyrMask the base, csPyrLevel the atlas, csPyrPack either.
+const PYRAMID_MUTATIONS: { mutate: string; fails: (r: Result) => boolean }[] = [
+  { mutate: "wgsl-pyr-base", fails: (r) => r.assets.some((a) => a.base.over > 0) },
+  { mutate: "wgsl-pyr-mask", fails: (r) => r.assets.some((a) => a.name === "spherels" && a.base.over > 0) },
+  { mutate: "wgsl-pyr-level", fails: (r) => r.assets.some((a) => (a.atlas?.over ?? 0) > 0) },
+  { mutate: "wgsl-pyr-pack", fails: (r) => r.assets.some((a) => a.base.over > 0 || (a.atlas?.over ?? 0) > 0) },
+];
+
+test("K6.10b GPU pyramid: each WGSL mutation (base, mask, level, pack) breaks the parity", async ({ page }) => {
+  test.skip(!fixture("primitives/sphere_fog_float.nvdb") || !fixture("vdb-samples/sphere.vdb"), "fixtures missing: pnpm fixtures:bake, pnpm fixtures:vdb-samples");
+  for (const m of PYRAMID_MUTATIONS) {
+    const r = await run(page, `?assets=sphere,spherels&repeat=1&mutate=${m.mutate}`);
+    const detail = JSON.stringify(r, null, 2);
+    expect(r.error, `${m.mutate}: ${detail}`).toBeUndefined();
+    expect(m.fails(r), `${m.mutate} must fail: ${detail}`).toBe(true);
+  }
+});
