@@ -372,6 +372,16 @@ instead of on per-slice froxels before compositing (they differ at volume silhou
 row). A one-tap linear lookup (Hillaire 2015) is a deferred timing option, not the default. Spectral reads the
 second prefix for the opacity r, b and composites against the scene colour itself (one hardware alpha), as his.
 
+*K6.4 as built (handoff [K6-4.md](../../archive/handoffs/K6-4.md)):* `spectral` is a pipeline key of the gathers, shadow
+grid, transmittance, environment grid, resolve, composite and volume shadow map kernels. The shadow grid is two stacks with
+one layout (extinction rgb, absorption rgb); the transmittance is one dispatch over every slot group in use (3 targets per
+group and cascade at `transmittanceOrigin[3 (g · count + c) + k]`, `VdbFrameUniforms.spectral.y` = groups); the froxels are
+`scatter` + `scatterAlpha`, the history one texture 2D deep, the prefix `integrated` + `integratedAlpha` (rg16float with
+tier1, else rgba16float). Overlapping volumes combine per channel. The composite runs the two-tap formula per channel and
+blends over the scene colour itself (no hardware blending; `render()` needs `targets.sceneColor`). Volume shadow maps get an
+rgb twin texture (`rgbTexture`; receivers `vdbVolumeShadowRgb` / `…CubeRgb`). `'mlp'` and `'multi-scale'` run as diffusion.
+Every spectral kernel writes ≤ 3 storage textures and samples ≤ 15 textures.
+
 **Memory** at his 512 × 512 × 24, grey: scatter 48 MiB + history 2 × 48 + prefix 50 = 194 MiB. His 'frame' lighting
 used atlas 48 + history 96 + density targets 192 = 336 MiB. Multi-group frames add 192 MiB of partials ('frame') or
 48 ('volume'). Spectral adds the alpha textures (≈ +50 %).
