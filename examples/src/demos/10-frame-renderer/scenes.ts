@@ -29,7 +29,6 @@ import {
   VDBSequence,
   getDevice,
   vdbDenseTextures,
-  vdbFrameBlackbodyEmission,
   vdbProxyGeometry,
   vdbSparseSource,
   type VDBFrameRenderer,
@@ -316,7 +315,7 @@ class ExplosionScene implements LoadedScene {
       densityMean: first.meanDensity,
       temperatureRange: [0, 3000],
       emissiveIntensity: 15,
-      emissionColor: vdbFrameBlackbodyEmission("planck", 1.39),
+      emissionColor: { spectrum: "planck", exponent: 1.39 },
     });
     placeOnGround(this.volume, this.volume.bbox, true);
     this.group.add(this.volume);

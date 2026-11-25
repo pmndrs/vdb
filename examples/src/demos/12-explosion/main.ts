@@ -18,7 +18,7 @@ import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { readWvdb, wvdbDenseVolume, type WvdbDenseVolume } from "@pmndrs/vdb/tools";
-import { VDBFrameEmissionLight, VDBFrameRenderer, VDBFrameVolume, VDBSequence, vdbDenseTextures, vdbFrameBlackbodyEmission } from "@pmndrs/vdb/three";
+import { VDBFrameEmissionLight, VDBFrameRenderer, VDBFrameVolume, VDBSequence, vdbDenseTextures } from "@pmndrs/vdb/three";
 import { createDeviceRenderer } from "../device-renderer.js";
 import { MiB, PRESENTATION, Presenter, QUALITY, STILL, autoOrbit, initialQuality, mountShowcase, params, probe, type Quality, type Snapshot } from "../showcase-shell.js";
 import { horizonColor, loadHdrSky, proceduralSky } from "../gallery-sky.js";
@@ -279,7 +279,7 @@ async function run(): Promise<void> {
     densityMean: first.meanDensity,
     temperatureRange: [0, 3000],
     emissiveIntensity: EMISSIVE,
-    emissionColor: vdbFrameBlackbodyEmission("planck", 1.39),
+    emissionColor: { spectrum: "planck", exponent: 1.39 },
   });
   // Z-up box, longest side SIZE, standing on the ground, centred on the origin (his frame.js placement).
   {

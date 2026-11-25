@@ -5,19 +5,21 @@
  * pool and the other pmndrs tools share one device. `VDBGridNode` puts a
  * `VDBGridPool` into three's node system (`vdbSample`, `vdbReadValue`, or the
  * module as a `wgslFn` include). `VDBVolumeMaterial` raymarches one pooled
- * grid; `VDBSequence` plays a frame sequence into one pool id with
+ * grid; `VDBSequence` (the core's, re-exported) plays a frame sequence into one pool id with
  * `pool.replace`. `vdbGridStats` / `vdbDecodeToAtlas` run the core compute
  * tools through the renderer's device. `VDBFrameVolume` / `VDBFrameRenderer`
- * are mjurczyk's froxel renderer on a dense or sparse volume source.
+ * are mjurczyk's froxel renderer on a dense or sparse volume source, drawn by the
+ * core frame renderer on three's device (K6.8: a thin adapter; `renderer.core`).
  *
  * There is no renderer bootstrap: create the device yourself
  * (`adapter.requestDevice({ requiredLimits: VDBGridPool.requiredLimits(adapter) })`)
  * and pass it, `new WebGPURenderer({ device })`, so the pool outlives
  * `renderer.dispose()`.
  *
- * This barrel is the public API (D32). The frame renderer's pass materials, shader chunks and three
+ * This barrel is the public API (D32). The frame renderer's composite material, core-texture stand-ins and three
  * internals hooks live in `./internal.ts`, imported by path by tests and harnesses; it is not a package
- * export.
+ * export. Core types the adapter takes or returns (settings, emission colour, light bits) are the core's
+ * declarations, re-exported.
  */
 
 // K2.1/K2.2: the adapter over the engine-free core (docs/dev/design/K1-core.md §6). `getDevice` and
@@ -109,7 +111,10 @@ export {
   getFrameMediumProps as vdbFrameMedium,
   VDBFrameEmissionLight,
 } from "./frame/index.js";
-export type { VDBFrameVolumeProps, VDBFramePassHook, VDBFrameMediumVolumeProps, VDBFrameEmissionLightProps } from "./frame/index.js";
-// K6.8 Stage B: the 0.1 names until the 0.2.0 API lands (Stage C removes them with the api-surface update).
-export { vdbFrameLights, vdbFrameAllLights, vdbFrameBlackbodyEmission } from "./frame/stage-b.js";
-export type { VDBFrameRendererSettings, VDBFramePass, VDBFrameRedrawStats, VDBFramePhase, VDBFrameMultipleScattering, VDBFrameBlackbodyHook } from "./frame/stage-b.js";
+export type { VDBFrameVolumeProps, VDBFramePassHook, VDBFramePhaseSettings, VDBFrameMediumVolumeProps, VDBFrameEmissionLightProps } from "./frame/index.js";
+// K6.8 (0.2.0): the core's declarations the adapter takes or returns, re-exported (one declaration each).
+export { VDB_FRAME_ALL_LIGHTS, VDB_FRAME_LIGHT_BITS } from "../core/frame/types.js";
+export type { VDBEmissionColor, VDBFrameRedrawStats, VDBFrameTimestamps, VDBFrameUpdate } from "../core/frame/types.js";
+export type { VDBFrameSettings, VDBFramePhaseName, VDBFrameMultipleScatteringMode } from "../core/frame/settings.js";
+export type { VDBFrameRendererGpu } from "../core/frame/renderer.js";
+export type { VDBFrameMlp, VDBFrameMlpLayer } from "../tools/frame/mlp.js";

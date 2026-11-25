@@ -22,7 +22,7 @@ import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { UltraHDRLoader } from "three/addons/loaders/UltraHDRLoader.js";
 import { vdbFrameMediumNames } from "@pmndrs/vdb/tools";
-import { VDBFrameRenderer, type VDBFrameMultipleScattering, type VDBFramePhase, type VDBSparseLod } from "@pmndrs/vdb/three";
+import { VDBFrameRenderer, type VDBFrameMultipleScatteringMode, type VDBFramePhaseName, type VDBSparseLod } from "@pmndrs/vdb/three";
 import { createDeviceRenderer } from "../device-renderer.js";
 import { Panel, type SelectOption } from "./panel.js";
 import { GROUND_LEVEL, SCENES, probeScene, type LoadedScene, type SceneContext, type SceneDef, type SourceKind } from "./scenes.js";
@@ -79,12 +79,12 @@ const QUALITY: Record<Quality, { width: number; height: number; depth: number; s
 };
 
 type MsChoice = "off" | "diffusion" | "two-sided" | "octaves" | "neural";
-const MS_VALUE: Record<MsChoice, VDBFrameMultipleScattering> = { off: false, diffusion: true, "two-sided": "two-sided", octaves: "octaves", neural: "neural" };
+const MS_VALUE: Record<MsChoice, VDBFrameMultipleScatteringMode> = { off: false, diffusion: true, "two-sided": "two-sided", octaves: "octaves", neural: "neural" };
 
 const controls = {
   lighting: "frame" as "volume" | "frame",
   ms: "neural" as MsChoice,
-  phase: "dual-lobe" as VDBFramePhase,
+  phase: "dual-lobe" as VDBFramePhaseName,
   phaseG: 0.8,
   spectral: false,
   medium: "none",
@@ -313,7 +313,7 @@ async function run(): Promise<void> {
     }),
   );
   const phaseRow = froxel(
-    panel.select<VDBFramePhase>("phase", "phase", [
+    panel.select<VDBFramePhaseName>("phase", "phase", [
       { value: "isotropic", label: "isotropic" },
       { value: "henyey-greenstein", label: "Henyey-Greenstein" },
       { value: "dual-lobe", label: "dual-lobe (his demos)" },

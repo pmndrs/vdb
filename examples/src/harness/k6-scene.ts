@@ -14,7 +14,7 @@
  */
 import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
-import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbSparseSource, type VDBFrameMultipleScattering, type VDBSparseLod, type VDBThreeVolumeSource } from "@pmndrs/vdb/three";
+import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbSparseSource, type VDBFrameMultipleScatteringMode, type VDBSparseLod, type VDBThreeVolumeSource } from "@pmndrs/vdb/three";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { K6_SCENES, k6LoadAsset, k6SceneFrame, k6SparseBox, type K6Lighting } from "./k6-scenes.js";
 
@@ -46,7 +46,7 @@ const W = Number(params.get("w") ?? 1280);
 const H = Number(params.get("h") ?? 720);
 const FROXELS = (params.get("froxels") ?? "512x512x24").split("x").map(Number);
 const LIGHTING = (params.get("lighting") ?? "frame") as K6Lighting;
-const parseMs = (v: string): VDBFrameMultipleScattering => (v === "0" || v === "false" ? false : v === "1" || v === "true" ? true : (v as VDBFrameMultipleScattering));
+const parseMs = (v: string): VDBFrameMultipleScatteringMode => (v === "0" || v === "false" ? false : v === "1" || v === "true" ? true : (v as VDBFrameMultipleScatteringMode));
 const MS = parseMs(params.get("ms") ?? "1");
 const BACKGROUND = new THREE.Color(0x598eff);
 
