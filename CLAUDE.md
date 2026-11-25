@@ -448,9 +448,11 @@ From v1; details in docs/archive/handoffs/.
 - Push with `git push` (main tracks the `pmndrs` remote, `pmndrs/vdb`), never `git push origin`: `origin` is the old
   `DennisSmolek/WebVDB`, which has no Pages site, so its Pages run fails and `pmndrs/vdb` never gets the commit.
   Watch runs with `--repo pmndrs/vdb` (`gh` has no default repo here).
-- K6.Q1's shadowed ambient lives only in the grey kernels (the 4th grey transmittance target's z, w; the grey 'volume'
-  pairs). The spectral kernels (K6.4) have their own copies of the ambient / probe / hemisphere terms and ignore
-  `ambientOcclusion` (warned): a change to one lighting term must be made in both the grey and the spectral WGSL.
+- The spectral kernels (K6.4) have their own copies of the ambient / probe / hemisphere terms: a change to one lighting
+  term must be made in both the grey and the spectral WGSL (and both twins). K6.Q1a: with `ambientOcclusion` the
+  spectral group 0's sky entry HOLDS the visibilities (V up, V down of each channel) instead of the sky totals, so a
+  reader must not put it through `vdbFrameSpectralShadowTotal` then (grey keeps the sky totals in t0.xy and the
+  visibilities in t3.zw).
 - To render references while you edit `packages/vdb/src` (Vite would reload the page), run the report from a copy of the
   worktree (rsync without `.git`/`artifacts`, symlink the root `fixtures/`), then `--reuse` its `reference-*.json` here.
   Exclude `/fixtures` anchored: a bare `--exclude fixtures` also drops `packages/vdb/test/tools/fixtures/`, k3-frame's
@@ -510,3 +512,12 @@ From v1; details in docs/archive/handoffs/.
   worktree first.
 - The agent sandbox also refuses some Bash heredocs (a python edit script, a `cat >>` block): write the text to the
   scratchpad with the Write tool and run or append it by path.
+- K6.Q1a: WDAS's 'frame' bias vs the reference is mostly the 64³ shadow grid, not a lighting term: `shadowResolution` 128
+  takes WDAS sun-only from +22 % to +2 % and WDAS + probe (AO on) from +58 % to +27 % (= 'volume'). Rule the grid out
+  (`k6-scene ?shadowRes=128`) before blaming a 'frame' lighting term on a large sparse cloud.
+- k6-core probes can run with jitter on: `?aoJitter=<frameId>` turns on jitter + temporal and the twins take the
+  renderer's jitter (`Math.fround`); the IGN noise agrees within the 2-ulp gate on SwiftShader. A jitter-dependent term
+  needs such a probe: every other probe runs `jitter: false`.
+- Hardware k6-core probes (K6.4a): `node scripts/k6/k6-core-hardware.mjs <base> <query>…` (installed Chrome headless,
+  Metal) against a Vite server on a frozen copy. Metal has `texture-formats-tier1`, so `&tier1=1` runs the rg16float
+  alpha prefix there (SwiftShader never does). Don't quote its compile seconds: they are not timings.
