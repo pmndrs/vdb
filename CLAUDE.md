@@ -488,3 +488,8 @@ From v1; details in docs/archive/handoffs/.
   changed (its own readback). A first frame that must have the new mean awaits `source.refreshStats()` (demo 16).
 - `e2e/demo-0*.spec.ts-snapshots/*-chromium-linux.png` are Linux goldens: on macOS demo 06's panel text differs (3 % of
   pixels, text only). Check such a failure against the pre-change tree WITH the fixture before suspecting a change.
+- `pnpm k3:parity` exits 1 on the accepted V80 FAIL rows (12 isolated scenes), so its `&&` chain never runs
+  `compare-step7.mjs`: run that by hand for Step 7 (K6.10).
+- To re-render a "before" set from an older commit, `git archive <sha> | tar -x` into the scratchpad, `pnpm install`,
+  copy the git-ignored fixtures and the current `e2e/k6-frames.spec.ts` in, and give it its own `WEBVDB_E2E_PORT`
+  (K6.10 reproduced K6.8's 98/98 this way; the old tree still has the TSL path for core-vs-TSL A/Bs, `K6_CORE_AB=1`).
