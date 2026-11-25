@@ -453,3 +453,13 @@ From v1; details in docs/archive/handoffs/.
 - K6.Q1's shadowed ambient lives only in the grey kernels (the 4th grey transmittance target's z, w; the grey 'volume'
   pairs). The spectral kernels (K6.4) have their own copies of the ambient / probe / hemisphere terms and ignore
   `ambientOcclusion` (warned): a change to one lighting term must be made in both the grey and the spectral WGSL.
+- To render references while you edit `packages/vdb/src` (Vite would reload the page), run the report from a copy of the
+  worktree (rsync without `.git`/`artifacts`, symlink the root `fixtures/`), then `--reuse` its `reference-*.json` here.
+  Exclude `/fixtures` anchored: a bare `--exclude fixtures` also drops `packages/vdb/test/tools/fixtures/`, k3-frame's
+  `?url` import 500s, and `reference-report.mjs` waits forever (a module that fails to load never sets `done`).
+- V80 vs a real defect: render core and TSL with one froxel per pixel (`k3-frame ?w=640&h=360&froxels=640x360x24`).
+  The x, y filter of the prefix is then a no-op, so V80 differences vanish (K6.3a: core = TSL to 1/255) and anything left
+  is lighting. His froxels are 2.5 × 1.4 px at 1280 × 720, so V80 pixels sit on mostly vertical edges, 4–7 px inside
+  the pixels that equal the background (the cloud's fringe is several pixels of low coverage).
+- `URLSearchParams.get` returns the first value: `reference-report.mjs --query=ms=0` cannot override a parameter a row
+  already sets; add a group or row instead.

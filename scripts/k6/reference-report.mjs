@@ -10,6 +10,10 @@
 //            --port=5461 --base=http://127.0.0.1:5173 (reuse a server) --headless (installed Chrome without a window;
 //            check the adapter it reports) --swiftshader (bundled Chromium + SwiftShader: script debugging, never a result)
 //
+// K6.3a: groups v80-phase-g-low, v80-octave-extinction-high, v80-octaves-1 (his Step 4 strict-bar failures through the
+// core at 640 × 360, with columns for the pixels where core and TSL differ) and a 'multi-scale' σ = 2^k row
+// (`msSigma=paper`) in every scene group.
+//
 // Needs (local, git-ignored): fixtures/k3/bunny_cloud.wvdb, fixtures/k3-reference/75e7345/ (his captures + manifest),
 // fixtures/wdas/wdas_cloud_quarter_fp8.nvdb, fixtures/vdb-samples/smoke.vdb. Groups whose fixtures are missing are skipped.
 // Writes artifacts/k6-reference/<group>/*.png (reference, frames, his captures, heat maps) and report.{json,md}.
