@@ -135,7 +135,7 @@ From v1; details in docs/archive/handoffs/.
 - three r187 WebGPU `readRenderTargetPixelsAsync` returns rows **top first** (row 0 = `screenCoordinate.y` 0),
   padded to 256 bytes; don't flip them (the K3.0 `k3-dense` harness did until K3.2 fixed it, K3.1b).
 - three r187's TSL typings narrow node types and reject most ported shader code; the K3 frame files take TSL
-  through `const { … } = TSL as unknown as Record<string, VDBTslNode>` (untyped nodes, as `volume-source.ts`).
+  through `const { … } = TSL as unknown as Record<string, VDBTslNode>` (untyped nodes, as `grid-node.ts`'s `VDBTslNode`).
 - mjurczyk's examples page: every light setup keeps `scene.environment` (the HDR map), and a FrameVolume's
   `lights` bitmask includes the environment, so his `'dir'` scenes light volumes from the environment too.
   Strict Step 1 parity uses the `*-isolated` capture scenarios (lights = 8, other meshes hidden).
@@ -167,12 +167,6 @@ From v1; details in docs/archive/handoffs/.
   `onBeforeRender` reach each draw. Shared texture nodes swap `.value` per frame.
 - `readRenderTargetPixelsAsync(rt, x, y, w, h, textureIndex)` reads an MRT attachment; an `RGFormat` half target
   reads back 2 channels per texel (rows still padded to 256 bytes).
-- A three texture written by the GPU (K3.2a pyramid): `new Data3DTexture(null, w, h, d)`, `source.dataReady = false`,
-  `needsUpdate = true`, then `renderer.initTexture(t)` allocates its `GPUTexture` (`COPY_DST`) without an upload;
-  write it by copy into `getGPUTexture(renderer, t)`. Without `dataReady = false` three tries to upload the null image.
-- `vdbSparseSource`'s GPU pyramid rebuilds inside a render (the `pyramidLevel` uniform's render update) when the
-  density grid's `imageRevision` moved; that render must come after the `pool.update(encoder)` was submitted (as
-  `grids.update()`): a growth's copies sit in that encoder, and the rebuild is its own submit.
 - K6.8: the froxel renderer's GPU time is the core update's bracket (`VDBFrameRenderer.passHook.timestampWrites`, two
   empty compute passes carrying the writes; `examples/src/harness/k3-pass-timer.ts`); three's own render-pass timestamps
   give the rest (the scene and the composite). Chrome quantizes `timestamp-query` to 100 µs unless started with
@@ -219,8 +213,6 @@ From v1; details in docs/archive/handoffs/.
 - three r187 `texture.dispose()` destroys the `GPUTexture` at once (no deferral): a texture swapped out mid-render may
   still be bound by a pass recorded in that render. Retire it after `setTimeout(0)` + `queue.onSubmittedWorkDone()`
   (the sparse source's `relayout`).
-- `vdbVolumeUniforms(sparseSource)` registers listeners on the source: call `uniforms.dispose()` when done
-  (a `VDBFrameVolume` holds none since K6.8), or they live as long as the source.
 - `VDBSequence` ping-pong state is the clock anchor plus its direction (`startDir`); `_dir` is the direction at the
   SHOWN frame (a stalled target does not change it). Re-anchoring code must pass both, or a pause on the backward leg
   resumes forward. `stop()` drops only a clock-due pending frame: demo 12 does `seek(30)` then `stop()` for its paused
@@ -342,7 +334,6 @@ From v1; details in docs/archive/handoffs/.
   bound ACTIVE values only (`vdbReferenceMajorantGridSparse(…, { from: 'voxels' })` checks a grid).
 - His sRGB blend is not linear: the K6.R report's "composite − (1 − α)·background" goes negative where a volume is darker
   than the background (the luminance bias then reads 0). The K6.R1 report inverts the blend at the reference's α.
-- `froxelMix` acts in 'volume' lighting only ('frame' sums densities, V90): the V79 A/B is `?lighting=volume`.
 - WGSL `sin`/`cos` are only accurate to 2^-11 (absolute; SwiftShader shows ~1e-4). Anything that amplifies a direction
   error (a GGX lobe at roughness 0.4, Voronoi cell boundaries, nearest-texel picks) then differs from an f64 twin by
   %: the K6.2b environment kernels read texel directions and solid angles from f32 tables in the WGSL (and turn the
@@ -464,8 +455,8 @@ From v1; details in docs/archive/handoffs/.
 - `URLSearchParams.get` returns the first value: `reference-report.mjs --query=ms=0` cannot override a parameter a row
   already sets; add a group or row instead.
 - K6.8: `./three`'s froxel renderer is the core only (no `backend`, no TSL passes). The harnesses ignore `?backend=`;
-  `?occlusion=0` (his scenes: his renderer has no mesh → volume shadows), `?froxelMix=`, `?ao=`, `?msEdge=`, `?msSigma=` set
-  core settings. `VDBFrameRenderer.settings` IS the core's settings object (copied into `core.settings` each update): a
+  `?occlusion=0` (his scenes: his renderer has no mesh → volume shadows), `?ao=0|1` (default on since K6.11), `?msEdge=`,
+  `?msSigma=` set core settings. `VDBFrameRenderer.settings` IS the core's settings object (copied into `core.settings` each update): a
   new core setting needs no adapter code. `multiScaleEdge` / `multiScaleSigma` are internal (`VDBFrameInternalSettings`,
   `core/internal.ts`): the object has them, the public `VDBFrameSettings` type does not; set them with a cast.
 - K6.8 regression gate: `e2e/k6-frames.spec.ts` renders every K3/K6 scene through `./three` and compares with a saved
@@ -477,13 +468,13 @@ From v1; details in docs/archive/handoffs/.
   Regenerating it needs a pre-K6.8 tree (`aa7ea3e`).
 - K6.8 `VDBFrameVolume.emissionColor` is `VDBEmissionColor` data; a function (a 0.1 TSL hook) throws `VDB_BAD_OPTION`.
   His 'planck' with the CIE table (D33) is `{ lut: vdbFrameEmissionLutRow(0, vdbFrameBlackbodyTable(cie)) }`.
-- `vdbSparseSource` / `vdbDenseTextures` stay the `./three` source handles: the frame renderer reads their pool, ids, boxes
-  and stats into the core's own sources (`vdbSparseSourceGpu`, `vdbDenseSource`); their TSL nodes and GPU pyramid run
-  only for custom materials (`vdbVolumeNodes`). A harness that checks the TSL pyramid must sample through the nodes
-  (k3-pyramid `?three=1`), not through a `VDBFrameVolume`. K6.8a: that TSL half (`sparse-nodes.ts`) and a dense
-  source's three textures are made on first access (`source.pyramid`, `source.textures`, `vdbVolumeUniforms`): reading
-  them allocates, and a frame-only source's `gpuBytes.pyramid` is 0 (its LOD bytes are the core's:
-  `frameRenderer.coreVolumeOf(volume).slot.source.gpuBytes`, demo 15).
+- `vdbSparseSource` / `vdbDenseTextures` are `./three` source HANDLES with no GPU object (K6.11 deleted their TSL half:
+  `vdbVolumeUniforms` / `vdbVolumeNodes`, the three textures, the three-side pyramid): the frame renderer reads their
+  pool, ids, boxes and stats into the core's own sources (`vdbSparseSourceGpu`, `vdbDenseSource`), whose LOD bytes are
+  `frameRenderer.coreVolumeOf(volume).slot.source.gpuBytes` (demo 15). Nothing refreshes a handle's `stats` for you
+  now: `await source.refreshStats()` when the first frame must have the new mean (else the core slot re-reads it).
+  A harness that checks sparse or dense sampling reads the core sources (`k6-sparse`, `k3-dense`'s core probe, k6-core),
+  not three nodes; a custom material samples through `VDBGridNode`.
 - Dawn zero-fills a new texture through ONE staging buffer of its size (rows padded to 256 bytes): a texture over the
   device's `maxBufferSize` (256 MiB by default) fails the whole submit ("Buffer size … exceeds the max buffer size
   limit", an uncaptured error) and the frame silently loses its volumes. The core clamps `shadowResolution` for that
@@ -565,3 +556,21 @@ From v1; details in docs/archive/handoffs/.
 - A worktree-isolated agent's Bash refuses a command that mixes `git` with a heredoc, `sed -i` or several other steps
   ("too complex to verify that it stays inside the worktree"): run `git` on its own line, and edit through a script file
   in the scratchpad. The lead session's scratchpad is shared: name directories after the task (`k68b-base`, not `base`).
+- K6.11 (D35): `ambientOcclusion` is ON by default (4 pairs), so every harness that renders a scene with ambient /
+  hemisphere / probe / environment light now differs from a 0.1-era capture: add `?ao=0` (k3-frame, k6-scene, k3-timing,
+  k3-sparse, k3-frame-shadows, k6-occluders read it) or `K6_FRAMES_QUERY=ao=0` for `e2e/k6-frames.spec.ts` to get the
+  old frames (byte-identical). His-parity comparisons (`scripts/k3/compare.mjs` on `artifacts/k6/ours-core`) are his
+  unshadowed ambient: render them with `ao=0`. The k6-core probes set AO explicitly (`?ao=<pairs>`, 0 = off) and are
+  unaffected.
+- K6.11: `froxelMix` is gone (only the order-independent mixture is left). The k6-core `?mutate=mix` is now the twin's
+  order-dependent premultiplied "over" blend (a mutation-only code path in `k6-core-twin.ts`), still failing the gather probes.
+- K6.11: with `ambientOcclusion` on, a static un-jittered scene with `temporal` differs between frame 1 and frame 2 by a
+  rounding step (2 bytes of 1/255; `k3-frame` reports `inPageDiff`; `?ao=0`: identical), and with `jitter` + `temporal`
+  the ambient ring turns per frame by design (K6.Q1a), so a gate that compares temporal frames with the mean of
+  un-accumulated ones (K3.3, which now passes `ao=0`) sees the AO ring-average, not that mean. Byte-identity gates of
+  the 'frame' defaults (K3.4 `defaults=1`) accept ≤ 1/255 on a handful of bytes.
+- K6.11: `k6-core ?probe=frame&emissionColor=lut|hook` on a dense source needs `&groups=2` (one group gives B the source of
+  A, no emission channel: the mutation `emission-color` then does not fail). On Metal the 'frame' probe's transmittance
+  and stats exceed the 0.1 % bar already without the colour (hardware trilinear): compare with the baseline probe's
+  counts, not with zero.
+

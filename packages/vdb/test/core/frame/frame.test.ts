@@ -92,22 +92,22 @@ const sources = () => [vdbDenseSource(fakeDevice(), denseVolume({ albedo: true, 
 /** A user emission colour hook (K6.5): every top-level name starts with vdbUser. */
 const TEST_HOOK = "fn vdbUserEmissionColor(t: f32, temperature: f32) -> vec3f {\n  return vec3f(t, 0.5 * t, 0.25) * clamp(temperature / 3000.0, 0.0, 1.0);\n}\n";
 
-/** Every K6.1 pipeline (the key matrix): gather × mix × multi × source layout, resolve × temporal, composite × depth × sRGB. */
+/** Every K6.1 pipeline (the key matrix): gather × multi × source layout, resolve × temporal, composite × depth × sRGB. */
 function allSpecs(): { compute: VDBComputeSpec[]; render: VDBRenderSpec[] } {
   const compute: VDBComputeSpec[] = [];
   for (const s of sources()) {
-    for (const mix of ["mixture", "over"] as const) for (const multi of [false, true]) compute.push(vdbFrameGatherSpec(s, { mix, multi }));
+    for (const multi of [false, true]) compute.push(vdbFrameGatherSpec(s, { multi }));
     // K6.2 'frame' lighting: the fused gather and the shadow grid density per source layout
-    for (const multi of [false, true]) compute.push(vdbFrameGatherSpec(s, { mix: "mixture", multi, lighting: "frame" }), vdbFrameGridDensitySpec(s, { multi }));
+    for (const multi of [false, true]) compute.push(vdbFrameGatherSpec(s, { multi, lighting: "frame" }), vdbFrameGridDensitySpec(s, { multi }));
     // K6.4 spectral: both gathers and the spectral shadow grid
     for (const multi of [false, true]) {
-      for (const mix of ["mixture", "over"] as const) compute.push(vdbFrameGatherSpec(s, { mix, multi, spectral: true }));
-      compute.push(vdbFrameGatherSpec(s, { mix: "mixture", multi, lighting: "frame", spectral: true }), vdbFrameGridDensitySpec(s, { multi, spectral: true }));
+      compute.push(vdbFrameGatherSpec(s, { multi, spectral: true }));
+      compute.push(vdbFrameGatherSpec(s, { multi, lighting: "frame", spectral: true }), vdbFrameGridDensitySpec(s, { multi, spectral: true }));
     }
     // K6.5: the emission direction pass (sources with emission), with and without a user colour hook
     if (s.channels.emission) {
       compute.push(vdbFrameEmissionDirectionSpec(s, {}), vdbFrameEmissionDirectionSpec(s, { hook: TEST_HOOK }));
-      compute.push(vdbFrameGatherSpec(s, { mix: "mixture", multi: false, hook: TEST_HOOK }), vdbFrameGatherSpec(s, { mix: "mixture", multi: false, lighting: "frame", hook: TEST_HOOK }));
+      compute.push(vdbFrameGatherSpec(s, { multi: false, hook: TEST_HOOK }), vdbFrameGatherSpec(s, { multi: false, lighting: "frame", hook: TEST_HOOK }));
     }
   }
   compute.push(vdbFrameTransmittanceSpec(), vdbFrameResolveSpec({ temporal: false }), vdbFrameResolveSpec({ temporal: true }));
@@ -358,17 +358,16 @@ describe("K6.10a vdbFrameFitGridResolution (the transmittance stack must tile an
 });
 
 describe("K6.1 settings", () => {
-  it("./three's VDBFrameRenderer settings are the core defaults (K6.8: one declaration), with froxelMix, occlusion, the K6.3 / K6.3a multi-scale (internal) and the K6.Q1 ambient-occlusion fields", () => {
+  it("./three's VDBFrameRenderer settings are the core defaults (K6.8: one declaration), with occlusion, the K6.3 / K6.3a multi-scale (internal) and the K6.Q1 ambient-occlusion fields", () => {
     const core = vdbFrameDefaultSettings() as VDBFrameInternalSettings;
     const three = new VDBFrameRenderer().settings as unknown as Record<string, unknown>;
     expect(three).toEqual(core);
-    const { froxelMix, occlusion, multiScaleLevels, multiScaleEdge, multiScaleSigma, ambientOcclusion, ambientOcclusionPairs, ambientOcclusionSteps, multipleScattering } = core;
+    const { occlusion, multiScaleLevels, multiScaleEdge, multiScaleSigma, ambientOcclusion, ambientOcclusionPairs, ambientOcclusionSteps, multipleScattering } = core;
     // the defaults the owner decides (K6.8 keeps them: a one-line change here and in settings.ts)
     expect(multipleScattering).toBe("neural");
     expect([multiScaleLevels, multiScaleEdge, multiScaleSigma]).toEqual([6, "zero", "his"]);
     // K6.Q1: the shadowed ambient is off by default (his unshadowed ambient), 4 pairs, the volume's shadow steps
-    expect([ambientOcclusion, ambientOcclusionPairs, ambientOcclusionSteps]).toEqual([false, 4, 0]);
-    expect(froxelMix).toBe("mixture");
+    expect([ambientOcclusion, ambientOcclusionPairs, ambientOcclusionSteps]).toEqual([true, 4, 0]);
     // K6.5b: host occluder maps shadow the volumes by default (core only)
     expect(occlusion).toBe(true);
   });

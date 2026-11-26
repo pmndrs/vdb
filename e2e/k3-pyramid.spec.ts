@@ -8,8 +8,9 @@ import { expect, test, type Page } from "@playwright/test";
 // the r16f textures (examples/src/harness/k3-pyramid.ts). Gate: every base and atlas texel within
 // 1 f16 ulp (the f32 GPU sums vs the f64 CPU sums can only move a truncation by one step), no
 // validation errors; a pool.replace (sequence frame) marks it stale and the rebuild matches the CPU
-// pyramid of the new image; through three, vdbSparseSource's GPU textures match the CPU path's and
-// a render after a replace rebuilds exactly once.
+// pyramid of the new image. K6.11 (D35): the `?three=1` half (the three source's GPU-vs-CPU pyramid textures and the
+// TSL render that rebuilt them) went with vdbVolumeNodes; it now checks the vdbSparseSource handle across a replace
+// (version, stats read-back). The core source's pyramids: e2e/k6-sparse.spec.ts.
 const PAGE_URL = "/src/harness/k3-pyramid.html";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = (rel: string) => existsSync(path.join(repoRoot, "fixtures", rel));
@@ -29,13 +30,13 @@ interface Result {
   assets: { name: string; base: Compare; atlas: Compare | null; level: number; dimensions: number[]; gpuBytes: { textures: number; scratch: number } }[];
   sequence?: { staleBefore: boolean; rebuilt: boolean; staleAfter: boolean; again: boolean; base: Compare; atlas: Compare | null };
   three?: {
-    gpuVsCpu: { base: Compare; atlas: Compare | null };
-    buildsAfterCreate: number;
-    buildsAfterRender: number;
-    buildsAfterReplace: number;
-    buildsAfterSecondRender: number;
-    replaced: { base: Compare; atlas: Compare | null };
     versions: [number, number];
+    stats: {
+      before: { meanNonZero: number; max: number; activeVoxels: number };
+      after: { meanNonZero: number; max: number; activeVoxels: number };
+      expected: { meanNonZero: number; max: number; activeVoxels: number };
+      updates: number;
+    };
   };
   warnings: string[];
   uncaptured: string[];
@@ -61,7 +62,7 @@ function expectParity(c: Compare | null, what: string): void {
 
 test.describe.configure({ mode: "serial", timeout: 600_000 });
 
-test("K3.2a GPU pyramid = CPU pyramid (≤ 1 f16 ulp): cloud04 (L₀ 1 and 2), sphere Float/Fp8, sequence replace, three source", async ({ page }) => {
+test("K3.2a GPU pyramid = CPU pyramid (≤ 1 f16 ulp): cloud04 (L₀ 1 and 2), sphere Float/Fp8, sequence replace; the three source handle across a replace", async ({ page }) => {
   const primitives = fixture("primitives/sphere_fog_float.nvdb") && fixture("primitives/sphere_fog_fp8.nvdb") && fixture("primitives/torus_fog_float.nvdb");
   test.skip(!primitives, "fixtures missing: pnpm fixtures:bake");
   const r = await run(page, "?assets=sphere,cloud04,cloud04@32,sphere8&sequence=1&three=1&repeat=1");
@@ -87,21 +88,13 @@ test("K3.2a GPU pyramid = CPU pyramid (≤ 1 f16 ulp): cloud04 (L₀ 1 and 2), s
 
   const t = r.three!;
   expect(t, detail).toBeDefined();
-  expectParity(t.gpuVsCpu.base, `three base\n${detail}`);
-  expectParity(t.gpuVsCpu.atlas, `three atlas\n${detail}`);
-  // One build at creation (the grid is resident), none for a render without a change, one after the replace.
-  expect([t.buildsAfterCreate, t.buildsAfterRender, t.buildsAfterReplace, t.buildsAfterSecondRender], detail).toEqual([1, 1, 1, 2]);
-  expectParity(t.replaced.base, `three replaced base\n${detail}`);
-  expectParity(t.replaced.atlas, `three replaced atlas\n${detail}`);
   // The source's content version follows the grid's imageRevision ('frame' lighting redraws its shadow grid).
   expect(t.versions[1], detail).toBeGreaterThan(t.versions[0]);
   // K3.2e: the density mean (normalizeDensity) follows the replace: read back from the pool, the same stats as a
-  // source made from the new image, and the scale uniform divides by the new mean.
+  // source made from the new image.
   expect(t.stats.updates, detail).toBe(1);
   expect(t.stats.after, detail).toEqual(t.stats.expected);
   expect(t.stats.after.meanNonZero, detail).not.toBe(t.stats.before.meanNonZero);
-  expect(t.stats.scale[1], detail).toBe(t.stats.expectedScale);
-  expect(t.stats.scale[1], detail).not.toBe(t.stats.scale[0]);
 });
 
 test("K3.2a GPU pyramid = CPU pyramid on smoke.vdb (fractional box weights) and the sphere level set (inactive ±3 tiles: blocks with no active voxel read 0)", async ({ page }) => {

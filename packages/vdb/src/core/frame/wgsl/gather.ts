@@ -16,7 +16,7 @@
  * `vdbFrameGatherCs`: the 'volume'-lighting gather kernel (design §3.3, §3.4). One thread per froxel of
  * the dispatch box (the union of this frame's froxel area and what the scatter texture last held):
  * outside this frame's area it writes 0; inside it lights every volume of its source group in the froxel
- * (his inject pass) and combines them (`'mixture'` or `'over'`). CPU twins: tools/frame `vdbFrameInjectSlice`,
+ * (his inject pass) and combines them (order-independently: sums of optical depth and depth-weighted radiance). CPU twins: tools/frame `vdbFrameInjectSlice`,
  * `vdbFrameShadowMarch`, `vdbFrameShadowedLightColor`, `vdbFrameGatherFroxel`.
  */
 
@@ -28,8 +28,6 @@ import { VDB_FRAME_AMBIENT_MAX_PAIRS } from "../../../tools/frame/ambient.js";
 
 /** Pipeline-key options of the gather kernel. */
 export interface VDBFrameGatherOptions {
-  /** How volumes in one froxel combine. */
-  readonly mix: "mixture" | "over";
   /** More than one source group this frame: accumulate in the packed r32uint partials (design §3.2). */
   readonly multi: boolean;
   /** The source's channels (absent ones compile to constants). */
@@ -410,22 +408,13 @@ function vdbFrameSpectralGatherWgsl(o: VDBFrameGatherOptions): string {
     ...(o.multi ? [`@group(1) @binding(${b.partials}) var vdbFramePartials: texture_storage_3d<r32uint, read_write>;`] : []),
     vdbFrameOccluderWgsl(),
   ].join("\n");
-  const over = o.mix === "over";
-  // (light rgb, alpha rgb): 'over' premultiplied colour and alpha; 'mixture' Σ τL and Σ τ of each channel
-  const accumulate = over
-    ? `      sumL = r.radiance * r.alpha + sumL * (vec3f(1.0) - r.alpha);
-      sumA = r.alpha + sumA * (vec3f(1.0) - r.alpha);`
-    : `      let tau = -log(max(vec3f(1.0) - r.alpha, vec3f(VDB_FRAME_MIN_TRANSMITTANCE)));
+  // (light rgb, alpha rgb): Σ τL and Σ τ of each channel
+  const accumulate = `      let tau = -log(max(vec3f(1.0) - r.alpha, vec3f(VDB_FRAME_MIN_TRANSMITTANCE)));
       sumL += r.radiance * tau;
       sumA += tau;
       singleL = r.radiance * r.alpha;
       singleA = r.alpha;`;
-  const finish = over
-    ? `fn vdbFrameFinish(sumL: vec3f, sumA: vec3f, count: u32, singleL: vec3f, singleA: vec3f) {
-  vdbFrameStoreOut.l = sumL;
-  vdbFrameStoreOut.a = sumA;
-}`
-    : `fn vdbFrameFinish(sumL: vec3f, sumA: vec3f, count: u32, singleL: vec3f, singleA: vec3f) {
+  const finish = `fn vdbFrameFinish(sumL: vec3f, sumA: vec3f, count: u32, singleL: vec3f, singleA: vec3f) {
   if (count == 1u) {
     vdbFrameStoreOut.l = singleL;
     vdbFrameStoreOut.a = singleA;
@@ -435,12 +424,7 @@ function vdbFrameSpectralGatherWgsl(o: VDBFrameGatherOptions): string {
   vdbFrameStoreOut.l = select(vec3f(0.0), sumL / max(sumA, vec3f(1e-30)) * alpha, sumA > vec3f(0.0));
   vdbFrameStoreOut.a = alpha;
 }`;
-  const combine = over
-    ? `  let lL = sumL;
-  let lA = sumA;
-  sumL = lL + earlierL * (vec3f(1.0) - lA);
-  sumA = lA + earlierA * (vec3f(1.0) - lA);`
-    : `  sumL += earlierL;
+  const combine = `  sumL += earlierL;
   sumA += earlierA;`;
   const write = `  textureStore(vdbFrameScatter, cell, vec4f(vdbFrameStoreOut.l, vdbFrameStoreOut.a.y));
   textureStore(vdbFrameScatterAlpha, cell, vec4f(vdbFrameStoreOut.a.x, vdbFrameStoreOut.a.z, 0.0, vdbFrameStoreOut.a.y));`;
@@ -541,21 +525,12 @@ export function vdbFrameGatherWgsl(o: VDBFrameGatherOptions): string {
     vdbFrameOccluderWgsl(),
   ].join("\n");
 
-  const accumulate =
-    o.mix === "over"
-      ? `      // his premultiplied "over" blend, in record order
-      sum = vec4f(r.rgb * r.w + sum.rgb * (1.0 - r.w), r.w + sum.w * (1.0 - r.w));`
-      : `      // co-located media: sum optical depths and depth-weighted radiance
+  const accumulate = `      // co-located media: sum optical depths and depth-weighted radiance
       let tau = -log(max(1.0 - r.w, VDB_FRAME_MIN_TRANSMITTANCE));
       sum += vec4f(r.rgb * tau, tau);
       single = vec4f(r.rgb * r.w, r.w);`;
 
-  const finish =
-    o.mix === "over"
-      ? `fn vdbFrameFinish(sum: vec4f, count: u32, single: vec4f) -> vec4f {
-  return sum;
-}`
-      : `fn vdbFrameFinish(sum: vec4f, count: u32, single: vec4f) -> vec4f {
+  const finish = `fn vdbFrameFinish(sum: vec4f, count: u32, single: vec4f) -> vec4f {
   if (count == 1u) {
     return single;
   }
@@ -567,12 +542,7 @@ export function vdbFrameGatherWgsl(o: VDBFrameGatherOptions): string {
 }`;
 
   // Partials (multi-group): (sum.xy, sum.zw) as pack2x16float pairs at slice z and z + D.
-  const combine =
-    o.mix === "over"
-      ? `fn vdbFrameCombine(earlier: vec4f, later: vec4f) -> vec4f {
-  return vec4f(later.rgb + earlier.rgb * (1.0 - later.w), later.w + earlier.w * (1.0 - later.w));
-}`
-      : `fn vdbFrameCombine(earlier: vec4f, later: vec4f) -> vec4f {
+  const combine = `fn vdbFrameCombine(earlier: vec4f, later: vec4f) -> vec4f {
   return earlier + later;
 }`;
 

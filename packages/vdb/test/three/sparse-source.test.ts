@@ -1,11 +1,13 @@
 /**
  * K3.2: the sparse volume source's host side in Node (no GPU): option checks, the info it derives from
- * the pool (texels, LOD levels, stats, box maps, GPU bytes), the coarse pyramid, and VDBFrameVolume
- * taking it. The shaders run in e2e/k3-sparse.spec.ts.
+ * the pool (texels, LOD levels, stats, box maps, GPU bytes), and VDBFrameVolume taking it. K6.11 (D35): the source is a
+ * handle; its TSL half (uniforms, nodes, the three pyramid textures) and their tests are deleted; the core source's
+ * pyramids and WGSL run in e2e/k6-sparse.spec.ts.
  */
 
 import { describe, expect, it } from "vitest";
-import { VDBFrameRenderer, VDBFrameVolume, vdbSparseSource, vdbVolumeUniforms, type VDBGridNode } from "../../src/three/index.js";
+import { VDBFrameRenderer, VDBFrameVolume, vdbSparseSource, type VDBGridNode } from "../../src/three/index.js";
+import { vdbBoxPyramidLayout } from "../../src/tools/internal.js";
 import { readWvdb, vdbQuantize, vdbRoundToHalf, wvdbDenseToNvdb, wvdbDenseVolume } from "../../src/tools/index.js";
 import { fixture } from "../tools/wvdb-helpers.js";
 
@@ -28,16 +30,12 @@ describe("vdbSparseSource", () => {
   it("checks the VDBGridNode's profile and helpers, the LOD name and the stats input", () => {
     expect(() => vdbSparseSource(fakeGrids([], "sample"), { density: 0 }, { images: { density: grid.image } })).toThrow(/profile 'march'/);
     expect(() => vdbSparseSource(fakeGrids(["cellBoundTrilinear", "hddaCellEnd"]), { density: 0 }, { lod: "node-average", images: { density: grid.image } })).toThrow(/nodeAverage/);
-    // The default LOD is the coarse pyramid, built on the GPU by default (K3.2a): it needs the renderer, not the nodeAverage helper.
-    expect(() => vdbSparseSource(fakeGrids(["cellBoundTrilinear", "hddaCellEnd"]), { density: 0 }, { images: { density: grid.image } })).toThrow(/initialized WebGPURenderer/);
-    expect(vdbSparseSource(fakeGrids(["cellBoundTrilinear", "hddaCellEnd"]), { density: 0 }, { images: { density: grid.image }, pyramidBuild: "cpu" }).lod).toBe("coarse-pyramid");
-    expect(() => vdbSparseSource(fakeGrids(), { density: 0 }, { stats: { meanNonZero: 1, max: 1, activeVoxels: 1 } })).toThrow(/the default/);
-    expect(() => vdbSparseSource(fakeGrids(), { density: 0 }, { pyramidBuild: "cpu", stats: { meanNonZero: 1, max: 1, activeVoxels: 1 } })).toThrow(/images.density/);
-    expect(() => vdbSparseSource(fakeGrids(), { density: 0 }, { pyramidBuild: "gl" as never, images: { density: grid.image } })).toThrow(/unknown pyramidBuild/);
+    // The default LOD is the coarse pyramid (the core source builds it on the GPU: the handle needs no renderer).
+    expect(vdbSparseSource(fakeGrids(["cellBoundTrilinear", "hddaCellEnd"]), { density: 0 }, { images: { density: grid.image } }).lod).toBe("coarse-pyramid");
+    expect(() => vdbSparseSource(fakeGrids(), { density: 0 }, { stats: { meanNonZero: 1, max: 1, activeVoxels: 1 } })).not.toThrow();
     expect(() => vdbSparseSource(fakeGrids(["cellBoundTrilinear", "hddaCellEnd"]), { density: 0 }, { lod: "none", images: { density: grid.image } })).not.toThrow();
     expect(() => vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "mips" as never, images: { density: grid.image } })).toThrow(/unknown lod/);
     expect(() => vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "none" })).toThrow(/images.density/);
-    expect(() => vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "coarse-pyramid", stats: { meanNonZero: 1, max: 1, activeVoxels: 1 } })).toThrow(/coarse-pyramid/);
     expect(() => vdbSparseSource(fakeGrids(undefined, "march", false), { density: 0 }, { lod: "node-average", images: { density: grid.image } })).toThrow(/statistics/);
   });
 
@@ -57,7 +55,7 @@ describe("vdbSparseSource", () => {
     // World box: the cell box [−½, N − ½] through world = 2·ijk + (10, 20, 30).
     expect(s.bbox[0]).toEqual([9, 19, 29]);
     expect(s.bbox[1]).toEqual([10 + 2 * (dense.dimensions[0] - 0.5), 20 + 2 * (dense.dimensions[1] - 0.5), 30 + 2 * (dense.dimensions[2] - 0.5)]);
-    expect(s.gpuBytes).toEqual({ pool: 123_456, pyramid: 0, pyramidScratch: 0 });
+    expect(s.gpuBytes).toEqual({ pool: 123_456 });
     expect(s.channels).toEqual({ mask: false, albedo: false, emission: false });
   });
 
@@ -80,7 +78,7 @@ describe("vdbSparseSource", () => {
     expect(s.statsUpdates).toBe(0);
   });
 
-  it("K5.9a: the density uniform's render update keeps a per-draw value (densityScale works as on dense); a new mean is applied once, when its readback lands", async () => {
+  it("K3.2e / K5.9a: a new mean lands once, when its readback does, and VDBFrameVolume's density scale follows it (per-draw values hold)", async () => {
     // A pool with a revision, a device and a buffer: refreshStats reads the "replaced" image back (a fake map).
     const halved = wvdbDenseToNvdb({ ...dense, density: { ...dense.density, data: dense.density.data.map((b) => b >> 1) as Uint8Array<ArrayBuffer> } }).image;
     const pool = {
@@ -97,58 +95,43 @@ describe("vdbSparseSource", () => {
     const grids = { module: {}, options: { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd"] }, pool } as unknown as VDBGridNode;
     const s = vdbSparseSource(grids, { density: 0 }, { lod: "none", images: { density: grid.image } });
     const volume = new VDBFrameVolume(s, { frameRenderer: new VDBFrameRenderer() });
-    // K6.8: the frame renderer reads the source on the core side; the TSL uniforms are vdbVolumeUniforms' (custom materials)
-    const uniforms = vdbVolumeUniforms(s, { densityScale: 1 });
-    const u = uniforms.densityScale as unknown as { value: number; update(frame: unknown): void };
     const mean0 = s.stats.meanNonZero;
-    // The frame renderer writes the volume's scale before each draw (setVolumeUniforms); the render update follows.
     volume.densityScale = 3;
-    u.value = volume.getDensityScale();
-    u.update({});
-    expect(u.value).toBeCloseTo(3 / mean0, 9);
-    // An image change: the render update starts the readback; the new mean lands once, then per-draw values hold again.
+    expect(volume.getDensityScale()).toBeCloseTo(3 / mean0, 9);
+    // An image change: nothing reads it back by itself (K6.11); refreshStats does, once.
     pool.revision = 2;
     pool.imageRevision = 2;
-    u.update({});
-    await s.refreshStats();
+    expect(s.statsUpdates).toBe(0);
+    await expect(s.refreshStats()).resolves.toBe(true);
     expect(s.statsUpdates).toBe(1);
     const mean1 = s.stats.meanNonZero;
     expect(mean1).toBeLessThan(mean0 * 0.6);
-    expect(u.value).toBeCloseTo(1 / mean1, 6); // uniforms used directly: their own scale (1) over the new mean
-    u.value = volume.getDensityScale();
-    u.update({});
-    expect(u.value).toBeCloseTo(3 / mean1, 6);
-    uniforms.dispose();
+    expect(volume.getDensityScale()).toBeCloseTo(3 / mean1, 6);
+    await expect(s.refreshStats()).resolves.toBe(false); // nothing changed since
+    expect(s.statsUpdates).toBe(1);
     volume.dispose();
   });
 
-  it("LOD levels: node-average 7; coarse-pyramid L₀ + atlas levels, r16f bytes counted", () => {
+  it("LOD levels: node-average 7; coarse-pyramid L₀ + atlas levels (the pyramid layout's)", () => {
     expect(vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "node-average", images: { density: grid.image } }).lodLevels).toBe(7);
-    const p = vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "coarse-pyramid", pyramidBuild: "cpu", images: { density: grid.image }, indexBox: grid.textureIndexBox, pyramidMax: 32 });
+    const p = vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "coarse-pyramid", images: { density: grid.image }, indexBox: grid.textureIndexBox, pyramidMax: 32 });
     // 128 voxels on the longest side, pyramidMax 32: L₀ = 2, base 21x32x11, atlas 5 levels.
-    expect(p.pyramid!.level).toBe(2);
-    expect(p.pyramid!.dimensions).toEqual([21, 32, 11]);
-    expect(p.lodLevels).toBe(2 + p.pyramid!.atlas!.levels);
-    expect(p.gpuBytes.pyramid).toBe(2 * (21 * 32 * 11 + p.pyramid!.atlas!.data!.length));
-    expect(p.pyramid!.build).toBe("cpu");
-    expect(p.pyramidBuilds).toBe(0);
+    const layout = vdbBoxPyramidLayout(p.texels, { pyramidMax: 32 });
+    expect([layout.level, ...layout.dimensions]).toEqual([2, 21, 32, 11]);
+    expect(p.lodLevels).toBe(layout.lodLevels);
+    expect(p.lodLevels).toBe(2 + layout.atlas!.levels.length);
     p.dispose();
   });
 
-  it("VDBFrameVolume takes it: default box from the source, uniforms normalized by its mean", () => {
+  it("VDBFrameVolume takes it: default box from the source, density normalized by its mean", () => {
     const s = vdbSparseSource(fakeGrids(), { density: 0 }, { lod: "none", images: { density: grid.image } });
     const volume = new VDBFrameVolume(s, { frameRenderer: new VDBFrameRenderer() });
     expect(volume.meanDensity).toBe(s.stats.meanNonZero);
     expect(volume.hdda).toBe(false); // D30 / D31: off by default
-    const u = vdbVolumeUniforms(s, { densityScale: 2 });
-    expect(u.densityScale.value).toBeCloseTo(2 / s.stats.meanNonZero, 9);
-    u.update(s, { densityScale: 4 });
-    expect(u.densityScale.value).toBeCloseTo(4 / s.stats.meanNonZero, 9);
-    expect(u.mipLevels.density.value).toBe(0);
     volume.dispose();
   });
 
-  it("G16a followImage: a replaced image's boxes are re-read once it is resident; the uniforms and the volume's box follow", () => {
+  it("G16a followImage: a replaced image's boxes are re-read once it is resident; the volume's box follows", () => {
     // A pool id whose image is replaced by one with another box and voxel size (a coarse-first swap).
     const preview = { min: [0, 0, 0] as [number, number, number], max: [11, 23, 5] as [number, number, number] };
     const full = { min: [-2, 1, 0] as [number, number, number], max: [47, 95, 23] as [number, number, number] };
@@ -165,17 +148,13 @@ describe("vdbSparseSource", () => {
     for (const fixed of [{ indexBox: full }, { bbox: [[0, 0, 0], [1, 1, 1]] as [[number, number, number], [number, number, number]] }, { auxIndexBoxes: {} }]) {
       expect(() => vdbSparseSource(grids, { density: 0 }, { ...base, followImage: true, ...fixed })).toThrow(/followImage re-reads every box/);
     }
-    expect(() => vdbSparseSource(grids, { density: 0 }, { lod: "coarse-pyramid", pyramidBuild: "cpu", images: { density: grid.image }, followImage: true })).toThrow(/pyramidBuild 'gpu'/);
-
     const fixedSource = vdbSparseSource(grids, { density: 0 }, base);
     const s = vdbSparseSource(grids, { density: 0 }, { ...base, followImage: true });
     expect([s.followImage, fixedSource.followImage]).toEqual([true, false]);
     const volume = new VDBFrameVolume(s, { frameRenderer: new VDBFrameRenderer() });
-    const uniforms = vdbVolumeUniforms(s);
-    const u = uniforms as unknown as { boxes: { density: { min: { value: { toArray(): number[] } }; size: { value: { toArray(): number[] } } } }; gridTexels: { value: { toArray(): number[] } } };
     expect(s.version).toBe(1);
     expect(volume.bbox.min.toArray()).toEqual([-2, -2, -2]); // the preview's cell box [−½, max + ½] × 4
-    expect(u.gridTexels.value.toArray()).toEqual([12, 24, 6]);
+    expect(s.texels).toEqual([12, 24, 6]);
 
     // Replaced but not written yet: the GPU still holds the preview, so the boxes stay.
     pool.revision = 2;
@@ -194,9 +173,6 @@ describe("vdbSparseSource", () => {
       [-2.5, 0.5, -0.5],
       [47.5, 95.5, 23.5],
     ]);
-    expect(u.boxes.density.min.value.toArray()).toEqual([-2, 1, 0]);
-    expect(u.boxes.density.size.value.toArray()).toEqual([50, 95, 24]);
-    expect(u.gridTexels.value.toArray()).toEqual([50, 95, 24]);
     expect(volume.bbox.min.toArray()).toEqual([-2.5, 0.5, -0.5]);
     expect(volume.bbox.max.toArray()).toEqual([47.5, 95.5, 23.5]);
     // The unit box maps onto the new box: its centre and size.
@@ -209,7 +185,6 @@ describe("vdbSparseSource", () => {
     // Without followImage the box stays as made (the K3 behaviour: a sequence keeps the first frame's box).
     expect(fixedSource.indexBox).toEqual(preview);
     expect(fixedSource.version).toBe(2);
-    uniforms.dispose();
     volume.dispose();
   });
 
@@ -254,7 +229,7 @@ describe("vdbSparseSource", () => {
     expect(ok.layoutUpdates).toBe(1);
   });
 
-  it("K7.H: a Half density grid: compiled for 'half' it is accepted (stats and the CPU pyramid read the binary16 values); a float-only node refuses it", () => {
+  it("K7.H: a Half density grid: compiled for 'half' it is accepted (stats read the binary16 values); a float-only node refuses it", () => {
     const half = vdbQuantize(grid.image, "half");
     const pool = {
       revision: 1,
@@ -271,38 +246,13 @@ describe("vdbSparseSource", () => {
       return undefined;
     };
     expect(code(() => vdbSparseSource(node(["float"]), { density: 0 }, { lod: "none", images: { density: half } }))).toBe("VDB_TYPE_NOT_COMPILED");
-    const s = vdbSparseSource(node(["half"]), { density: 0 }, { pyramidBuild: "cpu", images: { density: half }, indexBox: grid.textureIndexBox });
-    const f = vdbSparseSource(fakeGrids(["cellBoundTrilinear", "hddaCellEnd"]), { density: 0 }, { pyramidBuild: "cpu", images: { density: grid.image }, indexBox: grid.textureIndexBox });
+    const s = vdbSparseSource(node(["half"]), { density: 0 }, { images: { density: half }, indexBox: grid.textureIndexBox });
+    const f = vdbSparseSource(fakeGrids(["cellBoundTrilinear", "hddaCellEnd"]), { density: 0 }, { images: { density: grid.image }, indexBox: grid.textureIndexBox });
     expect(s.lod).toBe("coarse-pyramid");
     expect(s.texels).toEqual(f.texels);
     expect(s.stats.activeVoxels).toBe(f.stats.activeVoxels);
     expect(s.stats.max).toBe(vdbRoundToHalf(f.stats.max));
     // Every value moves by at most half a binary16 ulp (relative 2^-11): so does the mean.
     expect(Math.abs(s.stats.meanNonZero / f.stats.meanNonZero - 1)).toBeLessThan(2 ** -11);
-  });
-
-  it("RV: uniforms dispose their listeners; volumes (K6.8: no TSL uniforms) add none", () => {
-    const pool = {
-      revision: 1,
-      info: () => ({ indexBBox: grid.indexBBox, indexToWorld: new Float64Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]), hasStats: true, capacity: 64, type: "float", imageRevision: 1, resident: true }),
-    };
-    const grids = { module: {}, options: { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd"] }, pool } as unknown as VDBGridNode;
-    const s = vdbSparseSource(grids, { density: 0 }, { lod: "none", images: { density: grid.image }, followImage: true });
-    const internals = () => (s as unknown as { internals(): { statsListeners: number; layoutListeners: number; nodes: boolean } }).internals();
-    const counts = () => [internals().statsListeners, internals().layoutListeners];
-    const frameRenderer = new VDBFrameRenderer();
-    const keep = new VDBFrameVolume(s, { frameRenderer });
-    expect(counts()).toEqual([0, 0]);
-    for (let i = 0; i < 50; i++) new VDBFrameVolume(s, { frameRenderer }).dispose();
-    expect(counts()).toEqual([0, 0]);
-    // K6.8a: frame volumes never make the TSL half (no pyramid, no nodes); the first custom-material use does
-    expect(internals().nodes).toBe(false);
-    const u = vdbVolumeUniforms(s);
-    expect(internals().nodes).toBe(true);
-    expect(counts()).toEqual([1, 1]);
-    u.dispose();
-    u.dispose(); // idempotent
-    expect(counts()).toEqual([0, 0]);
-    keep.dispose();
   });
 });

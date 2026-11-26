@@ -4,7 +4,7 @@
  *
  * - `?probe=view`: the source-free WGSL chunks (froxel view maths, noise, fade, box, lod, phase, shadow
  *   maths, slice coordinate, two-tap integrate, sRGB composite) vs their twins.
- * - `?probe=gather` (`&mix=mixture|over`, `&groups=1|2`, `&mips=0|1`): `update()` on two overlapping
+ * - `?probe=gather` (`&groups=1|2`, `&mips=0|1`): `update()` on two overlapping
  *   synthetic dense volumes (albedo, mask and emission channels; every light kind) → the scatter texture vs
  *   `gatherTwin` (his inject pass on the CPU dense sampler + `vdbFrameGatherFroxel`). `&swap=1`: counts
  *   `create*Pipeline*` / `createShaderModule` calls in a second identical update (must be 0).
@@ -15,7 +15,7 @@
  * - `?probe=compile`: every K6.1 pipeline variant compiles (`getCompilationInfo`, validation scope).
  * - K6.1c `?scene=<name>`: his Step 1 / Step 3 scenes (and k3-frame's CC0 `smoke`) rendered by the core on raw WebGPU,
  *   no three.js, through the host frame loop of demo 17 (`k6-raw-scene.ts`); `result.scene`, `width`, `height`, `rgba`.
- * - `?mutate=<term>`: flips one twin term (`mix`, `phase`, `extinction`, `fade`, `scan-stop`,
+ * - `?mutate=<term>`: flips one twin term (`mix`: the order-dependent "over" blend instead of the mixture, `phase`, `extinction`, `fade`, `scan-stop`,
  *   `temporal-clamp`, `coverage`, `taps`); the probe must then fail.
  *
  * Results: `window.__VDB_K6_CORE__` (e2e/k6-core.spec.ts).
@@ -853,8 +853,19 @@ const GATHER_LUT = Float32Array.from({ length: 256 * 3 }, (_, i) => {
 const GATHER_HOOK = "fn vdbUserEmissionColor(t: f32, temperature: f32) -> vec3f {\n  return vec3f(1.0 - 0.6 * t, 0.25 + t, temperature / 4000.0);\n}\n";
 const gatherHookTwin = (t: number, temperature: number): VDBFrameVec3 => [1 - 0.6 * t, 0.25 + t, temperature / 4000];
 
+/**
+ * K6.11 `&emissionColor=lut|hook` on the 'frame' probes (grey and spectral; the 'volume' gather probe has it since K6.10b):
+ * volume B's emission colour as params (a synthetic LUT row or a user WGSL hook) and as its twin (null: white;
+ * `?mutate=emission-color` drops it, so the probe must fail). A hook draws white until it validated: the probe awaits
+ * `renderer.prepare()` after adding the volumes.
+ */
+const frameEmissionColorKind = params.get("emissionColor");
+const frameEmissionColorParams = (): Partial<VDBFrameVolumeParams> =>
+  frameEmissionColorKind === "lut" ? { emissionColor: { lut: GATHER_LUT } } : frameEmissionColorKind === "hook" ? { emissionColor: { wgsl: GATHER_HOOK } } : {};
+const frameEmissionColorTwin = (): ((t: number, temperature: number) => VDBFrameVec3) | null =>
+  MUTATE === "emission-color" ? null : frameEmissionColorKind === "lut" ? (_t, temperature) => vdbFrameEmissionLutColor(GATHER_LUT, temperature) : frameEmissionColorKind === "hook" ? gatherHookTwin : null;
+
 async function probeGather(device: GPUDevice): Promise<void> {
-  const mix = (params.get("mix") ?? "mixture") as "mixture" | "over";
   const groups = Number(params.get("groups") ?? 1);
   const mips = params.get("mips") !== "0";
   const kind = params.get("source") === "sparse" ? "sparse" : "dense";
@@ -874,7 +885,6 @@ async function probeGather(device: GPUDevice): Promise<void> {
     temporal: AO_JITTER > 0,
     jitter: AO_JITTER > 0,
     ...MS_SETTINGS,
-    froxelMix: mix,
     ...AO_SETTINGS,
     phase: PHASE_NAME,
     fadeRadius: 9,
@@ -987,11 +997,11 @@ async function probeGather(device: GPUDevice): Promise<void> {
         const gpu = [scatter[i]!, scatter[i + 1]!, scatter[i + 2]!, scatter[i + 3]!];
         if (scatterAlpha) {
           // K6.4: both scatter textures vs the spectral twin
-          const cpu = gatherSpectralTwin(twinFrame, ordered, [x, y, z], mix, MUTATE);
+          const cpu = gatherSpectralTwin(twinFrame, ordered, [x, y, z], MUTATE);
           compare(stats, [x, y, z], [...gpu, scatterAlpha[i]!, scatterAlpha[i + 1]!, scatterAlpha[i + 2]!, scatterAlpha[i + 3]!], [...cpu.scatter, ...cpu.alpha], 2, 2 ** -20);
           continue;
         }
-        const cpu = gatherTwin(twinFrame, ordered, [x, y, z], mix, MUTATE);
+        const cpu = gatherTwin(twinFrame, ordered, [x, y, z], MUTATE);
         compare(stats, [x, y, z], gpu, cpu, 2, 2 ** -20);
       }
   result.stats = stats;
@@ -1108,6 +1118,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
     densityCutoff: 0.05,
     wrap3D: "mirror",
     offset3D: [0.1, 0, -0.05],
+    ...frameEmissionColorParams(),
   };
   // C: a caster that is not drawn (his collector: casters out of the view still shadow), between the sun and A; with
   // two cascades its box holds the camera, so the fine cascade around the camera is not empty
@@ -1116,6 +1127,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
   const b = renderer.addVolume(scene.slots[1]!, pB);
   const c = renderer.addVolume(scene.slots[2]!, pC);
   c.visible = false;
+  if (frameEmissionColorKind === "hook") await renderer.prepare(); // a hook draws white until it validated
   const eyeWorld = lookAt([3.2, 1.6, 4.4], [0.2, 0, 0]);
   const view = vdbMat4Invert(eyeWorld);
   const projection = perspective(0.75, GW / GH, 0.1, 100);
@@ -1175,7 +1187,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
   const records = handles.map((h, i) => {
     const cl = clips[i] ?? { localToView: vdbMat4Multiply(view, h.params.matrixWorld), viewToLocal: vdbMat4Invert(vdbMat4Multiply(view, h.params.matrixWorld)), worldToLocal: vdbMat4Invert(h.params.matrixWorld), viewNear: 0, viewFar: 0 };
     const rect = i < 2 ? vdbFrameFroxelRect(cl.localToView, projection, GW, GH)! : ([0, 0, 0, 0] as [number, number, number, number]);
-    return twinRecord(h, scene.samplers[i]!, cl, rect, i < 2 ? vdbFrameVolumeSlices(cl.viewNear, cl.viewFar, range, GD) : { first: 0, count: 0 }, 0.8);
+    return { ...twinRecord(h, scene.samplers[i]!, cl, rect, i < 2 ? vdbFrameVolumeSlices(cl.viewNear, cl.viewFar, range, GD) : { first: 0, count: 0 }, 0.8), emissionColor: i === 1 ? frameEmissionColorTwin() : null };
   });
   const readLod = (r: TwinVolume, lod: number) => (r.mipmaps ? lod : 0);
 
@@ -1361,7 +1373,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
             scatterColor: r.scatterColor,
             extinctionAt: (local, lod) => extinctionAt(r, local, readLod(r, lod), MUTATE),
             albedoAt: (local, lod) => albedoAt(r, local, readLod(r, lod)),
-            emissionAt: (local, lod) => emissionAt(r, local, readLod(r, lod)),
+            emissionAt: (local, lod) => emissionAt(r, local, readLod(r, lod), r.emissionColor ?? null),
             shadows: null,
             shadowsAt,
             sceneLightCount: MUTATE === "slots" ? 0 : sceneSlots,
@@ -1481,6 +1493,7 @@ async function probeFrameSpectral(device: GPUDevice): Promise<void> {
     densityCutoff: 0.05,
     wrap3D: "mirror",
     offset3D: [0.1, 0, -0.05],
+    ...frameEmissionColorParams(),
   };
   const pC: Partial<VDBFrameVolumeParams> = {
     matrixWorld: compose(cascades > 1 ? [1.6, 1.2, 2.4] : [0.6, 1.6, 0.4], 0.2, cascades > 1 ? [4, 2.4, 5] : [1.4, 0.5, 1.2]),
@@ -1494,6 +1507,7 @@ async function probeFrameSpectral(device: GPUDevice): Promise<void> {
   const b = renderer.addVolume(scene.slots[1]!, pB);
   const c = renderer.addVolume(scene.slots[2]!, pC);
   c.visible = false;
+  if (frameEmissionColorKind === "hook") await renderer.prepare(); // a hook draws white until it validated
   const eyeWorld = lookAt([3.2, 1.6, 4.4], [0.2, 0, 0]);
   const view = vdbMat4Invert(eyeWorld);
   const projection = perspective(0.75, GW / GH, 0.1, 100);
@@ -1541,7 +1555,7 @@ async function probeFrameSpectral(device: GPUDevice): Promise<void> {
   const records = handles.map((h, i) => {
     const cl = clips[i] ?? { localToView: vdbMat4Multiply(view, h.params.matrixWorld), viewToLocal: vdbMat4Invert(vdbMat4Multiply(view, h.params.matrixWorld)), worldToLocal: vdbMat4Invert(h.params.matrixWorld), viewNear: 0, viewFar: 0 };
     const rect = i < 2 ? vdbFrameFroxelRect(cl.localToView, projection, GW, GH)! : ([0, 0, 0, 0] as [number, number, number, number]);
-    return { ...twinRecord(h, scene.samplers[i]!, cl, rect, i < 2 ? vdbFrameVolumeSlices(cl.viewNear, cl.viewFar, range, GD) : { first: 0, count: 0 }, 0.8), extinctionSpectrum: spectrumOf(h) };
+    return { ...twinRecord(h, scene.samplers[i]!, cl, rect, i < 2 ? vdbFrameVolumeSlices(cl.viewNear, cl.viewFar, range, GD) : { first: 0, count: 0 }, 0.8), extinctionSpectrum: spectrumOf(h), emissionColor: i === 1 ? frameEmissionColorTwin() : null };
   });
   const readLod = (r: TwinVolume, lod: number) => (r.mipmaps ? lod : 0);
   const at = (t: VDBFrameTexture3d, p: readonly number[]) => {
@@ -1689,7 +1703,7 @@ async function probeFrameSpectral(device: GPUDevice): Promise<void> {
             extinctionSpectrum: r.extinctionSpectrum,
             extinctionAt: (local, lod) => extinctionAt(r, local, readLod(r, lod), MUTATE),
             albedoAt: (local, lod) => albedoAt(r, local, readLod(r, lod)),
-            emissionAt: (local, lod) => emissionAt(r, local, readLod(r, lod)),
+            emissionAt: (local, lod) => emissionAt(r, local, readLod(r, lod), r.emissionColor ?? null),
             environmentAt: environment
               ? (world, local, albedo) => {
                   const outward = MUTATE !== "env-outward" && Math.hypot(...local) > 1e-4 ? normalizeV(mat3Of(eyeWorld, mat3Of(r.localToView, local))) : ([0, 1, 0] as VDBFrameVec3);
@@ -2968,12 +2982,12 @@ async function probeCompile(device: GPUDevice): Promise<void> {
   const fx = await sparseFixture(device);
   const sparse = vdbSparseSourceGpu(fx.pool, { types: ["float"], maxVolumes: 8, label: "k6 compile" });
   sparse.volume({ density: fx.ids.d2, mask: fx.ids.m, albedo: fx.ids.r, emission: fx.ids.e }, { image: fx.images.get(fx.ids.d2)! });
-  // K6.4 `&spectral=1`: the spectral variants only (the gathers 'volume' mixture / over and 'frame', the spectral shadow
+  // K6.4 `&spectral=1`: the spectral variants only (the gathers (volume) and 'frame', the spectral shadow
   // grid, transmittance, environment grid, shadow map and resolve in both alpha prefix formats the device has)
   const spectralSpecs = [
     ...[vdbDenseSource(device, vol), vdbDenseSource(device, plain), sparse].flatMap((s) => [
-      ...(["mixture", "over"] as const).flatMap((mix) => [false, true].map((multi) => vdbFrameGatherSpec(s, { mix, multi, spectral: true }))),
-      ...[false, true].map((multi) => vdbFrameGatherSpec(s, { mix: "mixture", multi, lighting: "frame", spectral: true })),
+      ...[false, true].map((multi) => vdbFrameGatherSpec(s, { multi, spectral: true })),
+      ...[false, true].map((multi) => vdbFrameGatherSpec(s, { multi, lighting: "frame", spectral: true })),
       ...[false, true].map((multi) => vdbFrameGridDensitySpec(s, { multi, spectral: true })),
     ]),
     vdbFrameTransmittanceSpec({ spectral: true }),
@@ -2983,8 +2997,8 @@ async function probeCompile(device: GPUDevice): Promise<void> {
   ];
   const greySpecs = [
     ...[vdbDenseSource(device, vol), vdbDenseSource(device, plain), sparse].flatMap((s) => [
-      ...(["mixture", "over"] as const).flatMap((mix) => [false, true].map((multi) => vdbFrameGatherSpec(s, { mix, multi }))),
-      ...[false, true].map((multi) => vdbFrameGatherSpec(s, { mix: "mixture", multi, lighting: "frame" })),
+      ...[false, true].map((multi) => vdbFrameGatherSpec(s, { multi })),
+      ...[false, true].map((multi) => vdbFrameGatherSpec(s, { multi, lighting: "frame" })),
       ...[false, true].map((multi) => vdbFrameGridDensitySpec(s, { multi })),
     ]),
     vdbFrameTransmittanceSpec(),
@@ -3009,8 +3023,8 @@ async function probeCompile(device: GPUDevice): Promise<void> {
     ...[vdbDenseSource(device, vol), sparse].flatMap((s) => [
       vdbFrameEmissionDirectionSpec(s, {}),
       vdbFrameEmissionDirectionSpec(s, { hook: COMPILE_HOOK }),
-      vdbFrameGatherSpec(s, { mix: "mixture", multi: true, hook: COMPILE_HOOK }),
-      vdbFrameGatherSpec(s, { mix: "mixture", multi: true, lighting: "frame", hook: COMPILE_HOOK }),
+      vdbFrameGatherSpec(s, { multi: true, hook: COMPILE_HOOK }),
+      vdbFrameGatherSpec(s, { multi: true, lighting: "frame", hook: COMPILE_HOOK }),
     ]),
   ];
   const specs = SPECTRAL ? spectralSpecs : greySpecs;

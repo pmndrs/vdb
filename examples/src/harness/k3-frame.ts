@@ -21,7 +21,7 @@
  * twin probes are gone; the core kernels' twins are in k6-core).
  *
  * Other query: `?w=&h=`, `?froxels=WxHxD`, `?substeps=`, `?shadowSteps=`, `?ms=0|1`, `?mips=0`,
- * `?occluder=1` (an opaque box in front of the volume centre), `?novolume=1`, `?file=`, `?froxelMix=`, `?msEdge=`,
+ * `?occluder=1` (an opaque box in front of the volume centre), `?novolume=1`, `?file=`, `?msEdge=`,
  * `?msLevels=`, `?ao=1&aoPairs=&aoSteps=`, `?occlusion=0` (core settings).
  *
  * K3.3 ('frame' lighting, R1 §6 Step 3): `?lighting=frame` (his Step 3 scenes set it: `step3-default`,
@@ -322,6 +322,8 @@ interface Result {
   /** Screen rectangle of the volume box in pixels (top-left origin): x0, y0, x1, y1. */
   volumeRect?: number[];
   inPageIdentical?: boolean;
+  /** K6.11: max |first − second| (8-bit) and the number of differing bytes. */
+  inPageDiff?: { max: number; count: number };
   nonBackground?: number;
   timings?: { provisional: true; note: string; sceneMs: number | null; froxelsMs: number | null; fullMs: number | null; integrateMs: number | null; passes?: Record<string, number | null> };
   warnings: string[];
@@ -339,7 +341,6 @@ interface Result {
   temporalCheck?: { frames: number; diffsOff: number[]; diffsOn: number[]; psnrSingleVsMean: number; psnrTemporalVsMean: number; volumePixels: number };
   // K6.1 (K6.8: always the core)
   backend?: "core";
-  froxelMix?: "mixture" | "over";
   // K3.5
   spectral?: boolean;
   medium?: string | null;
@@ -705,10 +706,9 @@ async function main(): Promise<void> {
   renderer.setSize(W, H, false);
 
   const frameRenderer = new VDBFrameRenderer();
-  // K6.1 `?froxelMix=mixture|over`; K6.3 `?msEdge=zero|clamp`, `?msLevels=` ('multi-scale'); K6.Q1 `?ao=1`, `?aoPairs=`,
+  // K6.3 `?msEdge=zero|clamp`, `?msLevels=` ('multi-scale'); K6.Q1 `?ao=0|1` (default on, D35), `?aoPairs=`,
   // `?aoSteps=` (shadowed ambient); K6.5b `?occlusion=0` (no mesh → volume shadows: his renderer has none)
   const s = frameRenderer.settings;
-  s.froxelMix = params.get("froxelMix") === "over" ? "over" : "mixture";
   if (params.has("msEdge")) Object.assign(s, { multiScaleEdge: params.get("msEdge") === "clamp" ? "clamp" : "zero" });
   if (params.has("msLevels")) s.multiScaleLevels = Number(params.get("msLevels"));
   // K6.3a `?msSigma=paper`: the σ = 2^k levels (an internal core setting, VDBFrameInternalSettings)
@@ -720,7 +720,6 @@ async function main(): Promise<void> {
   if (params.has("ambientProbe")) Object.assign(s, { ambientProbe: params.get("ambientProbe") === "radiance" ? "radiance" : "irradiance" });
   if (params.get("occlusion") === "0") s.occlusion = false;
   result.backend = "core";
-  result.froxelMix = s.froxelMix;
   Object.assign(frameRenderer.settings, {
     width: FROXELS[0],
     height: FROXELS[1],
@@ -1045,6 +1044,17 @@ async function main(): Promise<void> {
   const first = toDisplay(firstLinear);
   const second = toDisplay(await frame());
   result.inPageIdentical = first.length === second.length && first.every((v, i) => v === second[i]);
+  // K6.11: how much the second frame differs (8-bit values; a static scene with temporal accumulation and the default AO)
+  {
+    let max = 0;
+    let count = 0;
+    for (let i = 0; i < first.length; i++) {
+      const d = Math.abs(first[i]! - second[i]!);
+      if (d > 0) count++;
+      max = Math.max(max, d);
+    }
+    result.inPageDiff = { max, count };
+  }
   const bg = BACKGROUND.clone().convertLinearToSRGB();
   const bgBytes = [bg.r, bg.g, bg.b].map((v) => Math.round(v * 255));
   let nonBackground = 0;

@@ -25,6 +25,8 @@ const BASE = process.env.K6_FRAMES_BASELINE ? path.resolve(process.env.K6_FRAMES
 const MAX = Number(process.env.K6_FRAMES_MAX ?? 2);
 const SHARE = Number(process.env.K6_FRAMES_SHARE ?? 0.001);
 const ONLY = process.env.K6_FRAMES_ONLY ?? "";
+// K6.11: `K6_FRAMES_QUERY=ao=0` appends a query parameter to every harness page (the harnesses read `?ao=`: the AO-off identity check)
+const EXTRA_QUERY = process.env.K6_FRAMES_QUERY ?? "";
 
 interface Frame {
   name: string;
@@ -107,7 +109,7 @@ const FRAMES: Frame[] = [
   k3("smoke-volume", "?w=320&h=192&froxels=160x96x24&lighting=volume", ""),
   k3("smoke-frame", "?w=320&h=192&froxels=160x96x24&lighting=frame", ""),
   k3("smoke-frame-sparse", "?w=320&h=192&froxels=160x96x24&lighting=frame&source=sparse", ""),
-  ...STEP1.map((s) => k3(`${s}-volume`, `?scene=${s}&lighting=volume&froxelMix=mixture`, BUNNY, s)),
+  ...STEP1.map((s) => k3(`${s}-volume`, `?scene=${s}&lighting=volume`, BUNNY, s)),
   ...STEP3.map(([s, src]) => k3(`${s}-${src}`, `?scene=${s}&source=${src}`, BUNNY, src === "dense" ? s : undefined)),
   ...STEP4.map((s) => k3(s, `?scene=${s}`, BUNNY, s)),
   ...STEP5.map((s) => k3(s, `?scene=${s}`, BUNNY, s)),
@@ -154,7 +156,7 @@ interface Row {
 const rows: Row[] = [];
 
 async function render(page: Page, f: Frame): Promise<Record<string, unknown>> {
-  await page.goto(f.url);
+  await page.goto(EXTRA_QUERY ? `${f.url}${f.url.includes("?") ? "&" : "?"}${EXTRA_QUERY}` : f.url);
   await page.waitForFunction((g) => (window as unknown as Record<string, { done?: boolean } | undefined>)[g]?.done === true, f.global, { timeout: f.timeout ?? 1_800_000 });
   return (await page.evaluate((g) => (window as unknown as Record<string, unknown>)[g], f.global)) as Record<string, unknown>;
 }

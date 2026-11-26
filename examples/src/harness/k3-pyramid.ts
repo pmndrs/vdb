@@ -15,18 +15,17 @@
  *   `timestamp-query`, else queue-synchronised wall time) and CPU builds (median).
  * - `?sequence=1`: replace the grid with another image (pool.replace), check `stale`, rebuild, compare
  *   with the CPU pyramid of the new image over the same index box.
- * - `?three=1`: `vdbSparseSource` with `pyramidBuild: 'gpu'` vs `'cpu'` on cloud04 (the three textures
- *   behind both), then a `pool.replace` picked up by a render (the source's per-render refresh). K6.8: the render is a
- *   quad sampling the source's TSL nodes (`vdbVolumeNodes`, a custom-material host): the frame renderer draws through
- *   the core's own sparse source (its pyramids: e2e/k6-sparse.spec.ts).
+ * - `?three=1`: the `vdbSparseSource` handle on cloud04 across a `pool.replace`: its content `version` moves and
+ *   `refreshStats()` reads the new image back (K3.2e). K6.11 (D35): the three pyramid textures, their GPU-vs-CPU
+ *   comparison and the TSL render that rebuilt them went with `vdbVolumeNodes`; the core source's own pyramids (build
+ *   on creation, rebuild once per image change) are checked by e2e/k6-sparse.spec.ts.
  * Results: `window.__VDB_K3_PYRAMID__` (e2e/k3-pyramid.spec.ts, scripts/k3/time-hardware.mjs).
  */
 import * as THREE from "three";
 import { installWgslPatch, type VDBWgslPatches } from "./wgsl-patch.js";
-import { NodeMaterial, WebGPURenderer } from "three/webgpu";
-import * as TSL from "three/tsl";
+import { WebGPURenderer } from "three/webgpu";
 import { VDBGridPool, vdbCreateBoxPyramid, type VDBBoxPyramidGpu } from "@pmndrs/vdb";
-import { VDBGridNode, getGPUTexture, vdbSparseSource, vdbVolumeNodes, vdbVolumeUniforms, type VDBTslNode } from "@pmndrs/vdb/three";
+import { VDBGridNode, vdbSparseSource } from "@pmndrs/vdb/three";
 import { NvdbFile, buildFromVdb, parseVdb, readWvdb, vdbBoxPyramid, wvdbDenseToNvdb, wvdbDenseVolume } from "../../../packages/vdb/src/tools/internal.js";
 import cloudWvdbUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
 
@@ -70,23 +69,14 @@ interface Result {
   assets: AssetResult[];
   sequence?: { staleBefore: boolean; rebuilt: boolean; staleAfter: boolean; again: boolean; base: Compare; atlas: Compare | null };
   three?: {
-    gpuVsCpu: { base: Compare; atlas: Compare | null };
-    buildsAfterCreate: number;
-    buildsAfterRender: number;
-    buildsAfterReplace: number;
-    buildsAfterSecondRender: number;
-    replaced: { base: Compare; atlas: Compare | null };
     /** The source's content version before and after the replace (the 'frame' caster signature reads it). */
     versions: [number, number];
-    gpuBytes: { pool: number; pyramid: number; pyramidScratch: number };
-    /** K3.2e: the density stats before the replace, after it (read back from the pool), a fresh source's on the new image, and the scale uniform. */
+    /** K3.2e: the density stats before the replace, after it (read back from the pool), and a fresh source's on the new image. */
     stats: {
       before: { meanNonZero: number; max: number; activeVoxels: number };
       after: { meanNonZero: number; max: number; activeVoxels: number };
       expected: { meanNonZero: number; max: number; activeVoxels: number };
       updates: number;
-      scale: [number, number];
-      expectedScale: number;
     };
   };
   warnings: string[];
@@ -345,92 +335,38 @@ async function main(): Promise<void> {
   for (const w of result.warnings) log(`warning: ${w}`, "warn");
 }
 
-/** vdbSparseSource with the GPU pyramid vs the CPU one; then a replace picked up by a render. */
+/** The vdbSparseSource handle across a pool.replace: version moves, refreshStats reads the new image back. */
 async function threeCheck(device: GPUDevice): Promise<void> {
   const cloud = await loadAsset("cloud04");
   const renderer = new WebGPURenderer({ device });
   await renderer.init();
-  renderer.setSize(160, 90, false);
   const pool = await VDBGridPool.create(device, { label: "k3-pyramid three" });
   const id = pool.add(cloud.image);
   pool.flush();
   await pool.settled();
   const grids = new VDBGridNode(renderer, pool, { profile: "march", helpers: ["cellBoundTrilinear", "hddaCellEnd"] });
-  const common = { images: { density: cloud.image }, indexBox: cloud.indexBox!, pyramidMax: 32 };
-  const gpuSource = vdbSparseSource(grids, { density: id }, { ...common, pyramidBuild: "gpu" });
-  const cpuSource = vdbSparseSource(grids, { density: id }, { ...common, pyramidBuild: "cpu" });
+  const source = vdbSparseSource(grids, { density: id }, { images: { density: cloud.image }, indexBox: cloud.indexBox!, pyramidMax: 32 });
   await device.queue.onSubmittedWorkDone();
-  const g = gpuSource.pyramid!;
-  const c = cpuSource.pyramid!;
-  const readThree = (t: THREE.Data3DTexture) => readHalfTexture(device, getGPUTexture(renderer, t));
-  const gpuVsCpu = {
-    base: compare(await readThree(g.map), c.map.image.data as Uint16Array),
-    atlas: g.mip && c.mip ? compare(await readThree(g.mip), c.mip.image.data as Uint16Array) : null,
-  };
-  const buildsAfterCreate = gpuSource.pyramidBuilds;
 
-  // A render that samples the pyramid through the source's TSL nodes (a slice at a coarse level): no rebuild (nothing changed).
-  const { Fn, float, positionGeometry, screenUV, vec3, vec4 } = TSL as unknown as Record<string, VDBTslNode>;
-  const uniforms = vdbVolumeUniforms(gpuSource, { extinction: 40, densityScale: 1, normalizeDensity: true });
-  const nodes = vdbVolumeNodes(gpuSource, uniforms, { useMipmaps: true });
-  const material = new NodeMaterial();
-  material.vertexNode = vec4(positionGeometry.xy, 0.0, 1.0);
-  material.fragmentNode = Fn(() => vec4(vec3(nodes.sampleExtinction(vec3(screenUV.x.sub(0.5), screenUV.y.sub(0.5), 0.0), float(1.5))), 1.0))();
-  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
-  quad.frustumCulled = false;
-  const scene = new THREE.Scene();
-  scene.add(quad);
-  const camera = new THREE.OrthographicCamera();
-  const rt = new THREE.RenderTarget(160, 90, { type: THREE.HalfFloatType });
-  const render = async () => {
-    renderer.setRenderTarget(rt);
-    renderer.render(scene, camera);
-    renderer.setRenderTarget(null);
-    await device.queue.onSubmittedWorkDone();
-  };
-  await render();
-  const buildsAfterRender = gpuSource.pyramidBuilds;
-
-  // A sequence frame: replace the grid (same box: the cloud with its density halved), update the pool, render.
+  // A sequence frame: replace the grid (same box: the cloud with its density halved), update the pool.
   const half = wvdbDenseVolume(readWvdb(new Uint8Array(await fetchBytes(cloudWvdbUrl))), { mipmaps: false });
   const halfData = half.density.data as Uint8Array;
   for (let i = 0; i < halfData.length; i++) halfData[i] = halfData[i]! >> 1;
   const next = wvdbDenseToNvdb(half).image;
-  const versionBefore = gpuSource.version;
-  const scaleBefore = uniforms.densityScale.value as number;
+  const versionBefore = source.version;
   pool.replace(id, next);
   pool.flush();
   grids.update();
-  const buildsAfterReplace = gpuSource.pyramidBuilds;
-  await render();
-  const buildsAfterSecondRender = gpuSource.pyramidBuilds;
-  // K3.2e: the render after the replace started a readback of the new image; its mean reaches the scale (K5.9a: when
-  // the readback lands, and every draw after through VDBFrameVolume.getDensityScale).
-  const statsBefore = { ...cpuSource.stats };
-  await gpuSource.refreshStats();
-  await render();
+  await device.queue.onSubmittedWorkDone();
+  // K3.2e: nothing refreshes the stats by itself now; the read-back of the new image gives the new mean.
+  const statsBefore = { ...source.stats };
+  await source.refreshStats();
   const fresh = vdbSparseSource(grids, { density: id }, { images: { density: next }, indexBox: cloud.indexBox!, lod: "none" });
-  const stats = {
-    before: statsBefore,
-    after: { ...gpuSource.stats },
-    expected: { ...fresh.stats },
-    updates: gpuSource.statsUpdates,
-    scale: [scaleBefore, uniforms.densityScale.value as number] as [number, number],
-    expectedScale: 1 / fresh.stats.meanNonZero,
-  };
+  const stats = { before: statsBefore, after: { ...source.stats }, expected: { ...fresh.stats }, updates: source.statsUpdates };
   fresh.dispose();
-  const cpuNext = cpuPyramid(next, cloud.indexBox!, 32);
-  const replaced = {
-    base: compare(await readThree(g.map), cpuNext.base),
-    atlas: g.mip && cpuNext.atlas ? compare(await readThree(g.mip), cpuNext.atlas) : null,
-  };
-  result.three = { gpuVsCpu, buildsAfterCreate, buildsAfterRender, buildsAfterReplace, buildsAfterSecondRender, replaced, versions: [versionBefore, gpuSource.version], gpuBytes: { ...gpuSource.gpuBytes }, stats };
-  log(`three: ${JSON.stringify(result.three)}`, gpuVsCpu.base.over === 0 && replaced.base.over === 0 && buildsAfterSecondRender === 2 ? "ok" : "fail");
-  uniforms.dispose();
-  material.dispose();
-  gpuSource.dispose();
-  cpuSource.dispose();
-  rt.dispose();
+  result.three = { versions: [versionBefore, source.version], stats };
+  log(`three: ${JSON.stringify(result.three)}`, source.version > versionBefore && source.statsUpdates === 1 ? "ok" : "fail");
+  source.dispose();
 }
 
 main()

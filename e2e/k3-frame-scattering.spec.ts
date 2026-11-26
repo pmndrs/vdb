@@ -53,6 +53,7 @@ interface Result {
   height?: number;
   rgba?: string;
   inPageIdentical?: boolean;
+  inPageDiff?: { max: number; count: number };
   nonBackground?: number;
   firstFrameMs?: number;
   settings?: Record<string, unknown>;
@@ -227,7 +228,14 @@ test("K3.4 defaults (V33): 'frame' lighting + temporal + 'neural' render cleanly
   const q = "?w=160&h=96&froxels=96x64x24&lighting=frame&lights=dir-hemi&defaults=1";
   const r = await run(page, q);
   const detail = detailOf(r);
-  expectClean(r);
+  // K6.11 (D35): the defaults now include `ambientOcclusion`. With temporal accumulation it makes the second frame of a
+  // static, un-jittered scene differ from the first by a rounding step (2 bytes of 1/255 here; 0 with `&ao=0`), so the
+  // in-page repeat is "within 1/255" instead of byte-identical; two page loads stay byte-identical (below).
+  expect(r.error, detail).toBeUndefined();
+  expect(r.uncaptured, detail).toEqual([]);
+  expect(r.warnings, detail).toEqual([]);
+  expect(r.inPageDiff!.max, detail).toBeLessThanOrEqual(1);
+  expect(r.inPageDiff!.count, detail).toBeLessThan(0.001 * r.width! * r.height! * 4);
   expect([r.settings!.lighting, r.settings!.temporal, r.settings!.multipleScattering], detail).toEqual(["frame", true, "neural"]);
   expect(r.nonBackground!, detail).toBeGreaterThan(1_500);
   const again = await run(page, q);

@@ -10,7 +10,7 @@ import {
   type WvdbVec3,
 } from "../../src/tools/internal.js";
 import { vdbDenseSource } from "../../src/core/index.js";
-import { vdbDenseTextures, vdbVolumeUniforms } from "../../src/three/index.js";
+import { vdbDenseTextures } from "../../src/three/index.js";
 import { bytesEqual, fixture, hisAsset, readBytes } from "./wvdb-helpers.js";
 
 /*
@@ -498,31 +498,12 @@ async function expectSameUpload(bytes: Uint8Array, opts: { grid?: string; scales
     expect(bytesEqual(ours.density.mip!.data, his.mipTexture.data)).toBe(true);
   } else expect(ours.density.mip).toBeNull();
 
-  // three: the Data3DTextures his FrameVolume makes, and the mip uniforms
+  // three (K6.11: a handle, no textures): the sizes, LOD levels and density mean the frame volume reads from it; the
+  // texture bytes, formats and sampler are the core upload checked below
   const three = vdbDenseTextures(ours);
-  const t = three.textures.density!;
-  for (const [mine, theirs] of [[t.map, his.texture], [t.mip, his.mipTexture]] as const) {
-    if (!theirs) {
-      expect(mine).toBeNull();
-      continue;
-    }
-    const img = mine!.image as { data: Uint8Array; width: number; height: number; depth: number };
-    expect([img.width, img.height, img.depth]).toEqual([theirs.width, theirs.height, theirs.depth]);
-    expect(bytesEqual(img.data, theirs.data)).toBe(true);
-    expect(mine!.format).toBe(theirs.format);
-    expect(mine!.type).toBe(THREE.UnsignedByteType);
-    expect(mine!.minFilter).toBe(theirs.minFilter);
-    expect(mine!.magFilter).toBe(theirs.magFilter);
-    expect(mine!.generateMipmaps).toBe(theirs.generateMipmaps);
-    expect(mine!.unpackAlignment).toBe(theirs.unpackAlignment);
-    // Data3DTexture defaults: clamp to edge on all three axes (his createTexture3D never changes them)
-    expect([mine!.wrapS, mine!.wrapT, mine!.wrapR]).toEqual([THREE.ClampToEdgeWrapping, THREE.ClampToEdgeWrapping, THREE.ClampToEdgeWrapping]);
-  }
-  const u = vdbVolumeUniforms(three);
-  expect(u.gridTexels.value.toArray()).toEqual(his.uniforms.frameGridTexels);
-  expect(u.mipAtlasSize.value.toArray()).toEqual(his.uniforms.frameMipAtlasSize);
-  expect(u.mipLevels.density.value).toBe(his.uniforms.frameDensityMipLevels);
-  expect(u.densityScale.value).toBe(his.uniforms.frameDensityScale);
+  expect(three.texels).toEqual(his.uniforms.frameGridTexels);
+  expect(three.lodLevels).toBe(his.uniforms.frameDensityMipLevels);
+  expect(three.stats.meanNonZero).toBe(his.meanDensity);
 
   // core: the raw WebGPU upload (r8unorm, his bytes, tight rows, linear clamp sampler)
   const fake = textureFake();
@@ -616,7 +597,6 @@ describe("dense .wvdb source uploads his bytes (static re-implementation of his 
     expect(ours.albedo!.format).toBe("rgba8unorm");
     expect(bytesEqual(ours.albedo!.data, his.texture.data)).toBe(true);
     expect(bytesEqual(ours.albedo!.mip!.data, his.mipTexture!.data)).toBe(true);
-    expect(vdbDenseTextures(ours).textures.albedo!.map.format).toBe(THREE.RGBAFormat);
   });
 
   const his = (name: string) => hisAsset(name);

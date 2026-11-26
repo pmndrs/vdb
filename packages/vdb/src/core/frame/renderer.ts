@@ -402,7 +402,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
       if (source.channels.emission) for (const v of this.#volumes) if (v.slot.source === source) hooks.add(this.#colors.codeOf(v.params.emissionColor).hook);
       for (const hook of hooks) {
         for (const multi of [false, true]) {
-          for (const lighting of modes) jobs.push(prepareCompute(this.device, vdbFrameGatherSpec(source, { mix: this.settings.froxelMix, multi, maxVolumes: this.#maxVolumes, lighting, hook, spectral })));
+          for (const lighting of modes) jobs.push(prepareCompute(this.device, vdbFrameGatherSpec(source, { multi, maxVolumes: this.#maxVolumes, lighting, hook, spectral })));
         }
         if (source.channels.emission) jobs.push(prepareCompute(this.device, vdbFrameEmissionDirectionSpec(source, { maxVolumes: this.#maxVolumes, hook })));
       }
@@ -721,7 +721,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
     if (emission) this.#recordEmission(pass, group0, groups, emission, lut);
     if (tex && area) {
       gatherGroups.forEach((g) => {
-        const built = computePipeline(this.device, vdbFrameGatherSpec(g.source, { mix: s.froxelMix, multi, maxVolumes: this.#maxVolumes, lighting: s.lighting, hook: g.hook, spectral }));
+        const built = computePipeline(this.device, vdbFrameGatherSpec(g.source, { multi, maxVolumes: this.#maxVolumes, lighting: s.lighting, hook: g.hook, spectral }));
         pass.setPipeline(built.pipeline);
         pass.setBindGroup(0, group0);
         pass.setBindGroup(1, this.#gatherBind(built.layouts[1]!, tex, multi, frameLighting, g.source.channels.emission ? lut : null), [groups.indexOf(g) * VDB_FRAME_GROUP_STRIDE]);

@@ -1,5 +1,7 @@
-// The source half of mjurczyk/openvdb's createVolumeUniforms / createVolumeNodes (MIT, commit 75e7345) is ported in
-// ./sparse-nodes.ts (K6.8a: the TSL half of this source); this file is the handle.
+// Portions derived from mjurczyk/openvdb (MIT), commit 75e7345 (v0.26.0): the source half of createVolumeUniforms /
+// createVolumeNodes (frameShaderChunks.js L729–763, L834–1028), whose sparse-grid port (the TSL half) was deleted in K6.11
+// (D35); this file is the handle the core's sparse source is made from.
+// Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Divergences: DIVERGES.md (K3.2 rows), V23–V25, V145.
 
 /**
@@ -10,29 +12,28 @@
  *   const source = vdbSparseSource(grids, { density: id }, { lod: "coarse-pyramid", images: { density: image } });
  *   const volume = new VDBFrameVolume(source, { extinction: 100 });   // box: the grid's world box
  *
- * K6.8a: the source is a handle (grids, ids, options, boxes, stats, the image-follow state). `VDBFrameRenderer` reads it
- * into the core's sparse source (`vdbSparseSourceGpu`), which builds its own pyramids and reads the grids itself. The
- * TSL half below (`vdbVolumeUniforms` / `vdbVolumeNodes` for custom TSL materials, with this source's own coarse pyramid
- * textures; ./sparse-nodes.ts) is made the first time a custom material asks for it, so a source only a `VDBFrameVolume`
- * draws holds no pyramid and builds none.
+ * K6.8a / K6.11: the source is a handle (grids, ids, options, boxes, stats, the image-follow state). `VDBFrameRenderer`
+ * reads it into the core's sparse source (`vdbSparseSourceGpu`), which builds its own pyramids and reads the grids itself.
+ * The handle holds no GPU object. (Custom TSL materials sample a pooled grid through `VDBGridNode`; custom WGSL or compute
+ * uses the core source's `wgsl()`.)
  *
  * Positions are his local unit box [-0.5, 0.5]³; uvw = local + 0.5 (+ offset, wrapped) maps onto the
  * channel grid's index cell box `[min − ½, max + ½]` (voxel centres at integers), so uvw
  * (i + 0.5) / N lands on voxel min + i as on a dense texel centre. The sample position is clamped to
- * `[min, max]` (his clamp-to-edge). Level 0 is the pool's trilinear `vdbSample`; with the node helper
+ * `[min, max]` (his clamp-to-edge). Level 0 is the pool's trilinear sample; with the node helper
  * `'fastTrilinear'` (recommended, K3.2d) it is `vdbSampleFast` through one accessor per shader invocation
- * (`cacheAccessor`): the same values, 1.5–2× faster on the hardware GPU (docs/archive/handoffs/K3-2d.md).
+ * (`cacheAccessor`): the same values, 1.5–2× faster on the hardware GPU (docs/archive/handoffs/K3-2d.md). (The core's
+ * sparse source reads these options.)
  *
  * LOD (`lod`, his `sampleExtinction(localPos, lod)` at lod ≥ 1; R1 §4.3):
  * - `'none'`: level 0 always (no prefilter; aliases when a froxel spans many voxels). lodLevels 0.
  * - `'coarse-pyramid'` (default, the K3.2 A/B pick): a dense r16f pyramid from L₀ = max(1, ⌈log2(maxTexels / pyramidMax)⌉):
  *   the base is a box resample of the grid, the levels above it his box mip atlas. lod in (0, L₀)
  *   blends level 0 toward L₀; lod ≥ L₀ samples the pyramid as his mip atlas. GPU bytes: ~2 B × (base
- *   + atlas) texels. Built on the GPU from the pool grid by default (`pyramidBuild: 'gpu'`, K3.2a: the
- *   core's `vdbCreateBoxPyramid`, no CPU image needed) and rebuilt when the grid's image changes
- *   (`pool.replace`: a sequence frame), checked once per render that samples it; `'cpu'` keeps the
- *   K3.2 path (`@pmndrs/vdb/tools` `vdbBoxPyramid` from `images.density`, static). Both give the same
- *   texels to ≤ 1 f16 ulp (e2e/k3-pyramid.spec.ts).
+ *   + atlas) texels. The core's sparse source builds it on the GPU from the pool grid (K3.2a: the core's
+ *   `vdbCreateBoxPyramid`, no CPU image needed) and rebuilds it when the grid's image changes
+ *   (`pool.replace`: a sequence frame). K6.11: the CPU build (`pyramidBuild: 'cpu'`, the three textures' static path) is
+ *   deleted; `@pmndrs/vdb/tools` `vdbBoxPyramid` stays the GPU build's CPU twin.
  * - `'node-average'`: no extra memory: trilinear over the node averages (`vdbNodeAverage`) at
  *   level 3 (leaves, the exact 8³ box mean for fog leaves) and level 7 (lower nodes, the mean of
  *   their active voxels); lod in (0, 3) blends level 0 → 3, (3, 7) blends 3 → 7. Needs stats.
@@ -43,24 +44,18 @@
  * Following the image (`followImage`, G16a): the index boxes, world box and pyramid are fixed when the source is
  * made unless it follows the grids' images. Then a `pool.replace` that changes a channel grid's box (a coarse-first
  * swap: the preview, then the full grid in the same id) is re-read from `pool.info` once the new image is resident:
- * new box uniforms, a new GPU pyramid of the new size (its textures swapped into the same texture nodes), the LOD
- * range as a uniform, and a new `version`, which a `VDBFrameVolume` follows with its box. No shader is rebuilt, and the
- * pyramid kernels of every type the `VDBGridNode` decodes are compiled up front.
+ * the new layout, the LOD range and a new `version`, which a `VDBFrameVolume` follows with its box. No shader is rebuilt.
  *
  * Mask, albedo and emission grids (optional, scalar; albedo may be three grids for RGB) are read at
  * level 0 only. One VDB module per shader: every grid goes through the one `VDBGridNode`.
  */
 
-import type * as THREE from "three";
 import { VDBError } from "../core/errors.js";
 import type { VDBVolumeChannels } from "../core/source/types.js";
-import type { VDBBoxPyramidGpu } from "../core/compute/pyramid.js";
 import { vdbBoxPyramidLayout } from "../tools/frame/pyramid-layout.js";
-import { webgpuBackendOf } from "./device.js";
 import { leafVoxels, treeNodes } from "../tools/cpu/march.js";
-import type { VDBGridNode, VDBTslNode } from "./grid-node.js";
-import type { VDBThreeSourceFactory, VDBVolumeNodes, VDBVolumeNodesOptions, VDBVolumeUniformParameters, VDBVolumeUniforms } from "./volume-source.js";
-import { VDBSparseNodes, type VDBSparseHandle } from "./sparse-nodes.js";
+import type { VDBGridNode } from "./grid-node.js";
+import type { VDBVolumeSourceInfo } from "../core/source/types.js";
 
 type Vec3 = [number, number, number];
 
@@ -96,16 +91,9 @@ export interface VDBSparseSourceOptions {
   lod?: VDBSparseLod;
   /** `'coarse-pyramid'`: base level texels on the longest side at most (default 128). */
   pyramidMax?: number;
-  /**
-   * `'coarse-pyramid'`: where the pyramid is built. `'gpu'` (default, K3.2a): a compute pass over the
-   * pool grid on the renderer's device (the core's `vdbCreateBoxPyramid`), rebuilt when the grid's
-   * `imageRevision` changes; needs an initialized WebGPURenderer behind the `VDBGridNode`. `'cpu'`:
-   * `vdbBoxPyramid` from `images.density` (the K3.2 path, static; the GPU build's twin).
-   */
-  pyramidBuild?: "gpu" | "cpu";
   /** `'none'` (default): raw floats. `'clamp01'`: clamp each density sample to [0, 1] (his 8-bit range; parity A/B). */
   normalize?: "none" | "clamp01";
-  /** CPU copies of the grid images: the density stats (and a `pyramidBuild: 'cpu'` pyramid) read `density`. */
+  /** CPU copies of the grid images: the density stats read `density`. */
   images?: { density?: Uint32Array };
   /**
    * Density stats (`normalizeDensity` divides by `meanNonZero`). Default: computed from `images.density`.
@@ -145,7 +133,7 @@ export interface VDBSparseSourceOptions {
    * levels are uniforms in this mode, so nothing recompiles; give the `VDBGridNode` every grid type the images will
    * have (`types`, e.g. `VDBCoarseFirstEvent.types`): a new image of a type the node does not compile throws
    * `VDB_TYPE_NOT_COMPILED` when the source re-reads it (it would read 0). Default false: the boxes are fixed when the
-   * source is made. Not with `indexBox`, `auxIndexBoxes`, `bbox` or `pyramidBuild: 'cpu'`.
+   * source is made. Not with `indexBox`, `auxIndexBoxes` or `bbox`.
    */
   followImage?: boolean;
 }
@@ -155,30 +143,12 @@ interface PoolInfoLike {
   info(id: number): { indexBBox: { min: Vec3; max: Vec3 }; indexToWorld: Float64Array; hasStats: boolean; capacity: number; type: string; imageRevision?: number; resident?: boolean };
 }
 
-/** The coarse pyramid of a `'coarse-pyramid'` sparse source. */
-export interface VDBSparsePyramid {
-  /** Where it was built (see `pyramidBuild`). */
-  readonly build: "gpu" | "cpu";
-  /** L₀: the base level in level-0 voxels. */
-  readonly level: number;
-  /** Texels of the base level. */
-  readonly dimensions: [number, number, number];
-  /** His atlas of the levels above the base (null for a 1³ base); `data` on the CPU path only. */
-  readonly atlas: { readonly dimensions: [number, number, number]; readonly levels: number; readonly data?: Float32Array } | null;
-  /** L₀ + atlas levels. */
-  readonly lodLevels: number;
-  /** The base level's f32 texels (CPU path only). */
-  readonly data?: Float32Array;
-  /** r16f textures: the base level and the atlas. */
-  readonly map: THREE.Data3DTexture;
-  /** r16f texture of the atlas of the levels above the base, or null for a 1x1x1 base. */
-  readonly mip: THREE.Data3DTexture | null;
-  /** The core GPU pyramid writing into `map` / `mip` (GPU path), else null. */
-  readonly gpu: VDBBoxPyramidGpu | null;
-}
-
 /** The sparse source in three. */
-export interface VDBThreeSparseSource extends VDBThreeSourceFactory {
+export interface VDBThreeSparseSource extends VDBVolumeSourceInfo {
+  /** Always `"sparse"`. */
+  readonly kind: "sparse";
+  /** World box of the volume (`[min, max]`), the default `VDBFrameVolume` box. */
+  readonly bbox: [[number, number, number], [number, number, number]];
   /** The grid node the source reads through. */
   readonly grids: VDBGridNode;
   /** The pool ids of the channels. */
@@ -189,11 +159,6 @@ export interface VDBThreeSparseSource extends VDBThreeSourceFactory {
   readonly normalize: "none" | "clamp01";
   /** The density index box the unit box covers. */
   readonly indexBox: VDBIndexBox;
-  /**
-   * `'coarse-pyramid'` only: the custom-material pyramid and its textures. K6.8a: made (and built) on first use, here or
-   * by `vdbVolumeUniforms` / `vdbVolumeNodes`; `VDBFrameVolume` never reads it (the core source has its own).
-   */
-  readonly pyramid: VDBSparsePyramid | null;
   /** K3.2d: level 0 through `vdbSampleFast` (see the option). */
   readonly fastTrilinear: boolean;
   /** K3.2d: one accessor per invocation across samples (see the option). */
@@ -203,13 +168,10 @@ export interface VDBThreeSparseSource extends VDBThreeSourceFactory {
   /** G16a: times the boxes (and the pyramid, if its size changed) were re-read after an image change. */
   readonly layoutUpdates: number;
   /**
-   * GPU bytes: the grids' pool capacity, the custom-material pyramid textures (r16f) and the GPU build's scratch
-   * buffers (kept for rebuilds; 0 on the CPU path). K6.8a: the pyramid's are 0 until a custom material made it; a
-   * `VDBFrameVolume`'s LOD bytes are the core source's (demo 15: `frameRenderer.coreVolumeOf(volume).slot.source.gpuBytes`).
+   * GPU bytes of the channel grids' pool ranges. The LOD pyramid is the core source's (demo 15:
+   * `frameRenderer.coreVolumeOf(volume).slot.source.gpuBytes`).
    */
-  readonly gpuBytes: { readonly pool: number; readonly pyramid: number; readonly pyramidScratch: number };
-  /** GPU pyramid builds recorded so far (the first, then one per image change; 0 until the pyramid is made). */
-  readonly pyramidBuilds: number;
+  readonly gpuBytes: { readonly pool: number };
   /** Density stats (`normalizeDensity`'s `meanNonZero`): of the density image at creation, then of the latest one read back (K3.2e). */
   readonly stats: { readonly meanNonZero: number; readonly max: number; readonly activeVoxels: number };
   /** Times the stats were recomputed after an image change (K3.2e). */
@@ -217,41 +179,13 @@ export interface VDBThreeSparseSource extends VDBThreeSourceFactory {
   /**
    * K3.2e: if the density grid's image changed since the stats were computed and it is resident, reads it
    * back from the pool (own encoder, submitted) and recomputes the stats (tools' twin of the CPU path);
-   * resolves to whether it did. Renders call it themselves (the density scale uniform's render update) and
-   * apply the new mean to the uniforms when the readback lands (K5.9a: a per-draw value, e.g. `VDBFrameVolume.densityScale`, is never overwritten); call it after `pool.update` was
-   * submitted, as `grids.update()`.
+   * resolves to whether it did. K6.11: nothing calls it for you (the TSL uniforms that did are deleted); `VDBFrameRenderer`
+   * copies a changed `stats` into its core slot, which otherwise re-reads the mean itself a frame or two later. Call it
+   * after `pool.update` was submitted, as `grids.update()`; await it when the first frame needs the new mean.
    */
   refreshStats(): Promise<boolean>;
-  /**
-   * GPU path: rebuilds the pyramid now (own encoder, submitted) if the density grid's image changed
-   * since the last build and it is resident; returns whether it did (false before the pyramid is made). Renders that
-   * sample the pyramid call it themselves; call it after `pool.update` was submitted, as `grids.update()`.
-   */
-  refreshPyramid(): boolean;
-  /**
-   * The source's WGSL helpers as `wgslFn` nodes (including the grid module), for probes and tests:
-   * `vdbFrameNodeAverage(g, p, dim) -> f32` (CPU twin `tools` `vdbFrameNodeAverageSample`) and
-   * `vdbFrameSkipEmpty(g, o, d, t0, t1, cutoff, dilate) -> vec2f` (twin `vdbFrameSkipEmpty`).
-   */
-  nodeAverageFn(): VDBTslNode;
-  /** The HDDA empty-space query as a `wgslFn` node (see {@link nodeAverageFn}). */
-  skipEmptyFn(): VDBTslNode;
-  /** Frees the pyramid textures and drops the listeners. */
+  /** Drops the listeners. */
   dispose(): void;
-}
-
-/** Uniforms of a sparse source: his `VDBVolumeUniforms` plus the channel boxes and pyramid sizes. */
-export interface VDBSparseVolumeUniforms extends VDBVolumeUniforms {
-  /** Per channel: index min and size of the index box (voxels). */
-  readonly boxes: Readonly<Record<"density" | "mask" | "albedo" | "emission", { min: VDBTslNode; size: VDBTslNode } | null>>;
-  /** The pyramid's base level L0 (see {@link VDBSparsePyramid.level}); levels below it read the grid itself. */
-  readonly pyramidLevel: VDBTslNode;
-  /** Levels in the pyramid (base plus atlas). */
-  readonly pyramidLevels: VDBTslNode;
-  /** Texel size of the pyramid base level. */
-  readonly pyramidTexels: VDBTslNode;
-  /** Texel size of the pyramid atlas. */
-  readonly pyramidAtlasSize: VDBTslNode;
 }
 
 const bad = (message: string) => new VDBError("VDB_BAD_OPTION", `vdbSparseSource: ${message}`);
@@ -303,10 +237,9 @@ const texelsOf = (b: VDBIndexBox): Vec3 => [b.max[0] - b.min[0] + 1, b.max[1] - 
 
 /**
  * The handle (K6.8a): grids, ids, options, boxes, stats and the image-follow state. The frame renderer reads these into
- * the core's sparse source; the TSL half (pyramid textures, uniforms, nodes: ./sparse-nodes.ts) is made the first time a
- * custom material asks for it.
+ * the core's sparse source.
  */
-class SparseSource implements VDBThreeSparseSource, VDBSparseHandle {
+class SparseSource implements VDBThreeSparseSource {
   readonly kind = "sparse" as const;
   readonly grids: VDBGridNode;
   readonly ids: Readonly<VDBSparseSourceGrids>;
@@ -325,22 +258,17 @@ class SparseSource implements VDBThreeSparseSource, VDBSparseHandle {
   readonly fastTrilinear: boolean;
   readonly cacheAccessor: boolean;
   readonly followImage: boolean;
-  readonly pyramidOptions: { readonly build: "gpu" | "cpu"; readonly pyramidMax?: number; readonly image: Uint32Array | null };
+  readonly pyramidOptions: { readonly pyramidMax?: number };
   layoutUpdates = 0;
-  /** The TSL half, made on first use (`nodes()`). */
-  #nodes: VDBSparseNodes | null = null;
   /** G16a: the newest channel imageRevision the layout describes, the pool revision last checked. */
   #layoutRevision = -1;
   #layoutPoolRevision = -1;
-  readonly #layoutListeners = new Set<() => void>();
   readonly #poolIds: number[];
   #versionSeen = { poolRevision: -1, value: 0 };
   /** K3.2e: the density imageRevision the stats describe, the pool revision last checked, and a readback in flight. */
   #statsRevision = -1;
   #statsPoolRevisionSeen = -1;
   #statsReadback: Promise<boolean> | null = null;
-  /** K5.9a: each of this source's uniforms re-applies its density scale with the new mean when a readback lands. */
-  readonly #statsListeners = new Set<() => void>();
 
   constructor(grids: VDBGridNode, ids: VDBSparseSourceGrids, o: VDBSparseSourceOptions) {
     const pool = grids.pool as unknown as Partial<PoolInfoLike>;
@@ -367,7 +295,6 @@ class SparseSource implements VDBThreeSparseSource, VDBSparseHandle {
     if (followImage) {
       const fixed = (["indexBox", "auxIndexBoxes", "bbox"] as const).filter((k) => o[k] !== undefined);
       if (fixed.length) throw bad(`followImage re-reads every box from the pool; drop ${fixed.join(", ")} (fixed boxes).`);
-      if (lod === "coarse-pyramid" && o.pyramidBuild === "cpu") throw bad("followImage rebuilds the pyramid from the pool on the GPU; use pyramidBuild 'gpu' (the default).");
     }
     this.followImage = followImage;
     const density = info(ids.density);
@@ -399,22 +326,7 @@ class SparseSource implements VDBThreeSparseSource, VDBSparseHandle {
     this.boxToSource = boxToSourceOf(b, this.texels);
     this.bbox = o.bbox ? [[...o.bbox[0]], [...o.bbox[1]]] : worldBox(b, density.indexToWorld);
 
-    // The coarse pyramid's options, checked now; its textures belong to the TSL half (made on first use).
-    const build = o.pyramidBuild ?? "gpu";
-    if (lod === "coarse-pyramid") {
-      if (build !== "gpu" && build !== "cpu") throw bad(`unknown pyramidBuild ${JSON.stringify(build)}; use 'gpu' or 'cpu'.`);
-      if (build === "cpu" && !image) throw bad("pyramidBuild 'cpu' builds the pyramid from images.density; pass it, or use pyramidBuild 'gpu' (the default).");
-      if (build === "gpu") {
-        const renderer = (grids as { renderer?: { initTexture?: unknown } }).renderer;
-        try {
-          webgpuBackendOf(renderer, "vdbSparseSource");
-        } catch {
-          throw bad("pyramidBuild 'gpu' (the default for lod 'coarse-pyramid') needs the VDBGridNode's initialized WebGPURenderer; use pyramidBuild 'cpu' with images.density otherwise.");
-        }
-        if (typeof renderer?.initTexture !== "function") throw bad("pyramidBuild 'gpu' needs renderer.initTexture (three r187 WebGPURenderer).");
-      }
-    }
-    this.pyramidOptions = { build, ...(o.pyramidMax !== undefined ? { pyramidMax: o.pyramidMax } : {}), image: build === "cpu" ? (image ?? null) : null };
+    this.pyramidOptions = o.pyramidMax !== undefined ? { pyramidMax: o.pyramidMax } : {};
     this.lodLevels = this.#lodLevelsOf(this.texels);
     this.#poolIds = [...new Set(channelIds)];
     this.#layoutRevision = this.#poolIds.reduce((r, id) => Math.max(r, info(id).imageRevision ?? 0), 0);
@@ -428,22 +340,8 @@ class SparseSource implements VDBThreeSparseSource, VDBSparseHandle {
     return vdbBoxPyramidLayout(texels, pyramidMax !== undefined ? { pyramidMax } : {}).lodLevels;
   }
 
-  /** The TSL half (pyramid textures, uniforms, nodes), made now if it was not yet. */
-  nodes(): VDBSparseNodes {
-    this.#nodes ??= new VDBSparseNodes(this);
-    return this.#nodes;
-  }
-
-  get pyramid(): VDBSparsePyramid | null {
-    return this.lod === "coarse-pyramid" ? this.nodes().pyramid : null;
-  }
-
-  get pyramidBuilds(): number {
-    return this.#nodes?.pyramidBuilds ?? 0;
-  }
-
-  /** GPU bytes of the channel grids' pool ranges, and of the TSL half's pyramid (0 until a custom material made it). */
-  get gpuBytes(): { pool: number; pyramid: number; pyramidScratch: number } {
+  /** GPU bytes of the channel grids' pool ranges. */
+  get gpuBytes(): { pool: number } {
     const pool = this.grids.pool as unknown as PoolInfoLike;
     let bytes = 0;
     for (const id of this.#poolIds) {
@@ -453,23 +351,7 @@ class SparseSource implements VDBThreeSparseSource, VDBSparseHandle {
         // A removed grid holds no pool range.
       }
     }
-    const tsl = this.#nodes?.gpuBytes ?? { pyramid: 0, pyramidScratch: 0 };
-    return { pool: bytes, ...tsl };
-  }
-
-  onStats(apply: () => void): () => void {
-    this.#statsListeners.add(apply);
-    return () => this.#statsListeners.delete(apply);
-  }
-
-  onLayout(apply: () => void): () => void {
-    this.#layoutListeners.add(apply);
-    return () => this.#layoutListeners.delete(apply);
-  }
-
-  /** @internal Tests: the stats and layout listeners registered now, and whether the TSL half exists. */
-  internals(): { statsListeners: number; layoutListeners: number; nodes: boolean } {
-    return { statsListeners: this.#statsListeners.size, layoutListeners: this.#layoutListeners.size, nodes: this.#nodes !== null };
+    return { pool: bytes };
   }
 
   /**
@@ -541,10 +423,7 @@ class SparseSource implements VDBThreeSparseSource, VDBSparseHandle {
     const auxBox = (id: number | undefined): VDBIndexBox | null => (id === undefined ? null : { min: [...pool.info(id).indexBBox.min] as Vec3, max: [...pool.info(id).indexBBox.max] as Vec3 });
     this.auxBoxes = { mask: auxBox(ids.mask), albedo: auxBox(Array.isArray(ids.albedo) ? ids.albedo[0] : (ids.albedo as number | undefined)), emission: auxBox(ids.emission) };
     if (moved) this.lodLevels = this.#lodLevelsOf(this.texels);
-    // The TSL half's pyramid follows the box (a new size, or rebuilt in place by refreshPyramid)
-    this.#nodes?.relayout(moved);
     this.layoutUpdates++;
-    for (const apply of this.#layoutListeners) apply();
   }
 
   /**
@@ -573,11 +452,6 @@ class SparseSource implements VDBThreeSparseSource, VDBSparseHandle {
       this.#versionSeen = { poolRevision: pool.revision, value };
     }
     return this.#versionSeen.value;
-  }
-
-  refreshPyramid(): boolean {
-    this.syncLayout();
-    return this.#nodes?.refreshPyramid() ?? false;
   }
 
   refreshStats(): Promise<boolean> {
@@ -618,7 +492,6 @@ class SparseSource implements VDBThreeSparseSource, VDBSparseHandle {
         this.#statsRevision = revision;
         this.#statsPoolRevisionSeen = seen;
         this.statsUpdates++;
-        for (const apply of this.#statsListeners) apply();
         return true;
       })
       .catch(() => false)
@@ -629,35 +502,14 @@ class SparseSource implements VDBThreeSparseSource, VDBSparseHandle {
     return this.#statsReadback;
   }
 
-  nodeAverageFn(): VDBTslNode {
-    return this.nodes().nodeAverageFn();
-  }
-
-  skipEmptyFn(): VDBTslNode {
-    return this.nodes().skipEmptyFn();
-  }
-
-  createUniforms(p: VDBVolumeUniformParameters): VDBSparseVolumeUniforms {
-    return this.nodes().createUniforms(this, p);
-  }
-
-  createNodes(u: VDBVolumeUniforms, o: VDBVolumeNodesOptions): VDBVolumeNodes {
-    return this.nodes().createNodes(u as VDBSparseVolumeUniforms, o);
-  }
-
   dispose(): void {
-    this.#nodes?.dispose();
-    this.#nodes = null;
-    this.#layoutListeners.clear();
-    this.#statsListeners.clear();
   }
 }
 
 /**
  * A sparse volume source over pool grids (see the file comment). `grids` must be a `VDBGridNode`
  * made with profile `'march'` and helpers `['cellBoundTrilinear', 'hddaCellEnd']` (+ `'nodeAverage'`
- * for that LOD). The source holds no grid buffer of its own (the pool's); a custom material's nodes add the
- * pyramid textures (and, building on the GPU, the build's scratch buffers).
+ * for that LOD). The source holds no GPU object (the pool's grid buffer is the pool's).
  *
  * @param grids A `VDBGridNode` with profile `march` and the helpers the LOD needs.
  * @param ids The pool ids of the density grid and optional channels.

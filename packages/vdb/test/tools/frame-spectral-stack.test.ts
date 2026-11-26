@@ -138,16 +138,11 @@ describe("K6.4 spectral stack twins (equal channels = grey)", () => {
   it("the 'volume' combine, the resolve scan, the two taps and the composite reduce to grey with equal channels", () => {
     for (let trial = 0; trial < 30; trial++) {
       const volumes = Array.from({ length: 1 + Math.floor(rand() * 3) }, () => ({ radiance: [rand() * 2, rand() * 2, rand() * 2] as V3, alpha: rand() * 0.9 }));
-      for (const mode of ["mixture", "over"] as const) {
-        const grey = vdbFrameGatherFroxel(volumes, mode);
-        const s = vdbFrameGatherFroxelSpectral(
-          volumes.map((v) => ({ radiance: v.radiance, alpha: [v.alpha, v.alpha, v.alpha] as V3 })),
-          mode,
-        );
-        for (let c = 0; c < 3; c++) {
-          expect(s.color[c]).toBeCloseTo(grey[c]!, 12);
-          expect(s.alpha[c]).toBeCloseTo(grey[3], 12);
-        }
+      const grey = vdbFrameGatherFroxel(volumes);
+      const s0 = vdbFrameGatherFroxelSpectral(volumes.map((v) => ({ radiance: v.radiance, alpha: [v.alpha, v.alpha, v.alpha] as V3 })));
+      for (let c = 0; c < 3; c++) {
+        expect(s0.color[c]).toBeCloseTo(grey[c]!, 12);
+        expect(s0.alpha[c]).toBeCloseTo(grey[3], 12);
       }
       const froxels: V4[] = Array.from({ length: 10 }, () => {
         const a = rand() < 0.2 ? 0 : rand() * 0.8;
