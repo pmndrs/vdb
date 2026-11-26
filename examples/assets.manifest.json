@@ -6,7 +6,7 @@
     "repo": "pmndrs/vdb",
     "tag": "examples-assets-v1",
     "asset": "examples-assets.tar",
-    "sha256": null,
+    "sha256": "c3e6c63f84cde226212b0d75019e11676d910d832c3270b046937a13790b5bf5",
     "$comment": "Owner: after `node scripts/examples-assets.mjs --pack`, put the printed sha256 here (CI checks the downloaded tarball against it)."
   },
   "groups": [

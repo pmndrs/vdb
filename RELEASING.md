@@ -79,7 +79,8 @@ with `fixtureUrl("wdas/x.nvdb")` (`examples/src/demos/assets.ts`): Vite `BASE_UR
       request nothing outside `/vdb/`, no-WebGPU card). **[agent]**
 - [x] A clear message on browsers without WebGPU, instead of a blank canvas: `examples/src/demos/webgpu-gate.ts`,
       imported first by every demo (`e2e/no-webgpu.spec.ts`). **[agent]**
-- [ ] Publish the asset tarball (the CI cannot fetch WDAS and friends), then run the workflow by hand. **[owner]**
+- [x] Publish the asset tarball (the CI cannot fetch WDAS and friends), then run the workflow by hand. **[owner]**
+      Done 2026-11-26: `examples-assets-v1` (sha256 `c3e6c63f…5bf5`, 327 files, 296.5 MB; the pending gallery groups skipped).
       ```sh
       node scripts/examples-assets.mjs --pack        # needs the local fixtures; writes artifacts/examples-assets/
       # put the printed sha256 into examples/assets.manifest.json (release.sha256) and commit it
