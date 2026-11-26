@@ -89,7 +89,9 @@ test.describe("demo 15 — full res vs 128³", () => {
     // 64 texels on the longest side.
     expect(Math.max(...after.dense!.resolution.match(/\d+/g)!.map(Number)), JSON.stringify(after)).toBe(64);
     console.log(`demo 15 control diffs: ${JSON.stringify(changes)}`);
-    expect(changes.divider, JSON.stringify(changes)).toBeGreaterThan(0.2);
+    // CI (hemisphere light, no HDR): 0.236 before K6.11, 0.191 with ambientOcclusion on by default (the hemisphere light is
+    // shadowed inside the cloud, so the halves differ less); a divider that does nothing gives ~0.
+    expect(changes.divider, JSON.stringify(changes)).toBeGreaterThan(0.1);
     expect(changes.res64, JSON.stringify(changes)).toBeGreaterThan(0.05);
     expect(after.uncaptured, detail()).toEqual([]);
     expect(errors, detail()).toEqual([]);
