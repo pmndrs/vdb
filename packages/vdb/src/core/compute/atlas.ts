@@ -81,7 +81,7 @@ fn csAtlas(@builtin(global_invocation_id) gid: vec3u) {
 `,
 };
 
-/** Options of {@link vdbDecodeToAtlasGpu} (v1's, plus `encoder` and `readback`). */
+/** Options of {@link vdbDecodeToAtlas} (v1's, plus `encoder` and `readback`). */
 export interface VDBDecodeToAtlasOptions {
   /** Per-axis output resolution cap (a literal clamp, not a proportional downscale). Default 256. */
   maxDim?: number;
@@ -154,7 +154,7 @@ function checkAtlasOptions(o: VDBDecodeToAtlasOptions): void {
  * @param gridId The grid's pool id; it must be resident.
  * @param options Resolution, filter, format, normalization and encoder ({@link VDBDecodeToAtlasOptions}).
  */
-export function vdbDecodeToAtlasGpu(device: GPUDevice, pool: VDBGridPool, gridId: number, options: VDBDecodeToAtlasOptions = {}): VDBAtlasReadback {
+export function vdbDecodeToAtlas(device: GPUDevice, pool: VDBGridPool, gridId: number, options: VDBDecodeToAtlasOptions = {}): VDBAtlasReadback {
   checkAtlasOptions(options);
   const info = checkTarget(WHERE, device, pool, gridId);
   const maxDim = options.maxDim ?? 256;

@@ -94,7 +94,7 @@ function sourcePrelude(source: VDBVolumeSource, maxVolumes: number | undefined, 
   // One VDB module per shader (design §5.1): a sparse source (K6.7) gives it; a dense source has none.
   const withModule = source as VDBVolumeSource & { moduleWgsl?: (slot: VDBSlot) => string };
   if (source.kind !== "dense" && typeof withModule.moduleWgsl !== "function") {
-    throw new VDBError("VDB_BAD_OPTION", "vdbCreateFrameRenderer: a sparse source must come from vdbSparseSourceGpu (K6.7).");
+    throw new VDBError("VDB_BAD_OPTION", "vdbCreateFrameRenderer: a sparse source must come from vdbSparseSource (K6.7).");
   }
   return [
     ...(typeof withModule.moduleWgsl === "function" ? [withModule.moduleWgsl(SOURCE_SLOT)] : []),

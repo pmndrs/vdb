@@ -1,5 +1,5 @@
 /**
- * K6.7 harness: the core sparse source (`vdbSparseSourceGpu`) on raw WebGPU, no three. Its `vdbSrc*` WGSL runs in
+ * K6.7 harness: the core sparse source (`vdbSparseSource`) on raw WebGPU, no three. Its `vdbSrc*` WGSL runs in
  * probe compute kernels (the source at group 1, binding 2: a non-zero slot) on fixed-seed inputs and is compared
  * with the CPU twins (`tools/frame/sparse.ts`: `vdbSparseDensityCpu`, `vdbSparseMaskCpu`, `vdbSparseAlbedoCpu`,
  * `vdbSparseEmissionCpu`, `vdbSparseSkipSpanCpu`).
@@ -20,7 +20,7 @@
  * Results: `window.__VDB_K6_SPARSE__` (e2e/k6-sparse.spec.ts).
  */
 import { VDBGridPool } from "@pmndrs/vdb";
-import { vdbSparseSourceGpu, type VDBSparseSourceGpu, type VDBSparseVolumeGpu } from "../../../packages/vdb/src/core/internal.js";
+import { vdbSparseSource, type VDBSparseSource, type VDBSparseVolume } from "../../../packages/vdb/src/core/internal.js";
 import {
   readWvdb,
   vdbBoxPyramid,
@@ -178,7 +178,7 @@ interface Probe {
   group0Layout: GPUBindGroupLayout;
 }
 
-async function makeProbe(device: GPUDevice, source: VDBSparseSourceGpu): Promise<Probe> {
+async function makeProbe(device: GPUDevice, source: VDBSparseSource): Promise<Probe> {
   let wgsl = source.wgsl({ slot: SLOT, profile: "march" });
   if (MUTATE) {
     const m = MUTATIONS[MUTATE];
@@ -250,7 +250,7 @@ function inputs(seed: number, volumes: readonly { v: number; lodLevels: number }
   return out;
 }
 
-async function runProbe(device: GPUDevice, source: VDBSparseSourceGpu, probe: Probe, samples: Sample[]): Promise<Float32Array> {
+async function runProbe(device: GPUDevice, source: VDBSparseSource, probe: Probe, samples: Sample[]): Promise<Float32Array> {
   const n = samples.length;
   const input = new Float32Array(n * 12);
   const u = new Uint32Array(input.buffer);
@@ -307,7 +307,7 @@ function check(s: Stat, gpu: number, cpu: number, tol: number, detail: () => unk
  */
 const tolOf = (scale: number, filtered: boolean) => 1e-4 * (1 + scale) + (filtered ? 2 ** -7 * scale : 0);
 
-function compare(name: string, source: VDBSparseSourceGpu, cpu: Map<number, VDBSparseVolumeCpu>, samples: Sample[], out: Float32Array): SourceResult {
+function compare(name: string, source: VDBSparseSource, cpu: Map<number, VDBSparseVolumeCpu>, samples: Sample[], out: Float32Array): SourceResult {
   const res: SourceResult = {
     name,
     lod: source.lod,
@@ -374,7 +374,7 @@ function compare(name: string, source: VDBSparseSourceGpu, cpu: Map<number, VDBS
 }
 
 /** The CPU side of one volume (the boxes the source uses: the slot's, or each grid's own). */
-function cpuVolume(pool: VDBGridPool, source: VDBSparseSourceGpu, slot: VDBSparseVolumeGpu, images: Map<number, Uint32Array>, pyramidMax: number): VDBSparseVolumeCpu {
+function cpuVolume(pool: VDBGridPool, source: VDBSparseSource, slot: VDBSparseVolume, images: Map<number, Uint32Array>, pyramidMax: number): VDBSparseVolumeCpu {
   const own = (id: number) => {
     const b = pool.info(id).indexBBox;
     return { min: [...b.min] as Vec3, max: [...b.max] as Vec3 };
@@ -440,7 +440,7 @@ async function main(): Promise<void> {
     { name: "node-average", options: { lod: "node-average" as const, fastTrilinear: true, cacheAccessor: false }, seed: 33 },
   ];
   for (const c of configs) {
-    const source = vdbSparseSourceGpu(pool, { ...c.options, types: ["float", "fp8"], maxVolumes: 8, label: `k6-sparse ${c.name}` });
+    const source = vdbSparseSource(pool, { ...c.options, types: ["float", "fp8"], maxVolumes: 8, label: `k6-sparse ${c.name}` });
     const first = source.volume({ density: ids.cloud }, { indexBox: cloud.textureIndexBox, image: cloud.image });
     source.volume({ density: ids.s1, mask: ids.m, albedo: [ids.r, ids.g, ids.b], emission: ids.e }, { image: S1 });
     source.volume({ density: ids.s1q, albedo: ids.r }, { image: S1q });
@@ -470,7 +470,7 @@ async function swap(device: GPUDevice, pool: VDBGridPool, cloud: ReturnType<type
   images.set(id, preview);
   pool.flush();
   await pool.settled();
-  const source = vdbSparseSourceGpu(pool, { followImage: true, pyramidMax: 16, types: ["fpn", "float"], label: "k6-sparse swap" });
+  const source = vdbSparseSource(pool, { followImage: true, pyramidMax: 16, types: ["fpn", "float"], label: "k6-sparse swap" });
   const vol = source.volume({ density: id }, { image: preview });
   const probe = await makeProbe(device, source);
   const warm = inputs(44, source.volumes, 128);

@@ -1,5 +1,5 @@
 /**
- * K6.7: the core sparse source (`vdbSparseSourceGpu`) on the recording fake device: the pyramid block packer, the
+ * K6.7: the core sparse source (`vdbSparseSource`) on the recording fake device: the pyramid block packer, the
  * volume table's record layout, slot allocation, the group-2 layout and bind entries, packing and growth of the
  * pyramid atlas, the retire rule, the stats readback, and the G16a zero-build swap (shader modules and pipelines
  * counted by wrapping the device's create calls). The GPU-vs-twin probe is e2e/k6-sparse.spec.ts.
@@ -13,8 +13,8 @@ import {
   sparseRecordOffset,
   sparseRecordStructWgsl,
   sparseSourceWgsl,
-  vdbSparseSourceGpu,
-  type VDBSparseSourceGpu,
+  vdbSparseSource,
+  type VDBSparseSource,
 } from "../../src/core/internal.js";
 import {
   vdbBuildFromDense,
@@ -110,7 +110,7 @@ beforeEach(async () => {
 });
 
 /** One encoder: the pool's update, then the source's; submitted. */
-function frame(source: VDBSparseSourceGpu) {
+function frame(source: VDBSparseSource) {
   const encoder = fake.createCommandEncoder() as unknown as GPUCommandEncoder;
   pool.update(encoder);
   const u = source.update(encoder);
@@ -238,7 +238,7 @@ describe("the sparse WGSL", () => {
     pool.add(makeImage({ gridType: 1, bboxMin: [0, 0, 0], bboxMax: [15, 15, 15] }));
     const s2 = { group: 2, firstBinding: 3 };
     for (const lod of lods) {
-      const source = vdbSparseSourceGpu(pool, { lod, types: ["float"] });
+      const source = vdbSparseSource(pool, { lod, types: ["float"] });
       const wgsl = source.moduleWgsl(s2) + source.wgsl({ slot: s2, profile: "march" });
       const declared = [...wgsl.matchAll(/@group\((\d+)\) @binding\((\d+)\)/g)].map((m) => `${m[1]}:${m[2]}`).sort();
       const layout = source.layoutEntries(s2);
@@ -253,17 +253,17 @@ describe("the sparse WGSL", () => {
   });
 
   it("asks for the module the K3.2 source needs", () => {
-    const a = vdbSparseSourceGpu(pool, { lod: "node-average" }).module;
+    const a = vdbSparseSource(pool, { lod: "node-average" }).module;
     expect([a.profile, [...a.helpers]]).toEqual(["march", ["cellBoundTrilinear", "hddaCellEnd", "nodeAverage", "fastTrilinear"]]);
-    const b = vdbSparseSourceGpu(pool, { lod: "none", skipEmpty: false, fastTrilinear: false }).module;
+    const b = vdbSparseSource(pool, { lod: "none", skipEmpty: false, fastTrilinear: false }).module;
     expect([b.profile, [...b.helpers]]).toEqual(["sample", []]);
   });
 });
 
-describe("vdbSparseSourceGpu volumes", () => {
+describe("vdbSparseSource volumes", () => {
   it("allocates the lowest free slot, frees on remove, caps at maxVolumes", () => {
     const id = pool.add(makeImage({ gridType: 1, bboxMin: [0, 0, 0], bboxMax: [7, 7, 7] }));
-    const source = vdbSparseSourceGpu(pool, { lod: "none", maxVolumes: 3 });
+    const source = vdbSparseSource(pool, { lod: "none", maxVolumes: 3 });
     const [a, b, c] = [0, 1, 2].map(() => source.volume({ density: id }, { stats: STATS }));
     expect([a!.v, b!.v, c!.v]).toEqual([0, 1, 2]);
     expectCode(() => source.volume({ density: id }, { stats: STATS }), "VDB_POOL_FULL");
@@ -271,18 +271,18 @@ describe("vdbSparseSourceGpu volumes", () => {
     expect(b!.removed).toBe(true);
     expect(source.volume({ density: id }, { stats: STATS }).v).toBe(1);
     expect(a!.source).toBe(source);
-    expectCode(() => vdbSparseSourceGpu(pool, { maxVolumes: 1000 }), "VDB_BAD_OPTION", /maxVolumes/);
+    expectCode(() => vdbSparseSource(pool, { maxVolumes: 1000 }), "VDB_BAD_OPTION", /maxVolumes/);
   });
 
   it("checks types, follows the TSL source's option rules and channel declarations", () => {
     const fp8 = pool.add(makeImage({ gridType: 14, bboxMin: [0, 0, 0], bboxMax: [7, 7, 7] }));
     const f = pool.add(makeImage({ gridType: 1, bboxMin: [0, 0, 0], bboxMax: [7, 7, 7], seed: 2 }));
-    expectCode(() => vdbSparseSourceGpu(pool, { types: ["float"] }).volume({ density: fp8 }, { stats: STATS }), "VDB_TYPE_NOT_COMPILED");
-    expectCode(() => vdbSparseSourceGpu(pool, { followImage: true }).volume({ density: f }, { indexBox: box([0, 0, 0], [3, 3, 3]) }), "VDB_BAD_OPTION", /followImage/);
-    const fixed = vdbSparseSourceGpu(pool, { lod: "none", channels: { mask: true } });
+    expectCode(() => vdbSparseSource(pool, { types: ["float"] }).volume({ density: fp8 }, { stats: STATS }), "VDB_TYPE_NOT_COMPILED");
+    expectCode(() => vdbSparseSource(pool, { followImage: true }).volume({ density: f }, { indexBox: box([0, 0, 0], [3, 3, 3]) }), "VDB_BAD_OPTION", /followImage/);
+    const fixed = vdbSparseSource(pool, { lod: "none", channels: { mask: true } });
     expect(fixed.volume({ density: f, mask: f }, { stats: STATS }).channels.mask).toBe(true);
     expectCode(() => fixed.volume({ density: f, emission: f }, { stats: STATS }), "VDB_BAD_OPTION", /channels/);
-    const growing = vdbSparseSourceGpu(pool, { lod: "none" });
+    const growing = vdbSparseSource(pool, { lod: "none" });
     const before = growing.wgsl({ slot: { group: 2, firstBinding: 0 }, profile: "march" });
     growing.volume({ density: f }, { stats: STATS });
     expect(growing.wgsl({ slot: { group: 2, firstBinding: 0 }, profile: "march" })).toBe(before);
@@ -293,7 +293,7 @@ describe("vdbSparseSourceGpu volumes", () => {
 
   it("describes each volume on its slot: texels, LOD range, box, world box, record", () => {
     const id = pool.add(makeImage({ gridType: 1, bboxMin: [-4, 0, 2], bboxMax: [19, 9, 41], voxelSize: 0.5 }));
-    const source = vdbSparseSourceGpu(pool, { pyramidMax: 8, types: ["float"] });
+    const source = vdbSparseSource(pool, { pyramidMax: 8, types: ["float"] });
     const a = source.volume({ density: id }, { stats: STATS });
     const b = source.volume({ density: id }, { stats: STATS, indexBox: box([0, 0, 2], [7, 7, 9]) });
     expect(a.texels).toEqual([24, 10, 40]);
@@ -314,7 +314,7 @@ describe("the packed pyramid atlas", () => {
   it("packs every volume's base and mip atlas into one r16float texture, shares equal pyramids, grows and retires", async () => {
     const g1 = pool.add(makeImage({ gridType: 1, bboxMin: [0, 0, 0], bboxMax: [63, 31, 15] }));
     const g2 = pool.add(makeImage({ gridType: 1, bboxMin: [0, 0, 0], bboxMax: [15, 15, 15], seed: 3 }));
-    const source = vdbSparseSourceGpu(pool, { pyramidMax: 16, types: ["float"] });
+    const source = vdbSparseSource(pool, { pyramidMax: 16, types: ["float"] });
     const placeholder = source.atlas as unknown as FakeTexture;
     expect([placeholder.width, placeholder.height, placeholder.depthOrArrayLayers, placeholder.format]).toEqual([1, 1, 1, "r16float"]);
     const a = source.volume({ density: g1 }, { stats: STATS });
@@ -377,7 +377,7 @@ describe("the packed pyramid atlas", () => {
 
   it("rebuilds a pyramid when its grid's image changes (a sequence frame), after the pool's update in the same encoder", () => {
     const g = pool.add(makeImage({ gridType: 1, bboxMin: [0, 0, 0], bboxMax: [15, 15, 15] }));
-    const source = vdbSparseSourceGpu(pool, { types: ["float"] });
+    const source = vdbSparseSource(pool, { types: ["float"] });
     const vol = source.volume({ density: g }, { stats: STATS });
     expect(frame(source).pyramidBuilds).toBe(1);
     const v0 = vol.version;
@@ -393,7 +393,7 @@ describe("G16a: a coarse-first swap creates no shader module and no pipeline", (
     const preview = makeImage({ gridType: 16, bboxMin: [0, 0, 0], bboxMax: [11, 7, 5], voxelSize: 4 }); // fpn
     const full = makeImage({ gridType: 14, bboxMin: [0, 0, 0], bboxMax: [47, 31, 23], voxelSize: 1, seed: 5 }); // fp8
     const id = pool.add(preview);
-    const source = vdbSparseSourceGpu(pool, { followImage, types: ["fpn", "fp8"] });
+    const source = vdbSparseSource(pool, { followImage, types: ["fpn", "fp8"] });
     const vol = source.volume({ density: id }, { stats: STATS });
     const slot = { group: 2, firstBinding: 0 };
     const wgslBefore = source.moduleWgsl(slot) + source.wgsl({ slot, profile: "march" });
@@ -434,7 +434,7 @@ describe("stats", () => {
     const values = new Float32Array(16 * 16 * 16).map((_, i) => ((i * 7919) % 13) / 13);
     const image = vdbBuildFromDense(values, [16, 16, 16]);
     const id = pool.add(image);
-    const source = vdbSparseSourceGpu(pool, { lod: "none", types: ["float"] });
+    const source = vdbSparseSource(pool, { lod: "none", types: ["float"] });
     const vol = source.volume({ density: id });
     expect(vol.stats).toEqual({ meanNonZero: 0, max: 0, activeVoxels: 0 });
     frame(source); // copies the image into a staging buffer
@@ -442,7 +442,7 @@ describe("stats", () => {
     await source.settled();
     expect(vol.stats).toEqual(vdbSparseDensityStats(image));
     expect(vol.statsUpdates).toBe(1);
-    const given = vdbSparseSourceGpu(pool, { lod: "none", types: ["float"] }).volume({ density: id }, { image });
+    const given = vdbSparseSource(pool, { lod: "none", types: ["float"] }).volume({ density: id }, { image });
     expect(given.stats).toEqual(vol.stats);
   });
 });

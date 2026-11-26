@@ -492,3 +492,8 @@ export {
 export type { VDBFrameSpectralGridCaster, VDBFrameSpectralGridAt, VDBFrameSpectralSums, VDBFrameSpectralDensityInputs3d, VDBFrameSpectralVolumeFroxel } from "./frame/spectral-stack.js";
 // K6.R: the reference renderer's scene, random stream, CPU twin and analytic cases (internal only).
 export * from "./reference/index.js";
+// D36: helpers that are not public API (they were exported before 0.2): the byte length of a `.wvdb` LOD prefix (range
+// requests use `wvdbLodByteRange`), the `Content-Length` of a `.nvdb` response, and the FpN leaf codec factory.
+export { nvdbResponseLength } from "./nvdb-stream.js";
+export { vdbMakeFpNLeafCodec } from "./nanovdb/index.js";
+export { wvdbPrefixLength } from "./wvdb/read.js";

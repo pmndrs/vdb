@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
-import { VDBError, VDBGridPool, vdbApplyValueTransform, vdbDecodeToAtlasGpu, vdbGridStatsGpu } from "../../src/core/index.js";
+import { VDBError, VDBGridPool, vdbApplyValueTransform, vdbDecodeToAtlas, vdbGridStats } from "../../src/core/index.js";
 import { kernelWgsl } from "../../src/core/compute/shared.js";
 import { NvdbFile, getDim, vdbReadValueF32 } from "../../src/tools/internal.js";
 import { computeFake, type FakePass } from "./fake-compute.js";
@@ -38,18 +38,18 @@ describe("compute tools: validation before any device work", () => {
   it("rejects bad options, a foreign device, unknown and non-resident grids", async () => {
     const id = pool.add(makeImage({ gridType: 1 }));
     const created = fake.buffers.length;
-    expectCode(() => vdbGridStatsGpu(device, pool, id, { histogramBins: 0 }), "VDB_BAD_OPTION", /histogramBins/);
-    expectCode(() => vdbGridStatsGpu(device, pool, id, { histogramBins: 1.5 }), "VDB_BAD_OPTION", /histogramBins/);
-    expectCode(() => vdbDecodeToAtlasGpu(device, pool, id, { maxDim: 0 }), "VDB_BAD_OPTION", /maxDim/);
-    expectCode(() => vdbDecodeToAtlasGpu(device, pool, id, { filter: "bicubic" as never }), "VDB_BAD_OPTION", /filter/);
-    expectCode(() => vdbDecodeToAtlasGpu(device, pool, id, { format: "rgba" as never }), "VDB_BAD_OPTION", /format/);
-    expectCode(() => vdbDecodeToAtlasGpu(device, pool, id, { range: { min: 0, max: NaN } }), "VDB_BAD_OPTION", /range/);
-    expectCode(() => vdbGridStatsGpu(new FakeDevice().asGPU(), pool, id), "VDB_BAD_OPTION", /different GPUDevice/);
-    expectCode(() => vdbGridStatsGpu(device, pool, id), "VDB_BAD_OPTION", /pool.update/); // added, not flushed
-    expectCode(() => vdbGridStatsGpu(device, pool, 7), "VDB_UNKNOWN_GRID");
+    expectCode(() => vdbGridStats(device, pool, id, { histogramBins: 0 }), "VDB_BAD_OPTION", /histogramBins/);
+    expectCode(() => vdbGridStats(device, pool, id, { histogramBins: 1.5 }), "VDB_BAD_OPTION", /histogramBins/);
+    expectCode(() => vdbDecodeToAtlas(device, pool, id, { maxDim: 0 }), "VDB_BAD_OPTION", /maxDim/);
+    expectCode(() => vdbDecodeToAtlas(device, pool, id, { filter: "bicubic" as never }), "VDB_BAD_OPTION", /filter/);
+    expectCode(() => vdbDecodeToAtlas(device, pool, id, { format: "rgba" as never }), "VDB_BAD_OPTION", /format/);
+    expectCode(() => vdbDecodeToAtlas(device, pool, id, { range: { min: 0, max: NaN } }), "VDB_BAD_OPTION", /range/);
+    expectCode(() => vdbGridStats(new FakeDevice().asGPU(), pool, id), "VDB_BAD_OPTION", /different GPUDevice/);
+    expectCode(() => vdbGridStats(device, pool, id), "VDB_BAD_OPTION", /pool.update/); // added, not flushed
+    expectCode(() => vdbGridStats(device, pool, 7), "VDB_UNKNOWN_GRID");
     const empty = pool.add(makeImage({ gridType: 1, bboxMin: [0, 0, 0], bboxMax: [-1, 5, 5] }));
     pool.flush();
-    expectCode(() => vdbDecodeToAtlasGpu(device, pool, empty), "VDB_BAD_OPTION", /empty index bbox/);
+    expectCode(() => vdbDecodeToAtlas(device, pool, empty), "VDB_BAD_OPTION", /empty index bbox/);
     expect(fake.buffers.length).toBe(created);
   });
 });
@@ -61,7 +61,7 @@ describe("gridStats", () => {
     pool.flush();
     const before = new Set(fake.buffers);
     const submits = fake.submits;
-    const job = vdbGridStatsGpu(device, pool, id, { histogramBins: 32 });
+    const job = vdbGridStats(device, pool, id, { histogramBins: 32 });
     expect(fake.submits).toBe(submits + 1);
     expect(passes).toHaveLength(1);
     const pass = passes[0]!;
@@ -85,7 +85,7 @@ describe("gridStats", () => {
     const encoder = device.createCommandEncoder();
     pool.update(encoder);
     const submits = fake.submits;
-    const job = vdbGridStatsGpu(device, pool, id, { encoder });
+    const job = vdbGridStats(device, pool, id, { encoder });
     expect(fake.submits).toBe(submits);
     expect(passes[0]!.pipeline.entry).toBe("csStatsDump");
     const copies = (encoder as unknown as { copies: { size: number }[] }).copies;
@@ -101,7 +101,7 @@ describe("gridStats", () => {
     pool.flush();
     const before = new Set(fake.buffers);
     const encoder = device.createCommandEncoder();
-    const job = vdbGridStatsGpu(device, pool, id, { encoder });
+    const job = vdbGridStats(device, pool, id, { encoder });
     const mine = fake.buffers.filter((b) => !before.has(b));
     let mapped = 0;
     for (const b of mine) {
@@ -119,11 +119,11 @@ describe("gridStats", () => {
     expect(mine.every((b) => b.destroyed)).toBe(true);
     // Same contract on decodeToAtlas; without an encoder, read() needs no submitted().
     const atlasEncoder = device.createCommandEncoder();
-    const atlas = vdbDecodeToAtlasGpu(device, pool, id, { encoder: atlasEncoder });
+    const atlas = vdbDecodeToAtlas(device, pool, id, { encoder: atlasEncoder });
     await expect(atlas.read()).rejects.toMatchObject({ code: "VDB_BAD_OPTION" });
     device.queue.submit([atlasEncoder.finish()]);
     expect((await atlas.submitted().read()).dims).toEqual(atlas.dims);
-    expect((await vdbDecodeToAtlasGpu(device, pool, id).read()).dims).toEqual(atlas.dims);
+    expect((await vdbDecodeToAtlas(device, pool, id).read()).dims).toEqual(atlas.dims);
   });
 
   it("dump path: refuses a bbox over the device's binding / buffer limits before making any buffer", () => {
@@ -132,20 +132,20 @@ describe("gridStats", () => {
     const limits = fake.limits as { maxStorageBufferBindingSize: number; maxBufferSize: number };
     const made = fake.buffers.length;
     limits.maxStorageBufferBindingSize = 512 << 10; // each output is 64^3 * 4 = 1 MiB
-    expectCode(() => vdbGridStatsGpu(device, pool, id), "VDB_BAD_OPTION", /dump path.*262144 voxels.*maxStorageBufferBindingSize 524288.*vdbGridStatsCpu/);
+    expectCode(() => vdbGridStats(device, pool, id), "VDB_BAD_OPTION", /dump path.*262144 voxels.*maxStorageBufferBindingSize 524288.*vdbGridStatsCpu/);
     limits.maxStorageBufferBindingSize = 128 << 20;
     limits.maxBufferSize = 1536 << 10; // the 2 MiB readback does not fit
-    expectCode(() => vdbGridStatsGpu(device, pool, id), "VDB_BAD_OPTION", /2097152 B of readback/);
+    expectCode(() => vdbGridStats(device, pool, id), "VDB_BAD_OPTION", /2097152 B of readback/);
     expect(fake.buffers.length).toBe(made);
     limits.maxBufferSize = 256 << 20;
-    expect(() => vdbGridStatsGpu(device, pool, id).dispose()).not.toThrow();
+    expect(() => vdbGridStats(device, pool, id).dispose()).not.toThrow();
   });
 
   it("dispose() frees the buffers and makes read() reject", async () => {
     const id = pool.add(makeImage({ gridType: 1 }));
     pool.flush();
     const before = new Set(fake.buffers);
-    const job = vdbGridStatsGpu(device, pool, id);
+    const job = vdbGridStats(device, pool, id);
     job.dispose();
     expect(fake.buffers.filter((b) => !before.has(b)).every((b) => b.destroyed)).toBe(true);
     await expect(job.read()).rejects.toMatchObject({ code: "VDB_DISPOSED" });
@@ -156,7 +156,7 @@ describe("decodeToAtlas", () => {
   it("one thread per output voxel, the root stats as the default range, and v1's dims clamp", async () => {
     const id = pool.add(makeImage({ gridType: 16, bboxMin: [0, 0, 0], bboxMax: [99, 9, 0], rootMin: 0.5, rootMax: 3 }));
     pool.flush();
-    const job = vdbDecodeToAtlasGpu(device, pool, id, { maxDim: 64, filter: "nearest" });
+    const job = vdbDecodeToAtlas(device, pool, id, { maxDim: 64, filter: "nearest" });
     expect(job.dims).toEqual([64, 10, 1]);
     expect(job.range).toEqual({ min: 0.5, max: 3 });
     expect(job.buffer.size).toBe(64 * 10 * 4);
@@ -166,15 +166,15 @@ describe("decodeToAtlas", () => {
     expect(r.data).toBeInstanceOf(Uint8Array);
     expect(r.data).toHaveLength(640);
     expect(r.dims).toEqual([64, 10, 1]);
-    expect(vdbDecodeToAtlasGpu(device, pool, id, { normalize: false }).range).toEqual({ min: 0, max: 1 });
-    expect(vdbDecodeToAtlasGpu(device, pool, id, { range: { min: -2, max: 2 } }).range).toEqual({ min: -2, max: 2 });
+    expect(vdbDecodeToAtlas(device, pool, id, { normalize: false }).range).toEqual({ min: 0, max: 1 });
+    expect(vdbDecodeToAtlas(device, pool, id, { range: { min: -2, max: 2 } }).range).toEqual({ min: -2, max: 2 });
   });
 
   it("readback: false keeps the GPU buffer until dispose() and has nothing to read", async () => {
     const id = pool.add(makeImage({ gridType: 1 }));
     pool.flush();
     const before = new Set(fake.buffers);
-    const job = vdbDecodeToAtlasGpu(device, pool, id, { readback: false });
+    const job = vdbDecodeToAtlas(device, pool, id, { readback: false });
     expect(fake.buffers.filter((b) => !before.has(b))).toHaveLength(2); // params + output, no staging
     expect((job.buffer as unknown as FakeBuffer).destroyed).toBe(false);
     await expect(job.read()).rejects.toMatchObject({ code: "VDB_BAD_OPTION" });

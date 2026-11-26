@@ -57,7 +57,7 @@ import { VDBGridPool } from "@pmndrs/vdb";
 import { NvdbFile } from "@pmndrs/vdb/tools";
 import { VDBGridNode, VDBSequence, VDBVolumeMaterial, getDevice } from "@pmndrs/vdb/three";
 import { createDeviceRenderer } from "../device-renderer.js";
-import type { VDBFrameLoader, VDBSequenceStats } from "@pmndrs/vdb/three";
+import type { VDBSequenceFrameLoader, VDBSequenceStats } from "@pmndrs/vdb/three";
 import type { WebGPURenderer } from "three/webgpu";
 import { writeNvdb } from "@pmndrs/vdb/tools";
 import { FRAME_COUNT, domainExtent, makeFrame } from "./frames";
@@ -375,7 +375,7 @@ function updateHud(stats: VDBSequenceStats, fps: number, sourceLabel: string): v
 
 async function runInteractive(frames: SyntheticFrames, sourceLabel: string): Promise<void> {
   // In-memory loader: hand the sequence a pre-built frame image per index (no fetch).
-  const loader: VDBFrameLoader = (_url, i) => Promise.resolve(frames.memImages[i % frames.memImages.length]!);
+  const loader: VDBSequenceFrameLoader = (_url, i) => Promise.resolve(frames.memImages[i % frames.memImages.length]!);
 
   const { id, material } = await makeVolume(frames.memImages[0]!, frames.maxFrameBytes, {
     densityScale: 60,

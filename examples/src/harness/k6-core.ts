@@ -60,12 +60,12 @@ import {
   vdbFrameEnvBlurSpec,
   vdbFrameEnvReduceSpec,
   vdbFrameEnvironmentGridSpec,
-  vdbSparseSourceGpu,
+  vdbSparseSource,
   type VDBFrameLight,
-  type VDBFrameVolumeGpu,
+  type VDBFrameVolume,
   type VDBFrameVolumeParams,
-  type VDBSparseSourceGpu,
-  type VDBSparseVolumeGpu,
+  type VDBSparseSource,
+  type VDBSparseVolume,
   type VDBVolumeSlot,
 } from "../../../packages/vdb/src/core/internal.js";
 import { VDBGridPool } from "@pmndrs/vdb";
@@ -641,7 +641,7 @@ async function sparseFixture(device: GPUDevice): Promise<SparseFixture> {
 }
 
 /** The CPU side of one sparse volume (each aux grid under its own box, as the source defaults). */
-function sparseCpu(fx: SparseFixture, source: VDBSparseSourceGpu, slot: VDBSparseVolumeGpu): VDBSparseVolumeCpu {
+function sparseCpu(fx: SparseFixture, source: VDBSparseSource, slot: VDBSparseVolume): VDBSparseVolumeCpu {
   const own = (id: number) => {
     const b = fx.pool.info(id).indexBBox;
     return { min: [...b.min] as V3, max: [...b.max] as V3 };
@@ -661,8 +661,8 @@ function sparseCpu(fx: SparseFixture, source: VDBSparseSourceGpu, slot: VDBSpars
 
 const SPARSE_PYRAMID_MAX = 8;
 
-/** The twin sampler of a sparse volume (`vdbSrc*` of `vdbSparseSourceGpu`). */
-function sparseSampler(cpu: VDBSparseVolumeCpu, slot: VDBVolumeSlot, source: VDBSparseSourceGpu): TwinSampler {
+/** The twin sampler of a sparse volume (`vdbSrc*` of `vdbSparseSource`). */
+function sparseSampler(cpu: VDBSparseVolumeCpu, slot: VDBVolumeSlot, source: VDBSparseSource): TwinSampler {
   return {
     texels: [...slot.texels] as V3,
     levels: slot.lodLevels,
@@ -695,8 +695,8 @@ async function probeScene(device: GPUDevice, o: { kind: "dense" | "sparse"; grou
   const fx = await sparseFixture(device);
   const lod = (params.get("lod") ?? "none") as "none" | "coarse-pyramid" | "node-average";
   const options = { lod, pyramidMax: SPARSE_PYRAMID_MAX, types: ["float" as const], maxVolumes: 8 };
-  const srcA = vdbSparseSourceGpu(fx.pool, { ...options, label: "k6 sparse A" });
-  const srcB = o.groups === 2 ? vdbSparseSourceGpu(fx.pool, { ...options, label: "k6 sparse B" }) : srcA;
+  const srcA = vdbSparseSource(fx.pool, { ...options, label: "k6 sparse A" });
+  const srcB = o.groups === 2 ? vdbSparseSource(fx.pool, { ...options, label: "k6 sparse B" }) : srcA;
   const { ids } = fx;
   const slotA = srcA.volume({ density: ids.d1, albedo: [ids.r, ids.g, ids.b] }, { image: fx.images.get(ids.d1)! });
   const slotB = srcB.volume({ density: ids.d2, mask: ids.m, emission: ids.e }, { image: fx.images.get(ids.d2)! });
@@ -774,7 +774,7 @@ function patchWgsl(device: GPUDevice): () => void {
 }
 
 /** The renderer's per-volume record twin of a volume (its params, slot and clip). */
-function twinRecord(handle: VDBFrameVolumeGpu, sampler: TwinSampler, c: { localToView: ArrayLike<number>; viewToLocal: ArrayLike<number>; worldToLocal: ArrayLike<number> }, rect: [number, number, number, number], slices: { first: number; count: number }, g: number, ms: VDBFrameMultipleScatteringMode = true): TwinVolume {
+function twinRecord(handle: VDBFrameVolume, sampler: TwinSampler, c: { localToView: ArrayLike<number>; viewToLocal: ArrayLike<number>; worldToLocal: ArrayLike<number> }, rect: [number, number, number, number], slices: { first: number; count: number }, g: number, ms: VDBFrameMultipleScatteringMode = true): TwinVolume {
   // K6.3: the renderer's phase packing for ?phase= (dual-lobe back g −0.3, weight 0.2) and ?ms=
   const fields = { phase: PHASE_NAME, phaseG: g, phaseBackG: -0.3, phaseBackWeight: 0.2, phaseGExponent: 0 };
   const p = handle.params;
@@ -1551,7 +1551,7 @@ async function probeFrameSpectral(device: GPUDevice): Promise<void> {
   const near = Math.max(Math.min(...visibleClips.map((v) => v.viewNear)), 0.1);
   const far = Math.min(Math.max(...visibleClips.map((v) => v.viewFar)), 100);
   const range: [number, number] = [near, Math.max(far, near * 1.0001)];
-  const spectrumOf = (h: VDBFrameVolumeGpu): VDBFrameVec3 => (MUTATE === "spectrum" ? [1, 1, 1] : vdbFrameExtinctionSpectrum([...h.params.extinctionScale], h.params.angstromExponent));
+  const spectrumOf = (h: VDBFrameVolume): VDBFrameVec3 => (MUTATE === "spectrum" ? [1, 1, 1] : vdbFrameExtinctionSpectrum([...h.params.extinctionScale], h.params.angstromExponent));
   const records = handles.map((h, i) => {
     const cl = clips[i] ?? { localToView: vdbMat4Multiply(view, h.params.matrixWorld), viewToLocal: vdbMat4Invert(vdbMat4Multiply(view, h.params.matrixWorld)), worldToLocal: vdbMat4Invert(h.params.matrixWorld), viewNear: 0, viewFar: 0 };
     const rect = i < 2 ? vdbFrameFroxelRect(cl.localToView, projection, GW, GH)! : ([0, 0, 0, 0] as [number, number, number, number]);
@@ -2980,7 +2980,7 @@ async function probeCompile(device: GPUDevice): Promise<void> {
   const plain = synthDense([8, 8, 8], 4, { mips: false });
   // K6.1d / K6.2: the sparse source (K6.7) with every channel, and the 'frame' lighting kernels
   const fx = await sparseFixture(device);
-  const sparse = vdbSparseSourceGpu(fx.pool, { types: ["float"], maxVolumes: 8, label: "k6 compile" });
+  const sparse = vdbSparseSource(fx.pool, { types: ["float"], maxVolumes: 8, label: "k6 compile" });
   sparse.volume({ density: fx.ids.d2, mask: fx.ids.m, albedo: fx.ids.r, emission: fx.ids.e }, { image: fx.images.get(fx.ids.d2)! });
   // K6.4 `&spectral=1`: the spectral variants only (the gathers (volume) and 'frame', the spectral shadow
   // grid, transmittance, environment grid, shadow map and resolve in both alpha prefix formats the device has)

@@ -6,7 +6,7 @@
  * Everything usable without a GPU (the `.nvdb` loader, the CPU oracle, the `.vdb` tooling) lives in
  * `@pmndrs/vdb/tools`. The core never imports `three` (test/boundaries.test.ts).
  *
- * K6.8 (0.2.0) adds the frame renderer (`vdbCreateFrameRenderer`), the sparse volume source (`vdbSparseSourceGpu`), the
+ * K6.8 (0.2.0) adds the frame renderer (`vdbCreateFrameRenderer`), the sparse volume source (`vdbSparseSource`), the
  * level-set and point passes, the receiver WGSL for host materials, and `VDBSequence`.
  *
  * This barrel is the public API (D32). The pool's binary layout helpers and other test oracles live in
@@ -41,13 +41,12 @@ export type {
 } from "./wgsl/types.js";
 export { VDB_ALL_SCALAR_TYPES, VDB_GRID_TYPE_IDS, VDB_GRID_TYPE_NAMES } from "./types.js";
 export type { VDBGridTypeName, VDBSlot } from "./types.js";
-// K2.3: compute tools on the pool. The GPU tools carry the `Gpu` suffix: `@pmndrs/vdb/three` wraps them
-// as `vdbGridStats` / `vdbDecodeToAtlas` (renderer in, promise out) and `@pmndrs/vdb/tools` has the
-// `*Cpu` versions (D32).
-export { vdbApplyValueTransform, vdbDecodeToAtlasGpu, vdbGridStatsGpu, VDB_VALUE_TRANSFORM_PRESETS } from "./compute/index.js";
+// K2.3: compute tools on the pool (D36: the GPU is the default and carries no suffix). `@pmndrs/vdb/three` wraps them
+// with the same names (renderer in, promise out) and `@pmndrs/vdb/tools` has the `*Cpu` versions.
+export { vdbApplyValueTransform, vdbDecodeToAtlas, vdbGridStats, VDB_VALUE_TRANSFORM_PRESETS } from "./compute/index.js";
 // K3.2a: the sparse source's coarse pyramid built on the GPU.
 export { vdbCreateBoxPyramid } from "./compute/index.js";
-export type { VDBBoxPyramidGpu, VDBBoxPyramidGpuOptions, VDBBoxPyramidRecordOptions } from "./compute/index.js";
+export type { VDBBoxPyramid, VDBBoxPyramidOptions, VDBBoxPyramidRecordOptions } from "./compute/index.js";
 export type { VDBBoxPyramidLayout, VDBPyramidAtlasLevel } from "../tools/frame/pyramid-layout.js";
 export type {
   VDBAtlasFilter,
@@ -69,7 +68,7 @@ export type { VDBVolumeChannels, VDBVolumeSource, VDBVolumeSourceInfo, VDBVolume
 // K6.8 (0.2.0, D34): the core frame renderer — compute kernels on 3D textures on the host's device, recorded into the
 // host's encoder (design docs/dev/design/K6-core-renderer.md §2). `./three` is a thin adapter over it.
 export { vdbCreateFrameRenderer } from "./frame/renderer.js";
-export type { VDBFrameRendererGpu, VDBFrameRendererGpuOptions } from "./frame/renderer.js";
+export type { VDBFrameRenderer, VDBFrameRendererOptions } from "./frame/renderer.js";
 export { vdbFrameDefaultSettings } from "./frame/settings.js";
 export type { VDBFrameSettings, VDBFramePhaseName, VDBFrameMultipleScatteringMode } from "./frame/settings.js";
 export { VDB_FRAME_ALL_LIGHTS, VDB_FRAME_LIGHT_BITS, vdbFrameDefaultVolumeParams } from "./frame/types.js";
@@ -90,7 +89,7 @@ export type {
   VDBFrameUpdate,
   VDBFrameUpdateOptions,
   VDBFrameVec3,
-  VDBFrameVolumeGpu,
+  VDBFrameVolume,
   VDBFrameVolumeParams,
   VDBFrameWrap,
   VDBFroxelLayout,
@@ -98,7 +97,7 @@ export type {
   VDBVolumeShadowMap,
   VDBVolumeShadowRequest,
 } from "./frame/types.js";
-/** EXPERIMENTAL (K6.3): the generic small-MLP data of `multipleScattering` `'mlp'` / `'neural'` (`VDBFrameRendererGpu.mlp`). */
+/** EXPERIMENTAL (K6.3): the generic small-MLP data of `multipleScattering` `'mlp'` / `'neural'` (`VDBFrameRenderer.mlp`). */
 export type { VDBFrameMlp, VDBFrameMlpLayer } from "../tools/frame/mlp.js";
 // Host seams (design §2.5): the composite as a function in the host's own pass, and the receivers of the volume shadow
 // maps (`vdbVolumeShadow`, `vdbVolumeShadowCube`, K6.4 `vdbVolumeShadowRgb`, `vdbVolumeShadowCubeRgb`) and of the emission
@@ -108,21 +107,21 @@ export type { VDBFrameIntegrateWgslOptions } from "./frame/wgsl/integrate.js";
 export { VDB_VOLUME_SHADOW_MAX_CASCADES, VDB_VOLUME_SHADOW_VIEW, vdbVolumeShadowWgsl } from "./frame/wgsl/shadows.js";
 export { VDB_EMISSION_GRID, vdbEmissionProbeWgsl } from "./frame/wgsl/emission.js";
 // K6.7: one sparse volume source for every volume of a pool (pyramids packed in one atlas).
-export { vdbSparseSourceGpu } from "./source/sparse.js";
+export { vdbSparseSource } from "./source/sparse.js";
 export type {
   VDBSparseIndexBox,
-  VDBSparseLodGpu,
-  VDBSparseSourceGpu,
-  VDBSparseSourceGpuOptions,
+  VDBSparseLod,
+  VDBSparseSource,
+  VDBSparseSourceOptions,
   VDBSparseSourceUpdate,
-  VDBSparseVolumeGpu,
-  VDBSparseVolumeGpuOptions,
+  VDBSparseVolume,
+  VDBSparseVolumeOptions,
   VDBSparseVolumeGrids,
 } from "./source/sparse.js";
 export type { VDBVolumeSlot } from "./source/types.js";
 // K6.6: level-set surfaces and point sprites (WGSL for host materials, raw passes for engine-free hosts).
-export { vdbCreateLevelSetPassGpu, vdbLevelSetSurfaceWgsl, vdbCreatePointPassGpu, vdbPointSpriteWgsl } from "./surface/index.js";
-export type { VDBLevelSetPassDraw, VDBLevelSetPassFrame, VDBLevelSetPassGpu, VDBLevelSetPassGpuOptions, VDBLevelSetPassPool, VDBPointPassData, VDBPointPassFrame, VDBPointPassGpu, VDBPointPassGpuOptions } from "./surface/index.js";
+export { vdbCreateLevelSetPass, vdbLevelSetSurfaceWgsl, vdbCreatePointPass, vdbPointSpriteWgsl } from "./surface/index.js";
+export type { VDBLevelSetPassDraw, VDBLevelSetPassFrame, VDBLevelSetPass, VDBLevelSetPassOptions, VDBLevelSetPassPool, VDBPointPassData, VDBPointPassFrame, VDBPointPass, VDBPointPassOptions } from "./surface/index.js";
 // K6.8 (Q7): the sequence player, engine-free (`./three` re-exports it).
 export { VDBSequence } from "./sequence.js";
-export type { VDBFrameLoader, VDBSequenceLoopMode, VDBSequenceOptions, VDBSequencePoolLike, VDBSequenceRange, VDBSequenceStats, VDBSequenceTarget } from "./sequence.js";
+export type { VDBSequenceFrameLoader, VDBSequenceLoopMode, VDBSequenceOptions, VDBSequencePoolLike, VDBSequenceRange, VDBSequenceStats, VDBSequenceTarget } from "./sequence.js";

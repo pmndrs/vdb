@@ -18,7 +18,7 @@
  *
  * The sprite size and its clip-space offset are the core's WGSL (`vdbPointSpriteSize`,
  * `vdbPointSpriteVertex`, `core/surface/points.ts`, K6.6), the functions the raw pass
- * `vdbCreatePointPassGpu` calls; the vertex node calls them through `wgslFn`. The disc map stays here.
+ * `vdbCreatePointPass` calls; the vertex node calls them through `wgslFn`. The disc map stays here.
  *
  * Positions are world space of the grid (the point list's own transform);
  * place them with the object's transform as any three object. The sprite sits

@@ -6,6 +6,22 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 
 ## [Unreleased]
 
+### Breaking (0.2.0, D36: naming)
+
+- `@pmndrs/vdb` (core): no name carries a `Gpu` suffix any more; the GPU is the default and `Cpu` marks the CPU twin of a
+  GPU function (`@pmndrs/vdb/tools`). `vdbGridStatsGpu` → `vdbGridStats`, `vdbDecodeToAtlasGpu` → `vdbDecodeToAtlas`,
+  `VDBBoxPyramidGpu(Options)` → `VDBBoxPyramid(Options)`, `vdbSparseSourceGpu` / `VDBSparseSourceGpu(Options)` /
+  `VDBSparseVolumeGpu(Options)` / `VDBSparseLodGpu` → `vdbSparseSource` / `VDBSparseSource(Options)` /
+  `VDBSparseVolume(Options)` / `VDBSparseLod`, `VDBFrameRendererGpu(Options)` / `VDBFrameVolumeGpu` →
+  `VDBFrameRenderer(Options)` / `VDBFrameVolume`, `vdbCreateLevelSetPassGpu` / `VDBLevelSetPassGpu(Options)` →
+  `vdbCreateLevelSetPass` / `VDBLevelSetPass(Options)`, `vdbCreatePointPassGpu` / `VDBPointPassGpu(Options)` →
+  `vdbCreatePointPass` / `VDBPointPass(Options)`. A core name may equal a `./three` name (the import path tells them
+  apart; `./three` wraps the core object): alias when you import both. `@pmndrs/vdb/three` no longer exports the type
+  `VDBFrameRendererGpu` (import `VDBFrameRenderer` from `@pmndrs/vdb`).
+- `VDBFrameLoader` → `VDBSequenceFrameLoader` (core and `./three`).
+- `wvdbPrefixLength`, `nvdbResponseLength` and `vdbMakeFpNLeafCodec` are no longer exported from `@pmndrs/vdb/tools`
+  (they are in `tools/internal`).
+
 ### Breaking (0.2.0, K6.8: `./three` is a thin adapter over the core frame renderer)
 
 - `@pmndrs/vdb/three`: `VDBFrameRenderer` draws every frame with the core frame renderer (compute kernels on three's
@@ -24,7 +40,7 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
     (`VDBFramePass` is removed).
   - `redrawStats` is the core's `VDBFrameRedrawStats` (with `volumeShadows`); `environment` / `environmentLights` (the
     TSL readback) are removed: the core extracts environment lights on the GPU.
-  - New `VDBFrameRenderer.core`: the `VDBFrameRendererGpu` (its `outputs`, after the first render).
+  - New `VDBFrameRenderer.core`: the `VDBFrameRenderer` (its `outputs`, after the first render).
   - `VDBFrameVolume.emissionColor` takes `VDBEmissionColor` data (`'white'`, `{ spectrum: 'planck' | 'soot', exponent }`,
     `{ lut }`, `{ wgsl }`); `vdbFrameBlackbodyEmission(s, e)` and `VDBFrameBlackbodyHook` are removed (use
     `{ spectrum: s, exponent: e }`). A TSL hook throws `VDB_BAD_OPTION`.
@@ -48,12 +64,12 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 
 ### Added
 
-- Core (0.2.0, K6): the frame renderer `vdbCreateFrameRenderer` (`VDBFrameRendererGpu`: `addVolume`, `update`, `render`,
-  `prepare`, `outputs`, `mlp`) with its input and output types; `vdbSparseSourceGpu` (one source per pool);
+- Core (0.2.0, K6): the frame renderer `vdbCreateFrameRenderer` (`VDBFrameRenderer`: `addVolume`, `update`, `render`,
+  `prepare`, `outputs`, `mlp`) with its input and output types; `vdbSparseSource` (one source per pool);
   `vdbFrameIntegrateWgsl` / `vdbFrameIntegrateEntries` (the composite in a host pass, `{ spectral }`),
   `vdbVolumeShadowWgsl` (`vdbVolumeShadow`, `vdbVolumeShadowCube`, `vdbVolumeShadowRgb`, `vdbVolumeShadowCubeRgb`;
   `VDB_VOLUME_SHADOW_VIEW`), `vdbEmissionProbeWgsl` (`VDB_EMISSION_GRID`); the level-set and point passes
-  (`vdbCreateLevelSetPassGpu`, `vdbLevelSetSurfaceWgsl`, `vdbCreatePointPassGpu`, `vdbPointSpriteWgsl`);
+  (`vdbCreateLevelSetPass`, `vdbLevelSetSurfaceWgsl`, `vdbCreatePointPass`, `vdbPointSpriteWgsl`);
   `VDBFrameUpdateOptions.timestampWrites`.
   - The defaults and limits: `vdbFrameDefaultSettings()` (the settings object, his defaults), `vdbFrameDefaultVolumeParams()`
     (a volume's parameters), `VDB_VOLUME_SHADOW_MAX_CASCADES`, `VDB_FRAME_LIGHT_BITS` / `VDB_FRAME_ALL_LIGHTS`.
@@ -61,7 +77,7 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
     `VDBFrameOccluder`, `VDBFrameTargets`, `VDBFrameSettings`, `VDBFrameVolumeParams`, `VDBFrameEmissionLightSettings`,
     `VDBEmissionColor`, `VDBFrameMlp` / `VDBFrameMlpLayer`, `VDBFramePhaseName`, `VDBFrameMultipleScatteringMode`,
     `VDBFrameWrap`, `VDBFrameMat4`, `VDBFrameVec3`; its outputs `VDBFrameOutputs`, `VDBFrameEmissionProbes`,
-    `VDBFrameUpdate`, `VDBFrameRedrawStats`, `VDBFrameTimestamps`; `VDBFrameVolumeGpu`, `VDBFrameRendererGpuOptions`.
+    `VDBFrameUpdate`, `VDBFrameRedrawStats`, `VDBFrameTimestamps`; `VDBFrameVolume`, `VDBFrameRendererOptions`.
   - `multipleScattering: 'neural'` (the default, our trained network) and `'mlp'` run the EXPERIMENTAL generic small MLP;
     its data shape (`VDBFrameMlp`) may change before 1.0.
 
@@ -121,7 +137,7 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
   `RangeError` on every update. Volume shadow maps (`castShadowMapSize`, `VDBFrameLight.shadow.size`) clamp to
   `maxTextureDimension2D` and to a texture whose zero-fill staging fits `maxBufferSize` (a point light's 6 faces count),
   warned once; a 4096 point map asked for 805 MB.
-- Core (K6.10a): replaced textures and buffers (the frame renderer, the level-set and point passes, `vdbSparseSourceGpu`,
+- Core (K6.10a): replaced textures and buffers (the frame renderer, the level-set and point passes, `vdbSparseSource`,
   `vdbDenseSource.replace` with a new size) are destroyed in a later task, so several updates recorded into one encoder
   before its submit no longer submit a destroyed texture. `vdbDenseSource.replace` destroyed the old textures at once.
 - Tools: the unknown-codec error names the real `nanovdb_convert` flags (`-z/--zip`, `-b/--blosc`); it suggested

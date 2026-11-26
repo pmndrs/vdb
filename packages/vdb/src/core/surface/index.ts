@@ -9,17 +9,17 @@ export {
   VDB_LEVEL_SET_BOX_TRIANGLES,
   VDB_LEVEL_SET_PASS_DRAW,
   VDB_LEVEL_SET_PASS_FRAME,
-  vdbCreateLevelSetPassGpu,
+  vdbCreateLevelSetPass,
   vdbLevelSetPassWgsl,
   vdbLevelSetProxyCorners,
 } from "./level-set-pass.js";
-export type { VDBLevelSetPassDraw, VDBLevelSetPassFrame, VDBLevelSetPassGpu, VDBLevelSetPassGpuOptions, VDBLevelSetPassPool } from "./level-set-pass.js";
+export type { VDBLevelSetPassDraw, VDBLevelSetPassFrame, VDBLevelSetPass, VDBLevelSetPassOptions, VDBLevelSetPassPool } from "./level-set-pass.js";
 export {
   VDB_POINT_PASS_FRAME,
   VDB_POINT_SPRITE_CORNERS,
-  vdbCreatePointPassGpu,
+  vdbCreatePointPass,
   vdbPointPassWgsl,
   vdbPointPixelScale,
   vdbPointSpriteWgsl,
 } from "./points.js";
-export type { VDBPointPassData, VDBPointPassFrame, VDBPointPassGpu, VDBPointPassGpuOptions } from "./points.js";
+export type { VDBPointPassData, VDBPointPassFrame, VDBPointPass, VDBPointPassOptions } from "./points.js";

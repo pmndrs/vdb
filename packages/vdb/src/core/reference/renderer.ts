@@ -4,7 +4,7 @@
  * progressively in rgba32float textures with per-pixel variance. Engine-free, internal only (no public export). The
  * CPU twin is `tools/reference/trace.ts` (same stream, same draw order).
  *
- *   const ref = await vdbCreateReferenceRendererGpu(device, { source, width, height });
+ *   const ref = await vdbCreateReferenceRenderer(device, { source, width, height });
  *   ref.setScene(scene, settings);                 // resets the accumulation
  *   const enc = device.createCommandEncoder();
  *   pool?.update(enc); source.update?.(enc);       // host order (Traps): the pool, the source, then the kernel
@@ -65,14 +65,14 @@ export const VDB_REFERENCE_SOURCE_SLOT: VDBSlot = Object.freeze({ group: 2, firs
 export const VDB_REFERENCE_MAX_BATCHES_PER_RENDER = 64;
 
 /** A source the kernel can read: the group-2 contract, plus the sparse source's module and update. */
-export type VDBReferenceSourceGpu = VDBVolumeSource & {
+export type VDBReferenceSource = VDBVolumeSource & {
   moduleWgsl?(slot: VDBSlot): string;
 };
 
-/** Options of {@link vdbCreateReferenceRendererGpu}. */
-export interface VDBReferenceRendererGpuOptions {
+/** Options of {@link vdbCreateReferenceRenderer}. */
+export interface VDBReferenceRendererOptions {
   /** The source every volume of the scene reads (its slots: `VDBReferenceVolume.v`). One source per kernel (D10). */
-  source: VDBReferenceSourceGpu;
+  source: VDBReferenceSource;
   width: number;
   height: number;
   label?: string;
@@ -81,7 +81,7 @@ export interface VDBReferenceRendererGpuOptions {
 }
 
 /** The reference renderer (internal). */
-export interface VDBReferenceRendererGpu {
+export interface VDBReferenceRenderer {
   readonly device: GPUDevice;
   readonly width: number;
   readonly height: number;
@@ -266,7 +266,7 @@ export function vdbReferencePackUniforms(scene: VDBReferenceScene, settingsIn: V
 }
 
 /** The composed WGSL of a reference kernel over `source` (module + source + kernel). */
-export function vdbReferenceWgsl(source: VDBReferenceSourceGpu): string {
+export function vdbReferenceWgsl(source: VDBReferenceSource): string {
   const slot = VDB_REFERENCE_SOURCE_SLOT;
   const module = typeof source.moduleWgsl === "function" ? source.moduleWgsl(slot) : "";
   const kernel = vdbReferenceKernelWgsl({
@@ -279,13 +279,13 @@ export function vdbReferenceWgsl(source: VDBReferenceSourceGpu): string {
   return `${module}\n${source.wgsl({ slot, profile: "sample" })}\n${kernel}`;
 }
 
-class ReferenceRenderer implements VDBReferenceRendererGpu {
+class ReferenceRenderer implements VDBReferenceRenderer {
   readonly device: GPUDevice;
   readonly width: number;
   readonly height: number;
   readonly wgsl: string;
   batches = 0;
-  readonly #source: VDBReferenceSourceGpu;
+  readonly #source: VDBReferenceSource;
   readonly #label: string;
   readonly #pipeline: GPUComputePipeline;
   readonly #layouts: GPUBindGroupLayout[];
@@ -306,7 +306,7 @@ class ReferenceRenderer implements VDBReferenceRendererGpu {
   // encoder, may still name them until the host submits)
   readonly #retire = new VDBRetireQueue();
 
-  constructor(device: GPUDevice, o: VDBReferenceRendererGpuOptions, wgsl: string, pipeline: GPUComputePipeline, layouts: GPUBindGroupLayout[]) {
+  constructor(device: GPUDevice, o: VDBReferenceRendererOptions, wgsl: string, pipeline: GPUComputePipeline, layouts: GPUBindGroupLayout[]) {
     this.device = device;
     this.width = o.width;
     this.height = o.height;
@@ -469,12 +469,12 @@ class ReferenceRenderer implements VDBReferenceRendererGpu {
  * Create the reference renderer on the host's device: compiles the kernel for `options.source` (under a validation
  * error scope; WGSL errors throw `VDBError('VDB_BAD_OPTION')` with the compiler messages).
  */
-export async function vdbCreateReferenceRendererGpu(device: GPUDevice, o: VDBReferenceRendererGpuOptions): Promise<VDBReferenceRendererGpu> {
+export async function vdbCreateReferenceRenderer(device: GPUDevice, o: VDBReferenceRendererOptions): Promise<VDBReferenceRenderer> {
   if (!device || typeof (device as { createComputePipelineAsync?: unknown }).createComputePipelineAsync !== "function") {
-    throw new VDBError("VDB_UNSUPPORTED_DEVICE", "vdbCreateReferenceRendererGpu: pass the host's GPUDevice.");
+    throw new VDBError("VDB_UNSUPPORTED_DEVICE", "vdbCreateReferenceRenderer: pass the host's GPUDevice.");
   }
   if (!(o.width >= 1 && o.height >= 1 && Number.isInteger(o.width) && Number.isInteger(o.height))) {
-    throw new VDBError("VDB_BAD_OPTION", `vdbCreateReferenceRendererGpu: width and height must be positive integers, got ${o.width}x${o.height}`);
+    throw new VDBError("VDB_BAD_OPTION", `vdbCreateReferenceRenderer: width and height must be positive integers, got ${o.width}x${o.height}`);
   }
   let wgsl = vdbReferenceWgsl(o.source);
   if (o.wgslPatch) wgsl = o.wgslPatch(wgsl);

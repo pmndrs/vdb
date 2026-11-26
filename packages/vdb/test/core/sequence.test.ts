@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { VDBError } from "../../src/core/errors.js";
 import { VDBSequence } from "../../src/core/sequence.js";
-import type { VDBFrameLoader, VDBSequenceLoopMode, VDBSequenceTarget } from "../../src/core/sequence.js";
+import type { VDBSequenceFrameLoader, VDBSequenceLoopMode, VDBSequenceTarget } from "../../src/core/sequence.js";
 
 /**
  * Node-safe `VDBSequence` tests: the prefetch ring + frame-time scheduler +
@@ -37,7 +37,7 @@ function makeTarget(id = 7): VDBSequenceTarget & { calls: number[]; ids: number[
 }
 
 /** Loader that resolves each frame immediately to `grid(i)`. */
-function immediateLoader(spy?: (i: number) => void): VDBFrameLoader {
+function immediateLoader(spy?: (i: number) => void): VDBSequenceFrameLoader {
   return (_url: string, i: number): Promise<Uint32Array> => {
     spy?.(i);
     return Promise.resolve(grid(i));
@@ -45,10 +45,10 @@ function immediateLoader(spy?: (i: number) => void): VDBFrameLoader {
 }
 
 /** Loader whose per-frame resolution you drive by hand (for stall tests). */
-function deferredLoader(): { loader: VDBFrameLoader; resolve: (i: number) => void; reject: (i: number, e: unknown) => void } {
+function deferredLoader(): { loader: VDBSequenceFrameLoader; resolve: (i: number) => void; reject: (i: number, e: unknown) => void } {
   const resolvers = new Map<number, (g: Uint32Array) => void>();
   const rejectors = new Map<number, (e: unknown) => void>();
-  const loader: VDBFrameLoader = (_url, i) =>
+  const loader: VDBSequenceFrameLoader = (_url, i) =>
     new Promise<Uint32Array>((res, rej) => {
       resolvers.set(i, res);
       rejectors.set(i, rej);
@@ -356,7 +356,7 @@ describe("VDBSequence — failed frames and disposal (K2 review)", () => {
     const calls = new Map<number, number>();
     let failFrame1 = true;
     const errors: number[] = [];
-    const loader: VDBFrameLoader = (_url, i) => {
+    const loader: VDBSequenceFrameLoader = (_url, i) => {
       calls.set(i, (calls.get(i) ?? 0) + 1);
       return i === 1 && failFrame1 ? Promise.reject(new Error("boom")) : Promise.resolve(grid(i));
     };

@@ -49,7 +49,7 @@ export {
   vdbFrameEnvReduceWgsl,
   vdbFrameEnvironmentGridWgsl,
 } from "./wgsl/environment.js";
-export type { VDBFrameRendererGpu, VDBFrameRendererGpuOptions } from "./renderer.js";
+export type { VDBFrameRenderer, VDBFrameRendererOptions } from "./renderer.js";
 export { vdbFrameDefaultSettings, vdbFrameDefaultInternalSettings } from "./settings.js";
 export type { VDBFrameSettings, VDBFrameInternalSettings, VDBFramePhaseName, VDBFrameMultipleScatteringMode } from "./settings.js";
 export { VDB_FRAME_ALL_LIGHTS, VDB_FRAME_LIGHT_BITS, vdbFrameDefaultVolumeParams } from "./types.js";
@@ -67,7 +67,7 @@ export type {
   VDBFrameUpdateOptions,
   VDBFrameTimestamps,
   VDBFrameVec3,
-  VDBFrameVolumeGpu,
+  VDBFrameVolume,
   VDBFrameVolumeParams,
   VDBFrameWrap,
   VDBFroxelLayout,

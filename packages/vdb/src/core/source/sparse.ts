@@ -6,10 +6,10 @@
 // coarse pyramids of all volumes packed in one r16float texture. Divergences: DIVERGES.md (K3.2 rows, K6.7 row).
 
 /**
- * `vdbSparseSourceGpu(pool, options)` (K6.7, design K6-core-renderer.md §2.1): the sparse volume source of the core
+ * `vdbSparseSource(pool, options)` (K6.7, design K6-core-renderer.md §2.1): the sparse volume source of the core
  * renderer, on raw WebGPU. One source serves every volume of one `VDBGridPool`:
  *
- *   const source = vdbSparseSourceGpu(pool, { followImage: true });
+ *   const source = vdbSparseSource(pool, { followImage: true });
  *   const slot = source.volume({ density: id });       // a VDBVolumeSlot; slot.v indexes the source's table
  *   // per frame, in the host's encoder:
  *   pool.update(encoder);
@@ -27,7 +27,7 @@
  * `VDB_ALL_SCALAR_TYPES`; the pyramid kernels of every type are compiled at creation when following images) a
  * swap creates no pipeline and no shader module (G16a).
  *
- * Per volume (see {@link VDBSparseVolumeGpu}): `texels`, `lodLevels`, `stats`, `boxToSource`, `bbox` and `version`
+ * Per volume (see {@link VDBSparseVolume}): `texels`, `lodLevels`, `stats`, `boxToSource`, `bbox` and `version`
  * describe that volume; the source's own copies of the {@link VDBVolumeSourceInfo} fields are aggregates.
  */
 
@@ -37,7 +37,7 @@ import type { VDBGridInfo, VDBGridPool } from "../pool/pool.js";
 import { VDB_ALL_SCALAR_TYPES, type VDBGridTypeName, type VDBSlot } from "../types.js";
 import { vdbModuleEntries, vdbModuleWgsl } from "../wgsl/generate.js";
 import type { VDBModuleHelper } from "../wgsl/types.js";
-import { vdbCreateBoxPyramid, warmBoxPyramidPipelines, type VDBBoxPyramidGpu } from "../compute/pyramid.js";
+import { vdbCreateBoxPyramid, warmBoxPyramidPipelines, type VDBBoxPyramid } from "../compute/pyramid.js";
 import { vdbBoxPyramidLayout, vdbPackPyramidBlocks, type VDBBoxPyramidLayout } from "../../tools/frame/pyramid-layout.js";
 import { vdbSparseDensityStats } from "../../tools/frame/sparse.js";
 import type { VDBVolumeChannels, VDBVolumeSlot, VDBVolumeSource, VDBVolumeSourceWgslOptions } from "./types.js";
@@ -53,7 +53,7 @@ const STAGE_FRAGMENT_COMPUTE = 0x2 | 0x4;
 const RETIRE_UPDATES = 2;
 
 /** The LOD strategies (R1 §4.3; `three/sparse-source.ts`). */
-export type VDBSparseLodGpu = "none" | "coarse-pyramid" | "node-average";
+export type VDBSparseLod = "none" | "coarse-pyramid" | "node-average";
 
 /** Inclusive voxel index box. */
 export interface VDBSparseIndexBox {
@@ -63,10 +63,10 @@ export interface VDBSparseIndexBox {
   max: Vec3;
 }
 
-/** Options of {@link vdbSparseSourceGpu}. */
-export interface VDBSparseSourceGpuOptions {
+/** Options of {@link vdbSparseSource}. */
+export interface VDBSparseSourceOptions {
   /** LOD strategy (default `'coarse-pyramid'`, the K3.2 pick). */
-  lod?: VDBSparseLodGpu;
+  lod?: VDBSparseLod;
   /** `'coarse-pyramid'`: base level texels on the longest side at most (default 128). */
   pyramidMax?: number;
   /** `'clamp01'` clamps each density sample to [0, 1] (his 8-bit range); default `'none'`. */
@@ -105,8 +105,8 @@ export interface VDBSparseVolumeGrids {
   emission?: number;
 }
 
-/** Per-volume options of {@link VDBSparseSourceGpu.volume}. */
-export interface VDBSparseVolumeGpuOptions {
+/** Per-volume options of {@link VDBSparseSource.volume}. */
+export interface VDBSparseVolumeOptions {
   /** Density index box the unit box covers (default: the grid's index bbox). Not with `followImage`. */
   indexBox?: VDBSparseIndexBox;
   /** Index boxes of the aux grids (default: each grid's own bbox). Not with `followImage`. */
@@ -120,9 +120,9 @@ export interface VDBSparseVolumeGpuOptions {
 }
 
 /** One volume of a sparse source: its slot and its own layout (the {@link VDBVolumeSlot} fields describe it). */
-export interface VDBSparseVolumeGpu extends VDBVolumeSlot {
+export interface VDBSparseVolume extends VDBVolumeSlot {
   readonly kind: "sparse";
-  readonly source: VDBSparseSourceGpu;
+  readonly source: VDBSparseSource;
   /** The pool ids of the channels. */
   readonly ids: Readonly<VDBSparseVolumeGrids>;
   /** The density index box the unit box covers. */
@@ -152,22 +152,22 @@ export interface VDBSparseSourceUpdate {
 }
 
 /** The sparse source of the core renderer. */
-export interface VDBSparseSourceGpu extends VDBVolumeSource {
+export interface VDBSparseSource extends VDBVolumeSource {
   readonly kind: "sparse";
   readonly pool: VDBGridPool;
-  readonly lod: VDBSparseLodGpu;
+  readonly lod: VDBSparseLod;
   readonly followImage: boolean;
   readonly maxVolumes: number;
   /** What the shader's one VDB module must include (profile, helpers, types). */
   readonly module: { readonly profile: "sample" | "march"; readonly helpers: readonly VDBModuleHelper[]; readonly types: readonly VDBGridTypeName[] };
   /** Live volumes, by slot. */
-  readonly volumes: readonly VDBSparseVolumeGpu[];
+  readonly volumes: readonly VDBSparseVolume[];
   /** GPU bytes the source allocated: the table, the packed atlas, the pyramids' scratch buffers. */
   readonly gpuBytes: { readonly table: number; readonly atlas: number; readonly pyramidScratch: number };
   /** Pyramid builds recorded so far. */
   readonly pyramidBuilds: number;
   /** Adds a volume; returns its slot (lowest free `v`). */
-  volume(grids: VDBSparseVolumeGrids, options?: VDBSparseVolumeGpuOptions): VDBSparseVolumeGpu;
+  volume(grids: VDBSparseVolumeGrids, options?: VDBSparseVolumeOptions): VDBSparseVolume;
   /**
    * Records this frame's source work into the host's encoder: re-reads followed layouts, packs and (re)builds the
    * pyramids whose grid image changed or whose block moved, writes the volume table (`queue.writeBuffer`) and
@@ -183,7 +183,7 @@ export interface VDBSparseSourceGpu extends VDBVolumeSource {
   readonly atlas: GPUTexture | null;
 }
 
-const bad = (message: string) => new VDBError("VDB_BAD_OPTION", `vdbSparseSourceGpu: ${message}`);
+const bad = (message: string) => new VDBError("VDB_BAD_OPTION", `vdbSparseSource: ${message}`);
 
 function checkSlot(slot: VDBSlot, where: string): VDBSlot {
   if (!slot || !Number.isInteger(slot.group) || slot.group < 0 || !Number.isInteger(slot.firstBinding) || slot.firstBinding < 0) {
@@ -224,7 +224,7 @@ interface PyramidEntry {
   readonly box: VDBSparseIndexBox;
   readonly layout: VDBBoxPyramidLayout;
   refs: number;
-  gpu: VDBBoxPyramidGpu | null;
+  gpu: VDBBoxPyramid | null;
   base: Vec3 | null;
   atlas: Vec3 | null;
   /** A (re)build is needed whatever the grid's revision (new or moved block). */
@@ -238,7 +238,7 @@ interface Readback {
   mapping: Promise<void> | null;
 }
 
-class SparseVolume implements VDBSparseVolumeGpu {
+class SparseVolume implements VDBSparseVolume {
   readonly kind = "sparse" as const;
   readonly source: SparseSource;
   readonly v: number;
@@ -264,7 +264,7 @@ class SparseVolume implements VDBSparseVolumeGpu {
   readonly poolIds: number[];
   #versionSeen = { poolRevision: -1, value: 0 };
 
-  constructor(source: SparseSource, v: number, ids: VDBSparseVolumeGrids, o: VDBSparseVolumeGpuOptions) {
+  constructor(source: SparseSource, v: number, ids: VDBSparseVolumeGrids, o: VDBSparseVolumeOptions) {
     this.source = source;
     this.v = v;
     const albedo = Array.isArray(ids.albedo) ? ([...ids.albedo] as unknown as [number, number, number]) : ids.albedo;
@@ -310,7 +310,7 @@ class SparseVolume implements VDBSparseVolumeGpu {
     return this.#versionSeen.value;
   }
 
-  get pyramid(): VDBSparseVolumeGpu["pyramid"] {
+  get pyramid(): VDBSparseVolume["pyramid"] {
     const e = this.entry;
     return e ? { layout: e.layout, base: e.base, atlas: e.atlas } : null;
   }
@@ -364,14 +364,14 @@ class SparseVolume implements VDBSparseVolumeGpu {
   }
 }
 
-class SparseSource implements VDBSparseSourceGpu {
+class SparseSource implements VDBSparseSource {
   readonly kind = "sparse" as const;
   readonly pool: VDBGridPool;
-  readonly lod: VDBSparseLodGpu;
+  readonly lod: VDBSparseLod;
   readonly normalize: "none" | "clamp01";
   readonly followImage: boolean;
   readonly maxVolumes: number;
-  readonly module: VDBSparseSourceGpu["module"];
+  readonly module: VDBSparseSource["module"];
   readonly boxToSource = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
   pyramidBuilds = 0;
   readonly #device: GPUDevice;
@@ -397,7 +397,7 @@ class SparseSource implements VDBSparseSourceGpu {
   readonly #mappings = new Set<Promise<void>>();
   #disposed = false;
 
-  constructor(pool: VDBGridPool, o: VDBSparseSourceGpuOptions) {
+  constructor(pool: VDBGridPool, o: VDBSparseSourceOptions) {
     if (!pool || typeof (pool as { info?: unknown }).info !== "function" || !(pool as { device?: unknown }).device) throw bad("pass a VDBGridPool.");
     this.pool = pool;
     this.#device = pool.device;
@@ -492,7 +492,7 @@ class SparseSource implements VDBSparseSourceGpu {
     return this.#atlas;
   }
 
-  get gpuBytes(): VDBSparseSourceGpu["gpuBytes"] {
+  get gpuBytes(): VDBSparseSource["gpuBytes"] {
     const a = this.#atlas;
     let scratch = 0;
     for (const e of this.#pyramids.values()) scratch += e.gpu?.gpuBytes.scratch ?? 0;
@@ -502,7 +502,7 @@ class SparseSource implements VDBSparseSourceGpu {
   // ---- volumes ----
 
   #check(): void {
-    if (this.#disposed) throw new VDBError("VDB_DISPOSED", "vdbSparseSourceGpu: the source was disposed; create a new one.");
+    if (this.#disposed) throw new VDBError("VDB_DISPOSED", "vdbSparseSource: the source was disposed; create a new one.");
   }
 
   #checkTypes(infos: readonly { id: number; type: VDBGridTypeName }[], what: string): void {
@@ -510,12 +510,12 @@ class SparseSource implements VDBSparseSourceGpu {
     if (missing.length === 0) return;
     throw new VDBError(
       "VDB_TYPE_NOT_COMPILED",
-      `vdbSparseSourceGpu: ${what} is ${missing.map((m) => `grid ${m.id}: ${m.type}`).join(", ")}, but the source compiles only ${this.#types.join(", ")}; ` +
+      `vdbSparseSource: ${what} is ${missing.map((m) => `grid ${m.id}: ${m.type}`).join(", ")}, but the source compiles only ${this.#types.join(", ")}; ` +
         `it would read 0. Make the source with types that include every type the images will have (a coarse-first stream lists them in VDBCoarseFirstEvent.types).`,
     );
   }
 
-  volume(grids: VDBSparseVolumeGrids, o: VDBSparseVolumeGpuOptions = {}): VDBSparseVolumeGpu {
+  volume(grids: VDBSparseVolumeGrids, o: VDBSparseVolumeOptions = {}): VDBSparseVolume {
     this.#check();
     if (!grids || !Number.isInteger(grids.density)) throw bad("volume(): grids.density must be a pool grid id.");
     if (Array.isArray(grids.albedo) && grids.albedo.length !== 3) throw bad("volume(): albedo must be one id or three (RGB).");
@@ -534,7 +534,7 @@ class SparseSource implements VDBSparseSourceGpu {
     }
     let v = this.#slots.indexOf(null);
     if (v < 0) v = this.#slots.length;
-    if (v >= this.maxVolumes) throw new VDBError("VDB_POOL_FULL", `vdbSparseSourceGpu: all ${this.maxVolumes} volume slots are used (maxVolumes).`);
+    if (v >= this.maxVolumes) throw new VDBError("VDB_POOL_FULL", `vdbSparseSource: all ${this.maxVolumes} volume slots are used (maxVolumes).`);
     const volume = new SparseVolume(this, v, grids, o);
     this.#slots[v] = volume;
     for (const k of Object.keys(channels) as (keyof VDBVolumeChannels)[]) if (channels[k]) this.#channels[k] = true;
@@ -841,6 +841,6 @@ class SparseSource implements VDBSparseSourceGpu {
  * @param pool The pool whose grids the volumes read (the source creates its objects on `pool.device`).
  * @param options LOD, normalization, types, `followImage`, `skipEmpty`, sampling and size options.
  */
-export function vdbSparseSourceGpu(pool: VDBGridPool, options: VDBSparseSourceGpuOptions = {}): VDBSparseSourceGpu {
+export function vdbSparseSource(pool: VDBGridPool, options: VDBSparseSourceOptions = {}): VDBSparseSource {
   return new SparseSource(pool, options);
 }

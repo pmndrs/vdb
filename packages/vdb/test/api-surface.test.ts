@@ -6,7 +6,10 @@
  *    updated on purpose (`pnpm vitest run packages/vdb/test/api-surface.test.ts -u` at the root, then review
  *    the diff with the change).
  * 2. Every export follows the D32 naming rule (checked on the runtime values and the type names).
- * 3. A name exported from two subpaths is one declaration (one `VDBAtlasFilter`, one `VDBVec3`).
+ * 3. A name exported from two subpaths is one declaration (one `VDBAtlasFilter`, one `VDBVec3`), except the core / `./three`
+ *    pairs of D36 (the core object and the `./three` wrapper share a name; the import path tells them apart).
+ * 4. D36: no public name ends in `Gpu` (the GPU is the default); a name with a `Cpu` suffix is a CPU function that has a GPU
+ *    counterpart, so its unsuffixed name is exported by core or `./three`.
  *
  * Internals (`src/{core,tools,three}/internal.ts`) are not package exports and are not snapshotted.
  */
@@ -73,6 +76,8 @@ const D32 = {
   /** Spellings D32 retired: mixed-case format names and a person's name. */
   retired: /NanoVDB|NanoVdb|nanoVdb|mjurczyk/i,
 };
+/** D36: core objects and their `./three` wrappers that share one name (the import path tells them apart). */
+const CORE_THREE_SAME_NAME = ["VDBFrameRenderer", "VDBFrameVolume", "VDBSparseLod", "VDBSparseSourceOptions", "vdbDecodeToAtlas", "vdbGridStats", "vdbSparseSource"];
 /** The device helpers keep the names the other pmndrs tools use. */
 const PMNDRS_HELPERS = new Set(["getDevice", "getGPUTexture"]);
 
@@ -117,17 +122,38 @@ describe("public API surface (D32)", () => {
     });
   }
 
-  it("a name exported from two subpaths is one declaration", () => {
+  it("a name exported from two subpaths is one declaration (D36: but for the core / three pairs)", () => {
     const seen = new Map<string, { sub: Subpath; symbol: import("typescript").Symbol }>();
     const clashes: string[] = [];
+    const pairs = new Set<string>();
     for (const sub of Object.keys(SUBPATHS) as Subpath[]) {
       for (const e of api[sub]) {
         const first = seen.get(e.name);
-        if (first && first.symbol !== e.symbol) clashes.push(`${e.name} (${first.sub} and ${sub})`);
+        if (first && first.symbol !== e.symbol) {
+          if (first.sub === "." && sub === "./three") pairs.add(e.name);
+          else clashes.push(`${e.name} (${first.sub} and ${sub})`);
+        }
         if (!first) seen.set(e.name, { sub, symbol: e.symbol });
       }
     }
     expect(clashes).toEqual([]);
+    // The core object and its `./three` wrapper: every other name that both export is one declaration.
+    expect([...pairs].sort()).toEqual(CORE_THREE_SAME_NAME);
+  });
+
+  it("D36: no public name has a Gpu suffix; a Cpu name has an unsuffixed GPU counterpart in core or three", () => {
+    const names = (sub: Subpath) => new Set(api[sub].map((e) => e.name));
+    const gpuSide = new Set([...names("."), ...names("./three")]);
+    const gpu: string[] = [];
+    const orphans: string[] = [];
+    for (const sub of Object.keys(SUBPATHS) as Subpath[]) {
+      for (const e of api[sub]) {
+        if (/Gpu([A-Z]|$)/.test(e.name)) gpu.push(`${e.name} (${sub})`);
+        if (/Cpu/.test(e.name) && !gpuSide.has(e.name.replace("Cpu", ""))) orphans.push(`${e.name} (${sub})`);
+      }
+    }
+    expect(gpu).toEqual([]);
+    expect(orphans).toEqual([]);
   });
 
   it("the internals re-export the public API (tests import one module)", async () => {

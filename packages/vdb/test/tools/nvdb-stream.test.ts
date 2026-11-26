@@ -25,7 +25,7 @@ import {
   VDBUnsupportedError,
   writeNvdb,
   type NvdbStreamGrid,
-} from "../../src/tools/index.js";
+} from "../../src/tools/internal.js";
 
 
 /** A soft ball of radius r in a dims^3 block: a FLOAT image named `name`. */

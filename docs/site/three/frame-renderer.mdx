@@ -284,7 +284,7 @@ each use has a home:
 - **A custom TSL material over a NanoVDB grid:** `VDBGridNode` (see [VDBGridNode](/three/grid-node)) puts the pool in
   three's node system: `vdbSample` (trilinear), `vdbReadValue`, and its opt-in helpers (`cellBoundTrilinear`,
   `hddaCellEnd`, `nodeAverage`, `fastTrilinear`) as `wgslFn` includes. `VDBVolumeMaterial` is built on it.
-- **Custom WGSL or compute over a source:** the core's `vdbSparseSourceGpu` (one source per pool) and `vdbDenseSource`
+- **Custom WGSL or compute over a source:** the core's `vdbSparseSource` (one source per pool) and `vdbDenseSource`
   (a `.wvdb` volume) generate the `vdbSrc*` functions (`wgsl({ slot, profile })`: density, mask, albedo, emission, LOD,
   and the HDDA span in the `'march'` profile) and their bind group layout; see
   [Raw WebGPU](/core/raw-webgpu).

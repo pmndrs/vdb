@@ -9,7 +9,7 @@
 
 /**
  * The froxel renderer of `./three` (K6.8, design §6): a thin adapter over the core frame renderer. One
- * `VDBFrameRendererGpu` per three renderer device; in the first `VDBFrameVolume` proxy's `onBeforeRender` of a render (or
+ * core `VDBFrameRenderer` per three renderer device; in the first `VDBFrameVolume` proxy's `onBeforeRender` of a render (or
  * a volume shadow receiver's / the emission light's `updateBefore`, whichever comes first) it collects the volumes in the
  * camera's layers, converts the scene's lights (shadow cameras → volume shadow requests, three's shadow maps →
  * occluders), passes `scene.environment`, records `core.update()` into its own encoder and submits; three's frame
@@ -21,9 +21,9 @@ import type { WebGPURenderer } from "three/webgpu";
 import { vdbFrameMlpFromNeural, type VDBFrameMlp } from "../../tools/frame/mlp.js";
 import { vdbFrameNeuralWeights } from "../../tools/frame/neural-weights.js";
 import { vdbFrameDefaultSettings, type VDBFrameSettings } from "../../core/frame/settings.js";
-import { vdbCreateFrameRenderer, type VDBFrameRendererGpu } from "../../core/frame/renderer.js";
-import type { VDBEmissionColor, VDBFrameEmissionLightSettings, VDBFrameLight, VDBFrameRedrawStats, VDBFrameTimestamps, VDBFrameUpdate, VDBFrameVolumeGpu, VDBFrameVolumeParams, VDBVolumeShadowRequest } from "../../core/frame/types.js";
-import { vdbSparseSourceGpu, type VDBSparseSourceGpu, type VDBSparseVolumeGpu } from "../../core/source/sparse.js";
+import { vdbCreateFrameRenderer, type VDBFrameRenderer as VDBCoreFrameRenderer } from "../../core/frame/renderer.js";
+import type { VDBEmissionColor, VDBFrameEmissionLightSettings, VDBFrameLight, VDBFrameRedrawStats, VDBFrameTimestamps, VDBFrameUpdate, VDBFrameVolume as VDBCoreFrameVolume, VDBFrameVolumeParams, VDBVolumeShadowRequest } from "../../core/frame/types.js";
+import { vdbSparseSource as vdbCoreSparseSource, type VDBSparseSource as VDBCoreSparseSource, type VDBSparseVolume as VDBCoreSparseVolume } from "../../core/source/sparse.js";
 import { vdbDenseSource, type VDBDenseSource } from "../../core/source/dense.js";
 import type { VDBGridPool } from "../../core/pool/pool.js";
 import type { VDBGridTypeName } from "../../core/types.js";
@@ -83,18 +83,18 @@ export class VDBFrameRenderer {
    */
   froxels = true;
 
-  #core: VDBFrameRendererGpu | null = null;
+  #core: VDBCoreFrameRenderer | null = null;
   #device: GPUDevice | null = null;
   #material: VDBFrameCoreIntegrateMaterial | null = null;
   readonly #prefix = new VDBCoreTextureBinding();
   /** K6.4: the stand-in of the spectral alpha prefix (`outputs.froxels.integratedAlpha`). */
   readonly #alphaPrefix = new VDBCoreTextureBinding();
   #denseSources = new WeakMap<object, VDBDenseSource>();
-  #sparseSources = new Map<object, Map<string, VDBSparseSourceGpu>>();
-  #sparseSlots = new WeakMap<object, VDBSparseVolumeGpu>();
+  #sparseSources = new Map<object, Map<string, VDBCoreSparseSource>>();
+  #sparseSlots = new WeakMap<object, VDBCoreSparseVolume>();
   /** The three source's stats object each core slot last took (a new object: `refreshStats()` ran). */
   #slotStats = new WeakMap<object, object>();
-  #volumes = new Map<VDBFrameVolume, VDBFrameVolumeGpu>();
+  #volumes = new Map<VDBFrameVolume, VDBCoreFrameVolume>();
   #frameId = 0;
   #frameKey: { renderId: number; camera: THREE.Camera; scene: object; result: VDBFrameUpdate } | null = null;
   #cachedFrame = -1;
@@ -108,7 +108,7 @@ export class VDBFrameRenderer {
   readonly volumeShadows: VDBFrameVolumeShadowReceivers = new VDBFrameVolumeShadowReceivers(this);
 
   /** The core frame renderer (made at the first render, per device; null before). Read its `outputs`; set nothing on it. */
-  get core(): VDBFrameRendererGpu | null {
+  get core(): VDBCoreFrameRenderer | null {
     return this.#core;
   }
 
@@ -197,7 +197,7 @@ export class VDBFrameRenderer {
     // K6.5: the volume shadow filter on each shadow light (receivers build with it from the next render)
     this.volumeShadows.update(renderer, scene);
 
-    const seen = new Set<VDBFrameVolumeGpu>();
+    const seen = new Set<VDBCoreFrameVolume>();
     scene.traverseVisible((object) => {
       const frameVolume = object as VDBFrameVolume;
       if (!frameVolume.isVDBFrameVolume || frameVolume.frameRenderer !== this || !frameVolume.proxy.layers.test(camera.layers)) return;
@@ -260,7 +260,7 @@ export class VDBFrameRenderer {
   }
 
   /** The core volume of a frame volume: its dense source uploaded once on the core side, or a slot of a sparse source. */
-  #volumeOf(frameVolume: VDBFrameVolume, device: GPUDevice): VDBFrameVolumeGpu {
+  #volumeOf(frameVolume: VDBFrameVolume, device: GPUDevice): VDBCoreFrameVolume {
     if (frameVolume.source.kind !== "dense") return this.#sparseVolumeOf(frameVolume);
     const three = frameVolume.source as VDBThreeDenseSource;
     let source = this.#denseSources.get(three);
@@ -283,11 +283,11 @@ export class VDBFrameRenderer {
   }
 
   /**
-   * K6.1d: the core volume of a frame volume on a sparse source: one `vdbSparseSourceGpu` per pool and source options
+   * K6.1d: the core volume of a frame volume on a sparse source: one core `vdbSparseSource` per pool and source options
    * (its pyramids are the core's own), one slot per three source with the same grids, boxes and stats. K6.8a: the three
    * source is a handle; its TSL half (and its own pyramid) is never made here.
    */
-  #sparseVolumeOf(frameVolume: VDBFrameVolume): VDBFrameVolumeGpu {
+  #sparseVolumeOf(frameVolume: VDBFrameVolume): VDBCoreFrameVolume {
     const three = frameVolume.source as VDBThreeSparseSource & {
       auxBoxes?: Record<"mask" | "albedo" | "emission", VDBIndexBox | null>;
       pyramidOptions?: { pyramidMax?: number };
@@ -308,7 +308,7 @@ export class VDBFrameRenderer {
     if (!byKey) this.#sparseSources.set(pool, (byKey = new Map()));
     let source = byKey.get(key);
     if (!source) {
-      source = vdbSparseSourceGpu(pool, { ...options, label: "vdb three sparse" });
+      source = vdbCoreSparseSource(pool, { ...options, label: "vdb three sparse" });
       byKey.set(key, source);
     }
     let handle = this.#volumes.get(frameVolume);
@@ -323,7 +323,7 @@ export class VDBFrameRenderer {
     } else if (this.#slotStats.get(slot) !== three.stats) {
       // the three source re-read its stats (`refreshStats()` after a replace): the core slot takes them now, instead of
       // a frame or two later from its own readback of the same image (a coarse-first swap's first full frame, G16a)
-      (slot as { stats: VDBSparseVolumeGpu["stats"] }).stats = { ...three.stats };
+      (slot as { stats: VDBCoreSparseVolume["stats"] }).stats = { ...three.stats };
       this.#slotStats.set(slot, three.stats);
     }
     if (handle && handle.slot !== slot) {
@@ -476,7 +476,7 @@ export class VDBFrameRenderer {
    * `slot.source` is the core source the frame renderer made for it; a sparse volume's pyramids live there (its
    * `gpuBytes`), not in the three source (demo 15's GPU bytes).
    */
-  coreVolumeOf(frameVolume: VDBFrameVolume): VDBFrameVolumeGpu | null {
+  coreVolumeOf(frameVolume: VDBFrameVolume): VDBCoreFrameVolume | null {
     return this.#volumes.get(frameVolume) ?? null;
   }
 

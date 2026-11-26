@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-// K6.7: the core sparse source (`vdbSparseSourceGpu`) on raw WebGPU against its CPU twins
+// K6.7: the core sparse source (`vdbSparseSource`) on raw WebGPU against its CPU twins
 // (examples/src/harness/k6-sparse.ts). Per LOD strategy ('none' + clamp01, 'coarse-pyramid', 'node-average'), five
 // volumes over one pool (slot reuse, one grid under two boxes, Fp8, every aux channel), N = 1024 fixed-seed samples:
 // density within the documented bound (1e-4 (1 + scale), + 2^-7 scale when a pyramid tap contributes), the aux

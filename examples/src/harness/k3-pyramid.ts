@@ -24,7 +24,7 @@
 import * as THREE from "three";
 import { installWgslPatch, type VDBWgslPatches } from "./wgsl-patch.js";
 import { WebGPURenderer } from "three/webgpu";
-import { VDBGridPool, vdbCreateBoxPyramid, type VDBBoxPyramidGpu } from "@pmndrs/vdb";
+import { VDBGridPool, vdbCreateBoxPyramid, type VDBBoxPyramid } from "@pmndrs/vdb";
 import { VDBGridNode, vdbSparseSource } from "@pmndrs/vdb/three";
 import { NvdbFile, buildFromVdb, parseVdb, readWvdb, vdbBoxPyramid, wvdbDenseToNvdb, wvdbDenseVolume } from "../../../packages/vdb/src/tools/internal.js";
 import cloudWvdbUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
@@ -202,7 +202,7 @@ function cpuPyramid(image: Uint32Array, indexBox: { min: Vec3; max: Vec3 }, pyra
   return { p, base, atlas, ms: performance.now() - t0 };
 }
 
-async function checkAgainstCpu(device: GPUDevice, pyramid: VDBBoxPyramidGpu, cpu: { base: Uint16Array; atlas: Uint16Array | null }) {
+async function checkAgainstCpu(device: GPUDevice, pyramid: VDBBoxPyramid, cpu: { base: Uint16Array; atlas: Uint16Array | null }) {
   const base = compare(await readHalfTexture(device, pyramid.base), cpu.base);
   const atlas = pyramid.atlas && cpu.atlas ? compare(await readHalfTexture(device, pyramid.atlas), cpu.atlas) : null;
   if (!!pyramid.atlas !== !!cpu.atlas) throw new Error("atlas presence differs between GPU and CPU");

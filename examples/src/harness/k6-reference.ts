@@ -1,5 +1,5 @@
 /**
- * K6.R harness: the reference renderer (`vdbCreateReferenceRendererGpu`, core) on raw WebGPU, no three.
+ * K6.R harness: the reference renderer (`vdbCreateReferenceRenderer`, core) on raw WebGPU, no three.
  *
  * Modes (`?case=`):
  * - `analytic` (default): the GPU kernel on analytic cases over a constant dense volume (2³ texels of 255: trilinear
@@ -9,7 +9,7 @@
  *   `?mutate=<name>` patches the WGSL (`VDB_REFERENCE_MUTATIONS`); some case must fail.
  * - `twin`: the GPU kernel against its CPU twin (`vdbReferenceRenderCpu`, the same random stream): the committed CC0
  *   cloud through `vdbDenseSource` (perspective camera, sun + point light, hemisphere + ambient environment,
- *   dual-lobe phase, multiple scattering), and synthetic grids through `vdbSparseSourceGpu` (two overlapping
+ *   dual-lobe phase, multiple scattering), and synthetic grids through `vdbSparseSource` (two overlapping
  *   instances of one grid + a volume with mask, RGB albedo and emission; a spot light, an equirect environment).
  *   Per pixel and channel |GPU − CPU| ≤ k·√(σ²_GPU + σ²_CPU); also the share of values equal to 1e-3 relative (the
  *   shared stream makes most paths identical). `&determinism=1` renders the dense case twice (bitwise equal).
@@ -26,10 +26,10 @@
 import { VDBGridPool, vdbDenseSource } from "@pmndrs/vdb";
 import {
   VDB_REFERENCE_MUTATIONS,
-  vdbCreateReferenceRendererGpu,
-  vdbSparseSourceGpu,
-  type VDBReferenceSourceGpu,
-  type VDBSparseSourceGpu,
+  vdbCreateReferenceRenderer,
+  vdbSparseSource,
+  type VDBReferenceSource,
+  type VDBSparseSource,
 } from "../../../packages/vdb/src/core/internal.js";
 import {
   readWvdb,
@@ -202,14 +202,14 @@ function constantDense(density: number, emission: number | null): WvdbDenseVolum
 // ── GPU render ────────────────────────────────────────────────────────────────────────────────────────
 
 interface GpuJob {
-  source: VDBReferenceSourceGpu;
-  sparse?: VDBSparseSourceGpu;
+  source: VDBReferenceSource;
+  sparse?: VDBSparseSource;
   width: number;
   height: number;
 }
 
 async function makeRenderer(device: GPUDevice, job: GpuJob, patch?: (w: string) => string) {
-  return vdbCreateReferenceRendererGpu(device, { source: job.source, width: job.width, height: job.height, label: "k6-reference", ...(patch ? { wgslPatch: patch } : {}) });
+  return vdbCreateReferenceRenderer(device, { source: job.source, width: job.width, height: job.height, label: "k6-reference", ...(patch ? { wgslPatch: patch } : {}) });
 }
 
 async function renderGpu(device: GPUDevice, ref: Awaited<ReturnType<typeof makeRenderer>>, job: GpuJob, scene: VDBReferenceScene, settings: Settings, batches: number, chunk = 8): Promise<VDBReferenceAccum> {
@@ -490,7 +490,7 @@ async function twinSparse(device: GPUDevice): Promise<void> {
   const ids = { s: add(S), m: add(M), r: add(R), g: add(G), b: add(B), e: add(E) };
   pool.flush();
   await pool.settled();
-  const source = vdbSparseSourceGpu(pool, { lod: "none", normalize: "clamp01", types: ["float"], maxVolumes: 4, label: "k6-reference sparse" });
+  const source = vdbSparseSource(pool, { lod: "none", normalize: "clamp01", types: ["float"], maxVolumes: 4, label: "k6-reference sparse" });
   const plain = source.volume({ density: ids.s }, { image: S });
   const rich = source.volume({ density: ids.s, mask: ids.m, albedo: [ids.r, ids.g, ids.b], emission: ids.e }, { image: S });
   const own = (id: number) => {
@@ -575,7 +575,7 @@ async function twinFeatures(device: GPUDevice): Promise<void> {
   const ids = { s: pool.add(S), e: pool.add(E) };
   pool.flush();
   await pool.settled();
-  const source = vdbSparseSourceGpu(pool, { lod: "none", normalize: "none", types: ["float"], maxVolumes: 4, label: "k6-reference features" });
+  const source = vdbSparseSource(pool, { lod: "none", normalize: "none", types: ["float"], maxVolumes: 4, label: "k6-reference features" });
   const plain = source.volume({ density: ids.s }, { image: S });
   const hot = source.volume({ density: ids.s, emission: ids.e }, { image: S });
   const box = (id: number) => {
@@ -886,7 +886,7 @@ async function sceneReport(device: GPUDevice): Promise<void> {
     if (!info.hasStats) result.warnings.push(`${def.asset}: the grid has no node stats; the majorant grid is not a bound`);
     if (info.background !== 0) result.warnings.push(`${def.asset}: background ${info.background} ≠ 0 (the majorant grid assumes 0)`);
     k6SparseBox(asset, info);
-    const source = vdbSparseSourceGpu(pool, { lod: "none", normalize: "none", maxVolumes: 1, label: "k6-reference scene" });
+    const source = vdbSparseSource(pool, { lod: "none", normalize: "none", maxVolumes: 1, label: "k6-reference scene" });
     const slot = source.volume({ density: id }, { image: asset.image, stats: asset.stats, bbox: asset.bbox });
     v = slot.v;
     majorantGrid = vdbReferenceMajorantGridSparse(asset.image, slot.indexBox, { cellVoxels: 8 });

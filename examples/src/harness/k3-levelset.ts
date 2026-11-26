@@ -20,11 +20,11 @@
  *   lights are not reproduced; ours use his sun + hemisphere). 1280x720; the camera and object matrices come
  *   from `?manifest=` (default `/fixtures/k3-reference/75e7345/manifest.json`) when it has the scenario.
  *
- * K6.6 (`?backend=core`): the level-set scenes render through the core's raw pass (`vdbCreateLevelSetPassGpu`,
+ * K6.6 (`?backend=core`): the level-set scenes render through the core's raw pass (`vdbCreateLevelSetPass`,
  * G-buffer + shade, no three objects) and are compared with the K6.6 surface twins (`levelSetPixelUv`,
  * `levelSetViewRay`, `levelSetSurface`): the same Stats plus NDC depth and shade; `&vsThree=1` also renders
  * three's `VDBLevelSetMaterial` probe on the same device and compares the two (IoU, hits, normals). The point
- * scenes render through `vdbCreatePointPassGpu` (analytic disc: strays judged against the disc). `sprite-probe`:
+ * scenes render through `vdbCreatePointPass` (analytic disc: strays judged against the disc). `sprite-probe`:
  * the sprite WGSL in a compute kernel vs the f32 twin. `?mutate=` breaks one twin term (pixel-corner,
  * ray-ortho, normal-view, depth-linear, shade-sign; sprite-half, sprite-min, sprite-w): the gate must fail.
  * K6.10b `&ortho=1` (core): an orthographic camera with his camera's pose and framing (the pass takes it from the

@@ -7,7 +7,7 @@
 // pyramid atlas. Divergences: DIVERGES.md (K3.2 rows; K6.7 row).
 
 /**
- * The WGSL and the uniform record of the core sparse source (K6.7, `vdbSparseSourceGpu`). Every `vdbSrc*` function
+ * The WGSL and the uniform record of the core sparse source (K6.7, `vdbSparseSource`). Every `vdbSrc*` function
  * takes `v: u32`, the volume's source-local slot, which indexes `vdbSrcVolumes`. The maths is the TSL source's
  * (`three/sparse-source.ts`): the same sample position, the same three LOD strategies and the same HDDA rules.
  */
@@ -118,7 +118,7 @@ export function sparseSourceWgsl(c: SparseWgslConfig): string {
   const { slot } = c;
   const bind = sparseBindings(slot, c.lod);
   const out: string[] = [
-    `// vdbSparseSourceGpu (K6.7): ${c.lod}, ${c.maxVolumes} volumes. Needs the VDB module at group ${slot.group}, binding ${slot.firstBinding}.`,
+    `// vdbSparseSource (K6.7): ${c.lod}, ${c.maxVolumes} volumes. Needs the VDB module at group ${slot.group}, binding ${slot.firstBinding}.`,
     sparseRecordStructWgsl(),
     `@group(${slot.group}) @binding(${bind.table}) var<uniform> vdbSrcVolumes: array<VdbSrcVolume, ${c.maxVolumes}>;`,
   ];

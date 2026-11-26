@@ -1,7 +1,7 @@
 /**
  * The level-set surface function (K6.6, design §3.9): the fragment-stage wrapper of the `'levelSet'`
  * helper's trace for hosts that shade with their own BRDF. `VDBLevelSetMaterial` (`./three`) calls it
- * through `wgslFn`; the raw reference pass (`vdbCreateLevelSetPassGpu`) calls it from its fragment entry.
+ * through `wgslFn`; the raw reference pass (`vdbCreateLevelSetPass`) calls it from its fragment entry.
  *
  * Portions derived from mjurczyk/openvdb (MIT), commit 75e7345
  * (`src/three-openvdb/levelset/webgpu/LevelSetSurfaceMaterial.js`: perspective and orthographic view rays,

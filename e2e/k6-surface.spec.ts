@@ -6,7 +6,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { encodePng } from "../scripts/k3/png.mjs";
 
 // K6.6 (design §3.9): level-set surfaces and point sprites through the core's raw passes
-// (`vdbCreateLevelSetPassGpu`, `vdbCreatePointPassGpu`, no three objects), on the K3.7 harness with
+// (`vdbCreateLevelSetPass`, `vdbCreatePointPass`, no three objects), on the K3.7 harness with
 // `?backend=core` (examples/src/harness/k3-levelset.ts + k6-surface-core.ts). Gates: the raw pass against the
 // K6.6 surface twins (IoU, hits, normals, NDC depth, shade), against three's VDBLevelSetMaterial on the same
 // device (`&vsThree=1`: the K3 path), the points' drawn count and disc coverage, the sprite WGSL against its f32

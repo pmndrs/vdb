@@ -6,10 +6,10 @@ import {
     vdbEmissionProbeWgsl,
     vdbFrameIntegrateEntries,
     vdbFrameIntegrateWgsl,
-    vdbSparseSourceGpu,
+    vdbSparseSource,
     vdbVolumeShadowWgsl,
     type VDBFrameInput,
-    type VDBFrameRendererGpu,
+    type VDBFrameRenderer,
     type VDBFrameUpdate,
 } from '@pmndrs/vdb';
 
@@ -29,7 +29,7 @@ export async function setup(adapter: GPUAdapter, cloudImage: Uint32Array, fireDe
     const pool = await VDBGridPool.create(device);
 
     // One sparse source serves every volume of one pool: one bind group, one dispatch per frame.
-    const source = vdbSparseSourceGpu(pool, { types: ['fp8', 'float'] });
+    const source = vdbSparseSource(pool, { types: ['fp8', 'float'] });
     const cloudSlot = source.volume({ density: pool.add(cloudImage) }, { image: cloudImage });
     const fireSlot = source.volume({ density: pool.add(fireDensity), emission: pool.add(fireTemperature) });
 
@@ -53,8 +53,8 @@ export async function setup(adapter: GPUAdapter, cloudImage: Uint32Array, fireDe
 export function frameLoop(
     device: GPUDevice,
     pool: VDBGridPool,
-    source: ReturnType<typeof vdbSparseSourceGpu>,
-    frame: VDBFrameRendererGpu,
+    source: ReturnType<typeof vdbSparseSource>,
+    frame: VDBFrameRenderer,
     camera: Camera,
     size: [number, number],
     targets: { color: GPUTexture; sceneColor: GPUTexture; depth: GPUTexture },

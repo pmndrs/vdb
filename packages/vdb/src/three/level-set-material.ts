@@ -9,7 +9,7 @@
  *   // per frame: pool.update(encoder) (or pool.flush()), then grids.update(), then render.
  *
  * The trace, normal and pixel ray are the core's `vdbLevelSetSurface` / `vdbLevelSetViewRay` WGSL
- * (`core/surface/level-set-wgsl.ts`, K6.6), the same functions the raw pass `vdbCreateLevelSetPassGpu`
+ * (`core/surface/level-set-wgsl.ts`, K6.6), the same functions the raw pass `vdbCreateLevelSetPass`
  * calls; this material adds three's lighting, shadows and depth conventions around them.
  *
  * Portions derived from mjurczyk/openvdb (MIT), commit 75e7345

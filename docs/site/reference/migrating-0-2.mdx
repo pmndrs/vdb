@@ -10,8 +10,30 @@ In 0.2.0 the froxel renderer moved into the core: `@pmndrs/vdb` draws every fram
 switch are gone. Frames match 0.1's TSL path closely (57–70 dB on mjurczyk's scenes in the K6 A/Bs; the `'outward'`
 environment irradiance, about 47 dB, differs most), and volume silhouettes can differ by a pixel. The full list is in the [changelog](https://github.com/pmndrs/vdb/blob/main/packages/vdb/CHANGELOG.md).
 
-Nothing outside the froxel renderer changed: `VDBGridPool`, `VDBGridNode`, `VDBVolumeMaterial`, the level sets, the
-points and the tools keep their 0.1 API.
+Beyond the froxel renderer, 0.2 only renames the core's GPU names (below) and takes three helpers out of the tools'
+public API. `VDBGridPool`, `VDBGridNode`, `VDBVolumeMaterial`, the level sets and the points keep their 0.1 API.
+
+## Core names lose the `Gpu` suffix
+
+The GPU is the default, so a name carries no `Gpu`; a `Cpu` suffix marks the CPU twin of a GPU function. `@pmndrs/vdb`
+(the core) and `@pmndrs/vdb/three` can now export one name each (`vdbGridStats`, `vdbDecodeToAtlas`, `vdbSparseSource`,
+`VDBFrameRenderer`, `VDBFrameVolume`, `VDBSparseLod`, `VDBSparseSourceOptions`): the core's takes a `GPUDevice` and an
+encoder, the `./three` one a three renderer or object. Import by path; alias when you use both
+(`import { VDBFrameRenderer as VDBCoreFrameRenderer } from '@pmndrs/vdb'`).
+
+| 0.1 / pre-release (`@pmndrs/vdb`) | 0.2 (`@pmndrs/vdb`) |
+|---|---|
+| `vdbGridStatsGpu` | `vdbGridStats` |
+| `vdbDecodeToAtlasGpu` | `vdbDecodeToAtlas` |
+| `VDBBoxPyramidGpu`, `VDBBoxPyramidGpuOptions` | `VDBBoxPyramid`, `VDBBoxPyramidOptions` |
+| `vdbSparseSourceGpu`, `VDBSparseSourceGpu`, `VDBSparseSourceGpuOptions` | `vdbSparseSource`, `VDBSparseSource`, `VDBSparseSourceOptions` |
+| `VDBSparseVolumeGpu`, `VDBSparseVolumeGpuOptions`, `VDBSparseLodGpu` | `VDBSparseVolume`, `VDBSparseVolumeOptions`, `VDBSparseLod` |
+| `VDBFrameRendererGpu`, `VDBFrameRendererGpuOptions`, `VDBFrameVolumeGpu` | `VDBFrameRenderer`, `VDBFrameRendererOptions`, `VDBFrameVolume` |
+| `vdbCreateLevelSetPassGpu`, `VDBLevelSetPassGpu`, `VDBLevelSetPassGpuOptions` | `vdbCreateLevelSetPass`, `VDBLevelSetPass`, `VDBLevelSetPassOptions` |
+| `vdbCreatePointPassGpu`, `VDBPointPassGpu`, `VDBPointPassGpuOptions` | `vdbCreatePointPass`, `VDBPointPass`, `VDBPointPassOptions` |
+| `VDBFrameRendererGpu` (type, from `@pmndrs/vdb/three`) | removed: it would collide with the `./three` class. `frameRenderer.core` is typed by the core's `VDBFrameRenderer` |
+| `VDBFrameLoader` (core and `./three`) | `VDBSequenceFrameLoader` |
+| `wvdbPrefixLength`, `nvdbResponseLength`, `vdbMakeFpNLeafCodec` (`@pmndrs/vdb/tools`) | not public API (`tools/internal`); X |
 
 ## Removed names
 
@@ -32,10 +54,10 @@ points and the tools keep their 0.1 API.
 | `VDBFrameRenderer.renderFroxels()`, `holdFroxels` | `VDBFrameRenderer.froxels` (`false` keeps the last froxels) |
 | `VDBFrameRenderer.environment`, `environmentLights` (a readback) | none: the core extracts the environment lights on the GPU |
 | `VDBFrameRenderer.redrawStats` | the core's `VDBFrameRedrawStats` (adds `volumeShadows`) |
-| none | `VDBFrameRenderer.core`: the `VDBFrameRendererGpu` (its `outputs`), after the first render |
+| none | `VDBFrameRenderer.core`: the `VDBFrameRenderer` (core) (its `outputs`), after the first render |
 | `VDBFrameVolume.volumes[0].matrix` | `VDBFrameVolume.boxMatrix` |
 | `VDBFrameVolume.sourceUniforms`, `volumes`, the pass-material fields | none |
-| `vdbVolumeUniforms`, `vdbVolumeNodes`, `VDBVolumeNodes`, `VDBVolumeNodesOptions`, `VDBVolumeUniforms`, `VDBVolumeUniformParameters`, `VDBThreeSourceFactory` | deleted in 0.2.0 (no deprecation cycle). A custom TSL material samples a pooled grid through `VDBGridNode` (`vdbSample`, `vdbReadValue`, the helpers); custom WGSL or compute uses the core's `vdbSparseSourceGpu` / `vdbDenseSource` `wgsl()`; the full look is `VDBFrameRenderer` |
+| `vdbVolumeUniforms`, `vdbVolumeNodes`, `VDBVolumeNodes`, `VDBVolumeNodesOptions`, `VDBVolumeUniforms`, `VDBVolumeUniformParameters`, `VDBThreeSourceFactory` | deleted in 0.2.0 (no deprecation cycle). A custom TSL material samples a pooled grid through `VDBGridNode` (`vdbSample`, `vdbReadValue`, the helpers); custom WGSL or compute uses the core's `vdbSparseSource` / `vdbDenseSource` `wgsl()`; the full look is `VDBFrameRenderer` |
 | `VDBThreeDenseSource.textures`, `VDBDenseChannelTextures` | none: `vdbDenseTextures(volume)` is a handle with no GPU object (the core's `vdbDenseSource` uploads the texels) |
 | `VDBThreeSparseSource.pyramid`, `pyramidBuilds`, `refreshPyramid()`, `nodeAverageFn()`, `skipEmptyFn()`, `createUniforms()`, `createNodes()`, `VDBSparsePyramid`, `VDBSparseVolumeUniforms`; the `pyramidBuild` option | none: the frame renderer's core source builds its own pyramid on the GPU (`pyramidMax` still sizes it). `gpuBytes` is `{ pool }`; nothing calls `refreshStats()` for you now (`VDBFrameRenderer` copies a changed `stats` into its core slot) |
 | `froxelMix: 'mixture' \| 'over'` | none: overlapping volumes in a froxel always combine order-independently (the former `'mixture'`). His draw-order "over" blend is deleted |

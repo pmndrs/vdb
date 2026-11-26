@@ -99,7 +99,7 @@ export type VDBSequenceTarget<TFrame = Uint32Array> =
   | { readonly source: { replace(frame: TFrame): void } };
 
 /** Decodes one frame's URL (or index) into a frame: a NanoVDB grid image by default. */
-export type VDBFrameLoader<TFrame = Uint32Array> = (url: string, index: number) => Promise<TFrame>;
+export type VDBSequenceFrameLoader<TFrame = Uint32Array> = (url: string, index: number) => Promise<TFrame>;
 
 /**
  * What playback does at the end of its range: wrap to the start (`'repeat'`), turn around (`'pingpong'`), or hold
@@ -138,7 +138,7 @@ export interface VDBSequenceOptions<TFrame = Uint32Array> {
    * The demo passes an in-memory loader (build frames on the fly, no fetch);
    * the URL/fetch path is exercised via a Blob-URL manifest + this default.
    */
-  loader?: VDBFrameLoader<TFrame>;
+  loader?: VDBSequenceFrameLoader<TFrame>;
   /** Clock source. Default `performance.now`. Injected as a fake in tests. */
   now?: () => number;
   /** Fired whenever a NEW frame is shown (after its `pool.replace`). */
@@ -200,7 +200,7 @@ export class VDBSequence<TFrame = Uint32Array> {
   private startDir: 1 | -1 = 1;
 
   private readonly urlFor: (index: number) => string;
-  private readonly loader: VDBFrameLoader<TFrame>;
+  private readonly loader: VDBSequenceFrameLoader<TFrame>;
   private readonly hasLoader: boolean;
   private readonly now: () => number;
   private readonly onFrame: VDBSequenceOptions<TFrame>["onFrame"];
@@ -258,7 +258,7 @@ export class VDBSequence<TFrame = Uint32Array> {
     const urls = opts.urls;
     this.urlFor = typeof urls === "function" ? urls : (i: number): string => urls[i] ?? "";
     this.hasLoader = !!opts.loader;
-    this.loader = opts.loader ?? (defaultLoader as unknown as VDBFrameLoader<TFrame>);
+    this.loader = opts.loader ?? (defaultLoader as unknown as VDBSequenceFrameLoader<TFrame>);
     this.now = opts.now ?? ((): number => performance.now());
     this.onFrame = opts.onFrame;
     this.onError = opts.onError;
