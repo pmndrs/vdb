@@ -207,6 +207,7 @@ async function runShadow(renderer: WebGPURenderer, device: GPUDevice): Promise<v
     jitter: false,
     lighting: LIGHTING,
     multipleScattering: true,
+    ambientOcclusion: params.get("ao") !== "0",
     castShadows: CAST,
     castShadowMapSize: MAP_SIZE,
     castShadowCascades: CASCADES,
@@ -403,6 +404,7 @@ async function runStale(renderer: WebGPURenderer, device: GPUDevice): Promise<vo
     jitter: false,
     lighting: LIGHTING,
     multipleScattering: true,
+    ambientOcclusion: params.get("ao") !== "0",
     castShadows: true,
     castShadowMapSize: Number(params.get("mapSize") ?? 256),
     castShadowSteps: STEPS,
@@ -581,7 +583,7 @@ async function runEmission(renderer: WebGPURenderer, device: GPUDevice): Promise
   const source = await makeSource(renderer, device, dense, true);
 
   const fr = new VDBFrameRenderer();
-  Object.assign(fr.settings, { width: 96, height: 64, depth: 24, temporal: false, jitter: false, lighting: "volume", multipleScattering: true });
+  Object.assign(fr.settings, { width: 96, height: 64, depth: 24, temporal: false, jitter: false, lighting: "volume", multipleScattering: true, ambientOcclusion: params.get("ao") !== "0" });
   result.settings = { ...fr.settings };
 
   const bbox = new THREE.Box3(new THREE.Vector3(...dense.bbox![0]), new THREE.Vector3(...dense.bbox![1]));

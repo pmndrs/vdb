@@ -62,18 +62,9 @@ export type { VDBPointsData, VDBPointsOptions } from "./points.js";
 export { vdbGridStats, vdbDecodeToAtlas } from "./compute.js";
 export type { VDBThreeGridStatsOptions, VDBGridStatsResult, VDBThreeDecodeToAtlasOptions, VDBDecodeToAtlasResult } from "./compute.js";
 
-// K3.0: the dense `.wvdb` volume source (R1 §4.2) in his createVolumeNodes() shape.
-export { vdbDenseTextures, vdbVolumeUniforms, vdbVolumeNodes } from "./volume-source.js";
-export type {
-  VDBDenseChannelTextures,
-  VDBThreeDenseSource,
-  VDBVolumeNodes,
-  VDBVolumeNodesOptions,
-  VDBVolumeUniformParameters,
-  VDBVolumeUniforms,
-  VDBThreeVolumeSource,
-  VDBThreeSourceFactory,
-} from "./volume-source.js";
+// K3.0 / K6.11: the dense `.wvdb` volume source (R1 §4.2), a handle `VDBFrameVolume` draws.
+export { vdbDenseTextures } from "./volume-source.js";
+export type { VDBThreeDenseSource, VDBThreeVolumeSource } from "./volume-source.js";
 
 // K3.2: the sparse volume source (a VDBGridPool grid behind the same seam) with its LOD strategies.
 export { vdbSparseSource } from "./sparse-source.js";
@@ -82,8 +73,6 @@ export type {
   VDBSparseSourceGrids,
   VDBSparseSourceOptions,
   VDBThreeSparseSource,
-  VDBSparseVolumeUniforms,
-  VDBSparsePyramid,
   VDBIndexBox,
 } from "./sparse-source.js";
 

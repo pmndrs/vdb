@@ -33,10 +33,10 @@ A volume reads its density only through a **source**. There are two:
 | Dense | `vdbDenseTextures(wvdbDenseVolume(readWvdb(bytes)))` | A `.wvdb` LOD (8-bit texels with a mip atlas). Density is clamped to 0..1. |
 | Sparse | `vdbSparseSource(grids, { density: id }, options)` | A pool grid at full resolution, read through `vdbSample`. |
 
-Both are handles: the frame renderer reads them into the core's own sources, which upload the dense texels and build
-the sparse LOD pyramid on the GPU. The three textures (`source.textures`) and a sparse source's own pyramid
-(`source.pyramid`) exist only for custom TSL materials (`vdbVolumeUniforms` / `vdbVolumeNodes`), made the first time one
-asks for them.
+Both are handles and hold no GPU object: the frame renderer reads them into the core's own sources, which upload the
+dense texels and build the sparse LOD pyramid on the GPU. (0.1's `vdbVolumeUniforms` / `vdbVolumeNodes`, the sources'
+three textures and a sparse source's own pyramid are gone: for a custom material see
+[Custom materials and compute](#custom-materials-and-compute) below.)
 
 {/* snippet: frame-dense */}
 ```ts
@@ -77,7 +77,7 @@ const grids = new VDBGridNode(renderer, pool, {
 const source = vdbSparseSource(
     grids,
     { density: id }, // optional: mask, albedo (one grid or three), emission
-    { lod: 'coarse-pyramid', pyramidMax: 128, pyramidBuild: 'gpu', images: { density: image } },
+    { lod: 'coarse-pyramid', pyramidMax: 128, images: { density: image } },
 );
 
 const volume = new VDBFrameVolume(source, { extinction: 100, hdda: false }); // the box is the grid's world box
@@ -90,8 +90,6 @@ When a froxel spans many voxels, a sparse source filters. `lod` picks how:
 
 - `'coarse-pyramid'` (default): a dense r16f pyramid, built on the GPU from the pool grid and rebuilt when the grid's
   `imageRevision` changes, so `pool.replace` frames work. `pyramidMax` is the base level's longest side (default 128).
-  The frame renderer builds its own; `pyramidBuild` (`'gpu'` default, or `'cpu'` from `images.density` once) picks how
-  a custom material's pyramid is built.
 - `'node-average'`: no extra memory, trilinear over the nodes' stored averages. It blurs and brightens; it needs
   stats.
 - `'none'`: level 0 only, which aliases.
@@ -201,7 +199,9 @@ each volume's outward direction), `'directional'` (default, up to 8 lights) or `
 of order 1 or 2), all extracted on the GPU from `scene.environment` (no readback). `volume.lights` is a bitmask of
 `VDB_FRAME_LIGHT_BITS` (`ambient`, `point`, `directional`, `spot`, `hemisphere`, `environment`); `VDB_FRAME_ALL_LIGHTS` is the
 default. Meshes with `castShadow` shadow the volumes through three's shadow maps (`settings.occlusion`, default on), and
-`settings.ambientOcclusion` (off by default) shadows ambient, hemisphere and light-probe light.
+`settings.ambientOcclusion` (**on by default** since 0.2.0, 4 direction pairs: `ambientOcclusionPairs`) attenuates ambient,
+hemisphere and light-probe light by the medium; `false` gives 0.1's unshadowed ambient (about 35 to 148 % too bright in single
+scattering against a path-traced reference).
 
 ## Scattering and phase
 
@@ -274,6 +274,21 @@ volume.hdda = true; // sparse sources: skip empty space in the shadow march (sam
 `width`, `height` and `depth` are the froxel grid (default 512 x 512 x 24). `pixelsPerFroxel` caps it at one froxel per
 N x N canvas pixels. `fadeRadius` fades density with view distance. `srgbBlending` (default true) blends over the scene
 in sRGB, as `WebGLRenderer` does.
+
+## Custom materials and compute
+
+0.1 let a custom TSL material sample a source through `vdbVolumeUniforms` / `vdbVolumeNodes` (his `createVolumeNodes`
+shape). They are deleted in 0.2.0, with the sources' three textures and sparse pyramid; nothing replaces the shape, but
+each use has a home:
+
+- **A custom TSL material over a NanoVDB grid:** `VDBGridNode` (see [VDBGridNode](/three/grid-node)) puts the pool in
+  three's node system: `vdbSample` (trilinear), `vdbReadValue`, and its opt-in helpers (`cellBoundTrilinear`,
+  `hddaCellEnd`, `nodeAverage`, `fastTrilinear`) as `wgslFn` includes. `VDBVolumeMaterial` is built on it.
+- **Custom WGSL or compute over a source:** the core's `vdbSparseSourceGpu` (one source per pool) and `vdbDenseSource`
+  (a `.wvdb` volume) generate the `vdbSrc*` functions (`wgsl({ slot, profile })`: density, mask, albedo, emission, LOD,
+  and the HDDA span in the `'march'` profile) and their bind group layout; see
+  [Raw WebGPU](/core/raw-webgpu).
+- **The full froxel look:** `VDBFrameRenderer` with `VDBFrameVolume`s, as above.
 
 ## Volume props
 

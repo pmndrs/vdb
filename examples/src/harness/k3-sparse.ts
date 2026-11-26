@@ -19,26 +19,23 @@
  *
  * Other query: `?w=&h=`, `?froxels=WxHxD`, `?substeps=`, `?shadowSteps=`, `?dist=` (camera distance
  * multiplier), `?extinction=`, `?orbit=N&orbitDeg=d` (N more frames, the camera turning d degrees
- * about the volume each: flicker metrics), `?probe=1` (GPU vs CPU twins of `vdbNodeAverage`, the
- * node-average tap and the HDDA query), `?timing=1` (froxel-pass GPU ms per variant; provisional, D25),
+ * about the volume each: flicker metrics), `?timing=1` (froxel-pass GPU ms per variant; provisional, D25),
  * `?stats=dense|grid` (identical-voxel assets: normalize by the dense mean, default, or the grid's own),
  * `?clamp01=1`, `?pyramidMax=`.
+ * K6.11 (D35): the `?probe=1` GPU-vs-CPU probe of the TSL source's WGSL helpers (`nodeAverageFn()` / `skipEmptyFn()`) went with
+ * them; the core sparse source's node-average LOD and HDDA skip span are probed by e2e/k6-sparse.spec.ts.
  * Results: `window.__VDB_K3_SPARSE__` (e2e/k3-sparse.spec.ts).
  */
 import * as THREE from "three";
-import { NodeMaterial, WebGPURenderer } from "three/webgpu";
-import * as TSL from "three/tsl";
+import { WebGPURenderer } from "three/webgpu";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbSparseSource, type VDBThreeVolumeSource, type VDBSparseLod } from "@pmndrs/vdb/three";
 import {
   NvdbFile,
   buildFromVdb,
   nvdbToWvdb,
-  nodeAverage,
   parseVdb,
   readWvdb,
-  vdbFrameNodeAverageSample,
-  vdbFrameSkipEmpty,
   vdbSrgbOetf,
   vdbToWvdb,
   wvdbDenseToNvdb,
@@ -47,29 +44,18 @@ import {
 } from "../../../packages/vdb/src/tools/internal.js";
 import cloudWvdbUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type N = any;
-const { Fn, screenCoordinate, vec4, uniform, uint, uvec2, wgslFn } = TSL as unknown as Record<string, N>;
 
 interface VariantResult {
   name: string;
   rgba: string;
   nonBackground: number;
   inPageIdentical: boolean;
-  gpuBytes: { source: number; pyramid: number };
+  gpuBytes: { source: number };
   lodLevels: number;
   flicker?: { frames: number; meanDiff: number; temporalNoise: number; meanDiffs: number[] };
   froxelsMs?: number | null;
   /** Wall-clock ms of the variant (shader builds + two frames + orbit); not a GPU timing. */
   wallMs?: number;
-}
-
-interface Probe {
-  count: number;
-  over: number;
-  maxAbs: number;
-  skipMismatch: number;
-  firstBad?: unknown;
 }
 
 interface Result {
@@ -83,7 +69,6 @@ interface Result {
   grid?: { indexBox: { min: number[]; max: number[] }; texels: number[]; meanNonZero: number; gridMean?: number; denseMean?: number; poolBytes: number; imageBytes: number; type: string };
   dense?: { dimensions: number[]; meanDensity: number; textureBytes: number };
   variants: VariantResult[];
-  probe?: Probe;
   timingsNote?: string;
   warnings: string[];
   uncaptured: string[];
@@ -106,7 +91,6 @@ const SHADOW_STEPS = Number(params.get("shadowSteps") ?? 32);
 const DIST = Number(params.get("dist") ?? 1);
 const ORBIT = Number(params.get("orbit") ?? 0);
 const ORBIT_DEG = Number(params.get("orbitDeg") ?? 0.5);
-const PROBE = params.get("probe") === "1";
 const TIMING = params.get("timing") === "1";
 const STATS = params.get("stats") ?? "dense";
 const CLAMP01 = params.get("clamp01") === "1";
@@ -257,6 +241,7 @@ async function main(): Promise<void> {
     temporal: false,
     lighting: "volume",
     multipleScattering: params.get("ms") !== "0",
+    ambientOcclusion: params.get("ao") !== "0",
   });
   result.width = W;
   result.height = H;
@@ -384,7 +369,7 @@ async function main(): Promise<void> {
       rgba: toBase64(first),
       nonBackground,
       inPageIdentical: first.every((v, i) => v === second[i]),
-      gpuBytes: sparse ? { source: sparse.gpuBytes.pool, pyramid: sparse.gpuBytes.pyramid } : { source: result.dense!.textureBytes, pyramid: 0 },
+      gpuBytes: sparse ? { source: sparse.gpuBytes.pool } : { source: result.dense!.textureBytes },
       lodLevels: source.lodLevels,
     };
 
@@ -437,122 +422,9 @@ async function main(): Promise<void> {
     volume.dispose();
   }
 
-  if (PROBE) {
-    result.probe = await probe(renderer, grids, id, asset.image, anySparse.indexBox);
-    log(`probe: ${result.probe.count} values, max |GPU − CPU| ${result.probe.maxAbs.toExponential(2)}, ${result.probe.over} over, ${result.probe.skipMismatch} HDDA mismatches`, result.probe.over === 0 ? "ok" : "fail");
-  }
   for (const w of result.warnings) log(`warning: ${w}`, "warn");
   for (const s of sources.values()) s.dispose();
   denseSource?.dispose();
-}
-
-// --- GPU probe of the sparse WGSL against the CPU twins -------------------------------------------
-
-/** PCG-style u32 hash, the same in WGSL and JS. */
-function hash(x: number): number {
-  const v = (Math.imul(x >>> 0, 747796405) + 2891336453) >>> 0;
-  const w = Math.imul((v >>> ((v >>> 28) + 4)) ^ v, 277803737) >>> 0;
-  return ((w >>> 22) ^ w) >>> 0;
-}
-
-const PROBE_WGSL = /* wgsl */ `fn k3SparseProbe(g: u32, px: vec2u, lo: vec3f, size: vec3f) -> vec4f {
-    let i = px.x + px.y * 4096u;
-    let h0 = k3Hash(i * 7u + 1u);
-    let h1 = k3Hash(i * 7u + 2u);
-    let h2 = k3Hash(i * 7u + 3u);
-    let r = vec3f(f32(h0 & 4095u), f32(h1 & 4095u), f32(h2 & 4095u)) / 4096.0;
-    let p = (lo - vec3f(1.0)) + r * (size + vec3f(2.0));
-    let si = vec3u(size);
-    let ijk = vec3i(lo) - vec3i(1) + vec3i(vec3u(k3Hash(i * 7u + 4u) % (si.x + 2u), k3Hash(i * 7u + 5u) % (si.y + 2u), k3Hash(i * 7u + 6u) % (si.z + 2u)));
-    var acc = vdbAccessorInit(g);
-    if px.y == 0u {
-        return vec4f(vdbNodeAverage(&acc, ijk, 8u), vdbNodeAverage(&acc, ijk, 128u), vdbFrameNodeAverage(g, p, 8u), vdbFrameNodeAverage(g, p, 128u));
-    }
-    let hd = k3Hash(i * 7u + 7u);
-    let d = (vec3f(f32(hd & 1023u), f32((hd >> 10u) & 1023u), f32((hd >> 20u) & 1023u)) / 1024.0 - vec3f(0.5)) * 2.0;
-    let t1 = 2.0 * max(size.x, max(size.y, size.z)) / max(length(d), 0.25);
-    let a = vdbFrameSkipEmpty(g, p, d, 0.0, t1, 0.0, 0u);
-    let b = vdbFrameSkipEmpty(g, p, d, 0.0, t1, 0.0, 1u);
-    return vec4f(a, b);
-}`;
-const HASH_WGSL = /* wgsl */ `fn k3Hash(x: u32) -> u32 {
-    let v = x * 747796405u + 2891336453u;
-    let w = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
-    return (w >> 22u) ^ w;
-}`;
-
-async function probe(renderer: WebGPURenderer, grids: VDBGridNode, id: number, image: Uint32Array, box: { min: number[]; max: number[] }): Promise<Probe> {
-  // The source's own WGSL helpers (the same text the inject material compiles).
-  const helperSource = vdbSparseSource(grids, { density: id }, { lod: "node-average", stats: { meanNonZero: 1, max: 1, activeVoxels: 1 } });
-  const nodeAverageFn = helperSource.nodeAverageFn();
-  const skipFn = helperSource.skipEmptyFn();
-  const hashFn = wgslFn(HASH_WGSL);
-  const probeFn = wgslFn(PROBE_WGSL, [grids.module, hashFn, nodeAverageFn, skipFn]);
-  const PW = 256;
-  const PH = 2;
-  const lo = new THREE.Vector3(...box.min);
-  const size = new THREE.Vector3(box.max[0]! - box.min[0]! + 1, box.max[1]! - box.min[1]! + 1, box.max[2]! - box.min[2]! + 1);
-  const material = new NodeMaterial();
-  material.fragmentNode = Fn(() => {
-    const px = uvec2(screenCoordinate.x.floor(), screenCoordinate.y.floor());
-    return probeFn(uint(id), px, uniform(lo), uniform(size));
-  })();
-  material.vertexNode = vec4(TSL.positionGeometry.xy, 0.0, 1.0);
-  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
-  quad.frustumCulled = false;
-  const scene = new THREE.Scene();
-  scene.add(quad);
-  const target = new THREE.RenderTarget(PW, PH, { type: THREE.FloatType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
-  renderer.setRenderTarget(target);
-  renderer.render(scene, new THREE.OrthographicCamera());
-  renderer.setRenderTarget(null);
-  const gpu = tightRows((await renderer.readRenderTargetPixelsAsync(target, 0, 0, PW, PH)) as unknown as Float32Array, PW, PH, 4);
-  const f = Math.fround;
-  let over = 0;
-  let maxAbs = 0;
-  let count = 0;
-  let skipMismatch = 0;
-  let firstBad: unknown;
-  for (let y = 0; y < PH; y++) {
-    for (let x = 0; x < PW; x++) {
-      const i = (x + y * 4096) >>> 0;
-      const h0 = hash(i * 7 + 1);
-      const h1 = hash(i * 7 + 2);
-      const h2 = hash(i * 7 + 3);
-      const r = [(h0 & 4095) / 4096, (h1 & 4095) / 4096, (h2 & 4095) / 4096];
-      const p = [0, 1, 2].map((a) => f(f(box.min[a]! - 1) + f(r[a]! * f([size.x, size.y, size.z][a]! + 2)))) as [number, number, number];
-      const si = [size.x, size.y, size.z];
-      const ijk = [0, 1, 2].map((a) => box.min[a]! - 1 + (hash(i * 7 + 4 + a) % (si[a]! + 2))) as [number, number, number];
-      const g = Array.from(gpu.subarray((y * PW + x) * 4, (y * PW + x) * 4 + 4));
-      let cpu: number[];
-      if (y === 0) {
-        cpu = [nodeAverage(image, ijk, 8), nodeAverage(image, ijk, 128), vdbFrameNodeAverageSample(image, p, 8), vdbFrameNodeAverageSample(image, p, 128)];
-      } else {
-        const hd = hash(i * 7 + 7);
-        const d = [hd & 1023, (hd >>> 10) & 1023, (hd >>> 20) & 1023].map((v) => f(f(f(v / 1024) - 0.5) * 2)) as [number, number, number];
-        const t1 = f(f(2 * Math.max(...si)) / Math.max(f(Math.hypot(...d)), 0.25));
-        cpu = [...vdbFrameSkipEmpty(image, p, d, 0, t1, 0, false), ...vdbFrameSkipEmpty(image, p, d, 0, t1, 0, true)];
-      }
-      for (let c = 0; c < 4; c++) {
-        const d = Math.abs(g[c]! - cpu[c]!);
-        count++;
-        const tol = 1e-4 * Math.max(1, Math.abs(cpu[c]!));
-        if (y === 1) {
-          // HDDA decisions: a cell boundary rounding differently moves ts/te by one cell. Count, don't fail.
-          if (d > tol) skipMismatch++;
-          continue;
-        }
-        maxAbs = Math.max(maxAbs, d);
-        if (d > tol) {
-          over++;
-          firstBad ??= { x, y, c, gpu: g[c], cpu: cpu[c], p, ijk };
-        }
-      }
-    }
-  }
-  target.dispose();
-  material.dispose();
-  return { count, over, maxAbs, skipMismatch, ...(firstBad ? { firstBad } : {}) };
 }
 
 main()

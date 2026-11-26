@@ -129,12 +129,6 @@ export interface VDBFrameSettings {
   castShadowUpdatesPerFrame: number;
   /** Very small maps (64) and few samples (8): soft blob shadows at almost no cost (default false). */
   castShadowCoarse: boolean;
-  /**
-   * K6: how overlapping volumes combine in a froxel (design §3.4). `'mixture'` (default): co-located media,
-   * order-independent (Σ τᵢ, Σ τᵢLᵢ). `'over'`: his draw-order premultiplied "over", in record order (V79). One volume
-   * per froxel: the same values.
-   */
-  froxelMix: "mixture" | "over";
   /** K6.3 `'multi-scale'`: levels read, base included (2–8; his `multiScaleLevels`, default 6). */
   multiScaleLevels: number;
   /**
@@ -147,8 +141,9 @@ export interface VDBFrameSettings {
    * environment) is attenuated by the medium: transmittance marched along `ambientOcclusionPairs` opposite direction
    * pairs, averaged per hemisphere around the sky direction, each the lighting mode's isotropic-light total (white
    * furnace with multiple scattering). 'frame' lighting marches them in the transmittance pass (a grid lookup in the
-   * gather); 'volume' lighting per froxel through the volume's shadow march. Default false: the unshadowed light of
-   * his renderer (the K6.R reference: +35 to +148 % too bright in single scattering).
+   * gather); 'volume' lighting per froxel through the volume's shadow march. Default true (D35): the unshadowed light
+   * of his renderer was +35 to +148 % too bright in single scattering (the K6.R reference). `false` gives his unshadowed
+   * ambient, hemisphere and probe light.
    */
   ambientOcclusion: boolean;
   /** K6.Q1: direction pairs of the shadowed ambient (1–8; 1: ± the sky direction only). */
@@ -183,7 +178,7 @@ export interface VDBFrameInternalSettings extends VDBFrameSettings {
   ambientProbe: "irradiance" | "radiance";
 }
 
-/** His v0.26 defaults (`FrameRenderer.js` L191–246, as `VDBFrameRenderer.settings`), plus `froxelMix: 'mixture'`, `occlusion: true` and the K6.Q1 ambient occlusion (off). */
+/** His v0.26 defaults (`FrameRenderer.js` L191–246, as `VDBFrameRenderer.settings`), plus `occlusion: true` and the K6.Q1 ambient occlusion (on since D35). */
 export function vdbFrameDefaultSettings(): VDBFrameSettings {
   return vdbFrameDefaultInternalSettings();
 }
@@ -228,13 +223,12 @@ export function vdbFrameDefaultInternalSettings(): VDBFrameInternalSettings {
     castShadowSteps: 32,
     castShadowUpdatesPerFrame: 1,
     castShadowCoarse: false,
-    froxelMix: "mixture",
     multiScaleLevels: 6,
     multiScaleEdge: "zero",
     multiScaleSigma: "his",
     ambientProbe: "irradiance",
     occlusion: true,
-    ambientOcclusion: false,
+    ambientOcclusion: true,
     ambientOcclusionPairs: 4,
     ambientOcclusionSteps: 0,
   };

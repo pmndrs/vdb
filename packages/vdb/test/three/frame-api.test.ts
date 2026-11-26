@@ -8,7 +8,6 @@ import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { readWvdb, writeWvdb, wvdbDenseToNvdb, wvdbDenseVolume, type WvdbDenseVolume } from "../../src/tools/index.js";
 import { VDBFrameRenderer, VDBFrameVolume, VDBSequence, vdbDenseTextures, vdbFrameMedium } from "../../src/three/index.js";
-import { vdbVolumeUniforms } from "../../src/three/volume-source.js";
 import { fixture } from "../tools/wvdb-helpers.js";
 
 const cloud = wvdbDenseVolume(readWvdb(fixture("cloud_04_variant_0000.wvdb")));
@@ -73,49 +72,26 @@ describe("K5.9 VDBFrameVolume API", () => {
     given.dispose();
   });
 
-  it("dense frames: a replace reaches the source's uniforms (update), a frame without a channel reads its absent value, an extra channel is ignored", () => {
+  it("dense frames: a replace bumps the version on a resize, the volume follows the source's mean, an extra channel is ignored (warned once)", () => {
     const first = frame([8, 8, 8], true);
     const source = vdbDenseTextures(first);
     const v = new VDBFrameVolume(source, { frameRenderer: new VDBFrameRenderer() });
-    // K6.8: the frame renderer reads the source on the core side; the TSL uniforms are vdbVolumeUniforms' (custom materials)
-    const u = vdbVolumeUniforms(source, { extinction: 100, densityScale: 1, normalizeDensity: true });
-    // A frame of another size without flames: the emission texture is a constant 0 of the new size.
+    // K6.11: the source is a handle (no three textures); the core's dense source reads `volume` and fills a missing channel.
+    // A frame of another size without flames: still a valid frame of this source.
     source.replace(frame([16, 8, 8], false, 0.4));
-    const emission = source.textures.emission!.map.image as { data: Uint8Array; width: number };
-    expect(emission.width).toBe(16);
-    expect(emission.data.every((b) => b === 0)).toBe(true);
     expect(source.version).toBe(1);
-    expect(u.gridTexels.value.x).toBe(8);
-    u.update(source);
-    expect(u.gridTexels.value.x).toBe(16);
-    expect(u.densityScale.value).toBeCloseTo(1 / 0.4, 2);
+    expect(source.texels).toEqual([16, 8, 8]);
+    expect(source.stats.meanNonZero).toBeCloseTo(0.4, 2);
     // the volume follows the source's mean (its density scale) by itself
     expect(v.getDensityScale()).toBeCloseTo(1 / 0.4, 2);
-    u.dispose();
+    // same size again: no version bump
+    source.replace(frame([16, 8, 8], true, 0.5));
+    expect(source.version).toBe(1);
     // A source made without emission ignores a frame's flames (warned once) instead of throwing.
     const plain = vdbDenseTextures(frame([8, 8, 8], false));
     expect(() => plain.replace(frame([8, 8, 8], true))).not.toThrow();
-    expect(plain.textures.emission).toBe(null);
+    expect(plain.version).toBe(0);
     v.dispose();
-  });
-
-  it("K6.8a: a dense source a VDBFrameVolume draws makes no three textures; replaces before the first access land in them", () => {
-    const source = vdbDenseTextures(frame([8, 8, 8], true));
-    const v = new VDBFrameVolume(source, { frameRenderer: new VDBFrameRenderer() });
-    // a resize and a frame without flames, all before any texture exists: version and stats follow
-    source.replace(frame([16, 8, 8], false, 0.4));
-    expect(source.version).toBe(1);
-    expect(source.stats.meanNonZero).toBeCloseTo(0.4, 2);
-    // the first access uploads the current frame (the missing channel as its absent value, at the new size)
-    const density = source.textures.density!.map.image as { width: number };
-    const emission = source.textures.emission!.map.image as { data: Uint8Array; width: number };
-    expect([density.width, emission.width]).toEqual([16, 16]);
-    expect(emission.data.every((b) => b === 0)).toBe(true);
-    // same size again: no version bump (textures exist now)
-    source.replace(frame([16, 8, 8], true, 0.5));
-    expect(source.version).toBe(1);
-    v.dispose();
-    source.dispose();
   });
 
   it("RV: a dense frame with another .wvdb box moves the volume's box (his WVDB sequences: each frame its own box); a bbox prop stays", () => {

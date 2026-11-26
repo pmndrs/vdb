@@ -475,7 +475,7 @@ export {
   vdbFrameIntegratePrefix,
   vdbFrameSliceCoord,
 } from "./frame/froxel.js";
-export type { VDBFrameVolumeFroxel, VDBFrameFroxelMix, VDBFrameIntegrated } from "./frame/froxel.js";
+export type { VDBFrameVolumeFroxel, VDBFrameIntegrated } from "./frame/froxel.js";
 // K6.4: CPU twins of the core's spectral kernels (internal only)
 export {
   vdbFrameSpectralGridDensityVoxel,

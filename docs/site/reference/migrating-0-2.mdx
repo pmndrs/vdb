@@ -17,7 +17,7 @@ points and the tools keep their 0.1 API.
 
 | 0.1 (`@pmndrs/vdb/three`) | 0.2 |
 |---|---|
-| `VDBFrameRendererSettings` | `VDBFrameSettings` (the core's, re-exported). It adds `froxelMix`, `occlusion`, `multiScaleLevels`, `ambientOcclusion`, `ambientOcclusionPairs` and `ambientOcclusionSteps` |
+| `VDBFrameRendererSettings` | `VDBFrameSettings` (the core's, re-exported). It adds `occlusion`, `multiScaleLevels`, `ambientOcclusion`, `ambientOcclusionPairs` and `ambientOcclusionSteps` |
 | `VDBFramePhase` | `VDBFramePhaseName` |
 | `VDBFrameMultipleScattering` | `VDBFrameMultipleScatteringMode` |
 | `vdbFrameLights`, `vdbFrameAllLights` | `VDB_FRAME_LIGHT_BITS` (`ambient`, `point`, `directional`, `spot`, `hemisphere`, `environment`), `VDB_FRAME_ALL_LIGHTS` |
@@ -34,7 +34,11 @@ points and the tools keep their 0.1 API.
 | `VDBFrameRenderer.redrawStats` | the core's `VDBFrameRedrawStats` (adds `volumeShadows`) |
 | none | `VDBFrameRenderer.core`: the `VDBFrameRendererGpu` (its `outputs`), after the first render |
 | `VDBFrameVolume.volumes[0].matrix` | `VDBFrameVolume.boxMatrix` |
-| `VDBFrameVolume.sourceUniforms`, `volumes`, the pass-material fields | none (`vdbVolumeUniforms` and `vdbVolumeNodes` stay for custom TSL materials) |
+| `VDBFrameVolume.sourceUniforms`, `volumes`, the pass-material fields | none |
+| `vdbVolumeUniforms`, `vdbVolumeNodes`, `VDBVolumeNodes`, `VDBVolumeNodesOptions`, `VDBVolumeUniforms`, `VDBVolumeUniformParameters`, `VDBThreeSourceFactory` | deleted in 0.2.0 (no deprecation cycle). A custom TSL material samples a pooled grid through `VDBGridNode` (`vdbSample`, `vdbReadValue`, the helpers); custom WGSL or compute uses the core's `vdbSparseSourceGpu` / `vdbDenseSource` `wgsl()`; the full look is `VDBFrameRenderer` |
+| `VDBThreeDenseSource.textures`, `VDBDenseChannelTextures` | none: `vdbDenseTextures(volume)` is a handle with no GPU object (the core's `vdbDenseSource` uploads the texels) |
+| `VDBThreeSparseSource.pyramid`, `pyramidBuilds`, `refreshPyramid()`, `nodeAverageFn()`, `skipEmptyFn()`, `createUniforms()`, `createNodes()`, `VDBSparsePyramid`, `VDBSparseVolumeUniforms`; the `pyramidBuild` option | none: the frame renderer's core source builds its own pyramid on the GPU (`pyramidMax` still sizes it). `gpuBytes` is `{ pool }`; nothing calls `refreshStats()` for you now (`VDBFrameRenderer` copies a changed `stats` into its core slot) |
+| `froxelMix: 'mixture' \| 'over'` | none: overlapping volumes in a froxel always combine order-independently (the former `'mixture'`). His draw-order "over" blend is deleted |
 | `VDBSequence` from `@pmndrs/vdb/three` | the core's `VDBSequence` (`@pmndrs/vdb`); `@pmndrs/vdb/three` re-exports it |
 
 {/* snippet: migrate-0-2 */}
@@ -57,6 +61,10 @@ console.log(frameRenderer.core?.outputs);
 
 ## Behaviour to check
 
+- `ambientOcclusion` is **on by default** (4 direction pairs): ambient, hemisphere, light-probe and environment-irradiance
+  light is now attenuated by the medium, so scenes with such lights get darker (single scattering was 35 to 148 % too bright
+  against a path-traced reference with it off). Frames without those lights do not change. `settings.ambientOcclusion = false`
+  restores 0.1's unshadowed ambient exactly.
 - `multipleScattering` still defaults to `'neural'` (his trained network). It runs the core's generic MLP, which is
   EXPERIMENTAL: its data shape may change before 1.0.
 - Settings out of the device's range clamp with a one-time console warning instead of failing: `shadowResolution`

@@ -137,7 +137,7 @@ async function main(): Promise<void> {
   result.volume = file.name;
   const dense = wvdbDenseVolume(readWvdb(file.bytes), { mipmaps: true });
   const fr = new VDBFrameRenderer();
-  Object.assign(fr.settings, { width: W / 2, height: H / 2, depth: 32, temporal: false, jitter: false, lighting: LIGHTING, multipleScattering: true, shadowResolution: 64 });
+  Object.assign(fr.settings, { width: W / 2, height: H / 2, depth: 32, temporal: false, jitter: false, lighting: LIGHTING, multipleScattering: true, shadowResolution: 64, ambientOcclusion: params.get("ao") !== "0" });
 
   // The cloud: its longest side 2 units, centred at (0, 1.5, 0)
   const bbox = new THREE.Box3(new THREE.Vector3(...(dense.bbox?.[0] ?? [-0.5, -0.5, -0.5])), new THREE.Vector3(...(dense.bbox?.[1] ?? [0.5, 0.5, 0.5])));

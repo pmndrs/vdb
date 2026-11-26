@@ -113,10 +113,9 @@ test("K6.4 every spectral pipeline variant compiles (both alpha prefix formats w
 const PROBES: { name: string; query: string; minCovered: number; mutations: string[] }[] = [
   { name: "view chunks", query: "?probe=view", minCovered: 512, mutations: ["coverage", "mie", "octaves", "two-sided"] },
   // K6.10a: `wgsl-*` mutations patch the kernel's WGSL (k6-core.ts WGSL_PATCHES), the others flip a twin term
-  { name: "gather (mixture, one group)", query: "?probe=gather&mix=mixture&groups=1", minCovered: 300, mutations: ["mix", "phase", "extinction", "fade", "wgsl-gather-extinction", "wgsl-gather-phase"] },
-  { name: "gather (over, one group)", query: "?probe=gather&mix=over&groups=1", minCovered: 300, mutations: ["mix"] },
-  { name: "gather (mixture, two groups)", query: "?probe=gather&mix=mixture&groups=2", minCovered: 300, mutations: ["mix"] },
-  { name: "gather (over, two groups, no mips)", query: "?probe=gather&mix=over&groups=2&mips=0", minCovered: 300, mutations: ["extinction"] },
+  { name: "gather (one group)", query: "?probe=gather&groups=1", minCovered: 300, mutations: ["mix", "phase", "extinction", "fade", "wgsl-gather-extinction", "wgsl-gather-phase"] },
+  { name: "gather (two groups)", query: "?probe=gather&groups=2", minCovered: 300, mutations: ["mix"] },
+  { name: "gather (two groups, no mips)", query: "?probe=gather&groups=2&mips=0", minCovered: 300, mutations: ["extinction"] },
   { name: "resolve", query: "?probe=resolve&temporal=0", minCovered: 512, mutations: ["scan-stop", "wgsl-resolve-order"] },
   { name: "resolve (temporal)", query: "?probe=resolve&temporal=1", minCovered: 512, mutations: ["temporal-clamp", "scan-stop", "wgsl-resolve-order"] },
   { name: "integrate", query: "?probe=integrate", minCovered: 512, mutations: ["coverage", "taps"] },
@@ -238,6 +237,9 @@ const K63_PROBES: { name: string; query: string; keys: K63Key[]; mutations: Reco
   { name: "frame, 'two-sided' with occluder maps", query: "?probe=frame&ms=two-sided&occluders=1", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { "occluder-scattered": "transmittanceStats" } },
   { name: "frame, 'mlp' with occluder maps", query: "?probe=frame&ms=mlp&occluders=1", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "occluder-scattered": "transmittanceStats" } },
   { name: "frame, 'multi-scale' with occluder maps", query: "?probe=frame&ms=multi-scale&occluders=1", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "occluder-scattered": "transmittanceStats" } },
+  // K6.11: the emission colour in the fused 'frame' gather (volume B's LUT row / user hook; the twin was white before; a dense source needs groups=2: one group gives B the source of A, which has no emission)
+  { name: "frame, emission colour LUT", query: "?probe=frame&ms=0&groups=2&emissionColor=lut", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { "emission-color": "stats" } },
+  { name: "frame, emission colour hook, sparse", query: "?probe=frame&ms=0&source=sparse&emissionColor=hook", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { "emission-color": "stats" } },
   { name: "gather, 'two-sided' with occluder maps", query: "?probe=gather&ms=two-sided&occluders=1", keys: ["stats"], mutations: { occluder: "stats" } },
 ];
 
@@ -273,9 +275,8 @@ for (const p of K63_PROBES) {
 // composite; spectral volume shadow maps and their rgb receivers). `mutations` maps a twin term to the stats it must break.
 type K64Key = "stats" | "renderStats" | "gridStats" | "transmittanceStats" | "environmentGridStats" | "receiverStats";
 const K64_PROBES: { name: string; query: string; keys: K64Key[]; mutations: Record<string, K64Key> }[] = [
-  { name: "gather spectral, 'mixture', dense", query: "?probe=gather&spectral=1", keys: ["stats", "renderStats"], mutations: { spectrum: "stats", extinction: "stats", "wgsl-gather-extinction": "stats", "wgsl-gather-phase": "stats" } },
-  { name: "gather spectral, 'over', two groups (partials)", query: "?probe=gather&spectral=1&mix=over&groups=2", keys: ["stats", "renderStats"], mutations: { mix: "stats" } },
-  { name: "gather spectral, 'mixture', two groups (partials)", query: "?probe=gather&spectral=1&groups=2", keys: ["stats", "renderStats"], mutations: { mix: "stats" } },
+  { name: "gather spectral, dense", query: "?probe=gather&spectral=1", keys: ["stats", "renderStats"], mutations: { spectrum: "stats", extinction: "stats", "wgsl-gather-extinction": "stats", "wgsl-gather-phase": "stats" } },
+  { name: "gather spectral, two groups (partials)", query: "?probe=gather&spectral=1&groups=2", keys: ["stats", "renderStats"], mutations: { mix: "stats" } },
   { name: "gather spectral, 'octaves', environment 'directional'", query: "?probe=gather&spectral=1&ms=octaves&env=directional", keys: ["stats"], mutations: { octaves: "stats" } },
   { name: "gather spectral, 'two-sided', sparse, occluder maps", query: "?probe=gather&spectral=1&ms=two-sided&source=sparse&occluders=1", keys: ["stats"], mutations: { "two-sided": "stats", occluder: "stats" } },
   { name: "gather spectral, single scattering, 'outward' SH", query: "?probe=gather&spectral=1&ms=0&env=outward", keys: ["stats"], mutations: { spectrum: "stats" } },
@@ -301,6 +302,7 @@ const K64_PROBES: { name: string; query: string; keys: K64Key[]; mutations: Reco
   { name: "frame spectral, 'outward' environment, single scattering", query: "?probe=frame&spectral=1&ms=0&env=outward", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { "env-outward": "stats" } },
   { name: "frame spectral, 'mlp' runs as 1D diffusion", query: "?probe=frame&spectral=1&ms=mlp", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { diffusion: "transmittanceStats" } },
   { name: "frame spectral, occluder maps", query: "?probe=frame&spectral=1&occluders=1", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { occluder: "stats", "occluder-scattered": "transmittanceStats" } },
+  { name: "frame spectral, emission colour LUT", query: "?probe=frame&spectral=1&ms=0&groups=2&emissionColor=lut", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { "emission-color": "stats" } },
   { name: "resolve spectral", query: "?probe=resolve&spectral=1", keys: ["stats"], mutations: { "spectral-alpha": "stats", "scan-stop": "stats", "wgsl-resolve-order": "stats" } },
   { name: "resolve spectral, temporal", query: "?probe=resolve&spectral=1&temporal=1", keys: ["stats"], mutations: { "spectral-alpha": "stats" } },
   { name: "resolve spectral, rg16float alpha prefix (texture-formats-tier1 when the adapter has it)", query: "?probe=resolve&spectral=1&tier1=1", keys: ["stats"], mutations: { "spectral-alpha": "stats", "wgsl-resolve-order": "stats" } },

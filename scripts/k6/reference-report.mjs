@@ -155,28 +155,24 @@ const GROUP_DEFS = {
       key,
       {
         kind: "his",
-        title: `V79 (K6.8a): two overlapping bunnies, ${what}, 'volume' lighting: froxelMix 'mixture' vs 'over'`,
+        title: `V79 (K6.8a): two overlapping bunnies, ${what}, 'volume' lighting (the order-independent mixture; K6.11 deleted 'over')`,
         scenario: "step3-two-bunnies-dir-isolated",
         lighting: "volume",
         refExtra: `&albedo=${albedo}`,
-        rows: ["0", "1"].flatMap((ms) =>
-          ["mixture", "over"].map((mix) =>
-            k3(`core ms ${ms === "0" ? "off" : "on"}, ${mix}`, `scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=${ms}&froxelMix=${mix}&${q}`, { lighting: "volume", ...(ms === "0" ? { vsSingle: true } : {}) }),
-          ),
+        rows: ["0", "1"].map((ms) =>
+          k3(`core ms ${ms === "0" ? "off" : "on"}`, `scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=${ms}&${q}`, { lighting: "volume", ...(ms === "0" ? { vsSingle: true } : {}) }),
         ),
       },
     ]),
   ),
   mix: {
     kind: "his",
-    title: "V79: two overlapping bunnies, 'volume' lighting: froxelMix 'mixture' vs 'over'",
+    title: "V79: two overlapping bunnies, 'volume' lighting (the order-independent mixture; K6.11 deleted 'over')",
     scenario: "step3-two-bunnies-dir-isolated",
     lighting: "volume",
     rows: [
-      k3("core ms off, mixture", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=0&froxelMix=mixture", { lighting: "volume", vsSingle: true }),
-      k3("core ms off, over", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=0&froxelMix=over", { lighting: "volume", vsSingle: true }),
-      k3("core ms on, mixture", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=1&froxelMix=mixture", { lighting: "volume" }),
-      k3("core ms on, over", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=1&froxelMix=over", { lighting: "volume" }),
+      k3("core ms off", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=0", { lighting: "volume", vsSingle: true }),
+      k3("core ms on", "scene=step3-two-bunnies-dir-isolated&lighting=volume&ms=1", { lighting: "volume" }),
     ],
   },
   silhouette: {
@@ -501,7 +497,7 @@ try {
       process.stdout.write(`  ${t.label} … `);
       const r = await runPage(browser, t.page, `${t.query}${EXTRA_QUERY}&w=${gw * scale}&h=${gh * scale}`, STATE[t.page]);
       const img = fromRgba8(new Uint8Array(Buffer.from(r.rgba, "base64")), r.width, r.height, scale);
-      frames.push({ ...t, img, settings: r.settings, adapter: r.adapter, backend: r.backend, froxelMix: r.froxelMix });
+      frames.push({ ...t, img, settings: r.settings, adapter: r.adapter, backend: r.backend });
       console.log(`${r.width}x${r.height} ${r.backend ?? ""} (${r.adapter})`);
     }
     // References: per lighting mapping when the scene has point lights, else one; multiple and single scattering.

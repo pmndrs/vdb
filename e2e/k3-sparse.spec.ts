@@ -43,7 +43,6 @@ interface Result {
   grid?: unknown;
   dense?: unknown;
   variants: Variant[];
-  probe?: { count: number; over: number; maxAbs: number; skipMismatch: number; firstBad?: unknown };
   timingsNote?: string;
   warnings: string[];
   uncaptured: string[];
@@ -104,18 +103,12 @@ async function gate(page: Page, q: string, lods: string[], tag: string): Promise
   return first;
 }
 
-test("K3.2 sparse source: identical voxels match dense (PSNR >= 38 dB), HDDA changes nothing, K3.2d sampler = K3.2 taps, deterministic, WGSL twins", async ({ page }) => {
+test("K3.2 sparse source: identical voxels match dense (PSNR >= 38 dB), HDDA changes nothing, K3.2d sampler = K3.2 taps, deterministic", async ({ page }) => {
   test.setTimeout(600_000);
-  const first = await gate(page, "?asset=cloud04&variants=dense,none,none-nohdda,none-nohdda-taps,pyramid,pyramid-nohdda,pyramid-nohdda-taps&probe=1", ["none", "pyramid"], "cloud04");
+  const first = await gate(page, "?asset=cloud04&variants=dense,none,none-nohdda,none-nohdda-taps,pyramid,pyramid-nohdda,pyramid-nohdda-taps", ["none", "pyramid"], "cloud04");
   const ab = compareImages(image(first, byName(first, "dense")), image(first, byName(first, "none")));
   console.log(`[k3-sparse] ${first.adapter}: dense vs sparse 'none' (identical voxels) PSNR ${ab.psnr.toFixed(2)} dB, ${ab.above} px > 8/255`);
   expect(ab.psnr, JSON.stringify(ab)).toBeGreaterThanOrEqual(38);
-  const p = first.probe!;
-  const detail = detailOf(first);
-  expect(p.count, detail).toBe(2048);
-  expect(p.over, detail).toBe(0);
-  // HDDA cell decisions could round differently on a cell face; a handful at most (0 on SwiftShader).
-  expect(p.skipMismatch, detail).toBeLessThanOrEqual(8);
 });
 
 test("K3.2 sparse source, 'node-average' LOD: renders, HDDA changes nothing, deterministic (small froxel grid)", async ({ page }) => {

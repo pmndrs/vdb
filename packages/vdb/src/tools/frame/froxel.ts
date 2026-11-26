@@ -22,37 +22,22 @@ export interface VDBFrameVolumeFroxel {
   alpha: number;
 }
 
-/** How the volumes in one froxel combine (`VDBFrameSettings.froxelMix`). */
-export type VDBFrameFroxelMix = "mixture" | "over";
-
 /** Optical depths above this are clamped (T = 1.3e-14), so an opaque volume gives a finite τ. */
 export const vdbFrameMaxOpticalDepth = 32;
 
 /**
  * The gather kernel's combine of the volumes in one froxel, premultiplied (rgb = L·α, a = α).
  *
- * `'over'` (his inject blend, in record order): each volume over the ones before it.
- * `'mixture'` (design §3.4): co-located media; τᵢ = −log(1 − αᵢ), α = 1 − exp(−Στᵢ),
+ * Design §3.4: co-located media; τᵢ = −log(1 − αᵢ), α = 1 − exp(−Στᵢ),
  * L = Σ τᵢLᵢ / Στᵢ. Order-independent; one volume gives exactly (Lα, α).
  * Volumes with α ≤ 0 do not count (discarded froxels).
  */
-export function vdbFrameGatherFroxel(volumes: readonly VDBFrameVolumeFroxel[], mode: VDBFrameFroxelMix): Vec4 {
+export function vdbFrameGatherFroxel(volumes: readonly VDBFrameVolumeFroxel[]): Vec4 {
   const lit = volumes.filter((v) => v.alpha > 0);
   if (lit.length === 0) return [0, 0, 0, 0];
   if (lit.length === 1) {
     const v = lit[0]!;
     return [v.radiance[0] * v.alpha, v.radiance[1] * v.alpha, v.radiance[2] * v.alpha, v.alpha];
-  }
-  if (mode === "over") {
-    const out: Vec4 = [0, 0, 0, 0];
-    for (const v of lit) {
-      const k = 1 - v.alpha;
-      out[0] = v.radiance[0] * v.alpha + out[0] * k;
-      out[1] = v.radiance[1] * v.alpha + out[1] * k;
-      out[2] = v.radiance[2] * v.alpha + out[2] * k;
-      out[3] = v.alpha + out[3] * k;
-    }
-    return out;
   }
   let tau = 0;
   const tl: Vec3 = [0, 0, 0];

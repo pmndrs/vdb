@@ -376,27 +376,15 @@ export interface VDBFrameSpectralVolumeFroxel {
 }
 
 /**
- * The 'volume' gather's spectral combine of the volumes in one froxel: (L · α rgb, α rgb). `'over'` per channel in record
- * order; `'mixture'` per channel (τ = −log(1 − α), α = 1 − exp(−Στ), L = ΣτL / Στ); one volume gives (Lα, α).
+ * The 'volume' gather's spectral combine of the volumes in one froxel: (L · α rgb, α rgb). Per channel
+ * (τ = −log(1 − α), α = 1 − exp(−Στ), L = ΣτL / Στ); one volume gives (Lα, α).
  */
-export function vdbFrameGatherFroxelSpectral(volumes: readonly VDBFrameSpectralVolumeFroxel[], mode: "mixture" | "over"): { color: Vec3; alpha: Vec3 } {
+export function vdbFrameGatherFroxelSpectral(volumes: readonly VDBFrameSpectralVolumeFroxel[]): { color: Vec3; alpha: Vec3 } {
   const lit = volumes.filter((v) => Math.max(...v.alpha) > 0);
   if (lit.length === 0) return { color: [0, 0, 0], alpha: [0, 0, 0] };
   if (lit.length === 1) {
     const v = lit[0]!;
     return { color: map3((c) => v.radiance[c]! * v.alpha[c]!), alpha: [...v.alpha] };
-  }
-  if (mode === "over") {
-    const color: Vec3 = [0, 0, 0];
-    const alpha: Vec3 = [0, 0, 0];
-    for (const v of lit) {
-      for (let c = 0; c < 3; c++) {
-        const k = 1 - v.alpha[c]!;
-        color[c] = v.radiance[c]! * v.alpha[c]! + color[c]! * k;
-        alpha[c] = v.alpha[c]! + alpha[c]! * k;
-      }
-    }
-    return { color, alpha };
   }
   const tau: Vec3 = [0, 0, 0];
   const tl: Vec3 = [0, 0, 0];

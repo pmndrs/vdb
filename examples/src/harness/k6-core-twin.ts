@@ -39,7 +39,6 @@ import {
   vdbFrameSpectralAmbientPairTotals,
   vdbFrameSpectralAmbientVisibility,
   type VDBFrameEnvironmentGpuResult,
-  type VDBFrameFroxelMix,
   type VDBFrameVec2,
   type VDBFrameVec3,
   type VDBFrameVec4,
@@ -553,26 +552,47 @@ export function volumeFroxelSpectralTwin(frame: TwinFrame, r: TwinVolume, cell: 
 }
 
 /** K6.4: the spectral gather's (scatter, scatterAlpha) texels at `cell`: (L·α rgb, α green), (α red, α blue, 0, α green). */
-export function gatherSpectralTwin(frame: TwinFrame, records: readonly TwinVolume[], cell: V3, mode: VDBFrameFroxelMix, mutate: TwinMutation = "none"): { scatter: V4; alpha: V4 } {
+export function gatherSpectralTwin(frame: TwinFrame, records: readonly TwinVolume[], cell: V3, mutate: TwinMutation = "none"): { scatter: V4; alpha: V4 } {
   const lit: VDBFrameSpectralVolumeFroxel[] = [];
   for (const r of records) {
     const v = volumeFroxelSpectralTwin(frame, r, cell, mutate);
     if (v) lit.push(v);
   }
-  const m: VDBFrameFroxelMix = mutate === "mix" ? (mode === "mixture" ? "over" : "mixture") : mode;
-  const g = vdbFrameGatherFroxelSpectral(lit, m);
+  if (mutate === "mix") {
+    // K6.11 mutation: the order-dependent premultiplied "over" blend (deleted as a mode, D35) instead of the mixture
+    const color: V3 = [0, 0, 0];
+    const alpha: V3 = [0, 0, 0];
+    for (const v of lit) {
+      for (let c = 0; c < 3; c++) {
+        const k = 1 - v.alpha[c]!;
+        color[c] = v.radiance[c]! * v.alpha[c]! + color[c]! * k;
+        alpha[c] = v.alpha[c]! + alpha[c]! * k;
+      }
+    }
+    return { scatter: [color[0], color[1], color[2], alpha[1]], alpha: [alpha[0], alpha[2], 0, alpha[1]] };
+  }
+  const g = vdbFrameGatherFroxelSpectral(lit);
   return { scatter: [g.color[0], g.color[1], g.color[2], g.alpha[1]], alpha: [g.alpha[0], g.alpha[2], 0, g.alpha[1]] };
 }
 
 /** The gather kernel's scatter texel at `cell`: every volume in record order, combined. */
-export function gatherTwin(frame: TwinFrame, records: readonly TwinVolume[], cell: V3, mode: VDBFrameFroxelMix, mutate: TwinMutation = "none"): V4 {
+export function gatherTwin(frame: TwinFrame, records: readonly TwinVolume[], cell: V3, mutate: TwinMutation = "none"): V4 {
   const lit: VDBFrameVolumeFroxel[] = [];
   for (const r of records) {
     const v = volumeFroxelTwin(frame, r, cell, mutate);
     if (v) lit.push(v);
   }
-  const m: VDBFrameFroxelMix = mutate === "mix" ? (mode === "mixture" ? "over" : "mixture") : mode;
-  return vdbFrameGatherFroxel(lit, m);
+  if (mutate === "mix") {
+    // K6.11 mutation: the order-dependent premultiplied "over" blend (deleted as a mode, D35) instead of the mixture
+    const out: V4 = [0, 0, 0, 0];
+    for (const v of lit) {
+      const k = 1 - v.alpha;
+      for (let c = 0; c < 3; c++) out[c] = v.radiance[c]! * v.alpha + out[c]! * k;
+      out[3] = v.alpha + out[3] * k;
+    }
+    return out;
+  }
+  return vdbFrameGatherFroxel(lit);
 }
 
 /** The resolve kernel for one column: (prefix boundaries, history′ per slice). */

@@ -9,7 +9,6 @@
 export * from "./index.js";
 
 export { vdbAttenuatedPointSize, vdbPointDiscTexture } from "./points.js";
-export { vdbMinComponent, vdbMaxComponent } from "./volume-source.js";
 export {
   VDBFrameCoreIntegrateMaterial,
   VDBFrameVolumeShadowReceivers,

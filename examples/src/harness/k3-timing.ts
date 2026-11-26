@@ -198,6 +198,7 @@ async function main(): Promise<void> {
     temporal: false,
     lighting: LIGHTING,
     multipleScattering: params.get("ms") !== "0",
+    ambientOcclusion: params.get("ao") !== "0",
     shadowResolution: Number(params.get("shadowRes") ?? 64),
   });
 
@@ -220,7 +221,7 @@ async function main(): Promise<void> {
       ...(asset.bbox ? { bbox: asset.bbox } : {}),
     });
     source = s;
-    gpuBytes = { source: s.gpuBytes.pool, pyramid: s.gpuBytes.pyramid, pyramidScratch: s.gpuBytes.pyramidScratch };
+    gpuBytes = { source: s.gpuBytes.pool, pyramid: 0, pyramidScratch: 0 }; // K6.11: the LOD bytes are the core source's (demo 15)
   } else {
     if (!asset.dense) throw new Error("no dense volume");
     source = vdbDenseTextures(asset.dense);

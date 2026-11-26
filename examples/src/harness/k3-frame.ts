@@ -21,7 +21,7 @@
  * twin probes are gone; the core kernels' twins are in k6-core).
  *
  * Other query: `?w=&h=`, `?froxels=WxHxD`, `?substeps=`, `?shadowSteps=`, `?ms=0|1`, `?mips=0`,
- * `?occluder=1` (an opaque box in front of the volume centre), `?novolume=1`, `?file=`, `?froxelMix=`, `?msEdge=`,
+ * `?occluder=1` (an opaque box in front of the volume centre), `?novolume=1`, `?file=`, `?msEdge=`,
  * `?msLevels=`, `?ao=1&aoPairs=&aoSteps=`, `?occlusion=0` (core settings).
  *
  * K3.3 ('frame' lighting, R1 §6 Step 3): `?lighting=frame` (his Step 3 scenes set it: `step3-default`,
@@ -339,7 +339,6 @@ interface Result {
   temporalCheck?: { frames: number; diffsOff: number[]; diffsOn: number[]; psnrSingleVsMean: number; psnrTemporalVsMean: number; volumePixels: number };
   // K6.1 (K6.8: always the core)
   backend?: "core";
-  froxelMix?: "mixture" | "over";
   // K3.5
   spectral?: boolean;
   medium?: string | null;
@@ -705,10 +704,9 @@ async function main(): Promise<void> {
   renderer.setSize(W, H, false);
 
   const frameRenderer = new VDBFrameRenderer();
-  // K6.1 `?froxelMix=mixture|over`; K6.3 `?msEdge=zero|clamp`, `?msLevels=` ('multi-scale'); K6.Q1 `?ao=1`, `?aoPairs=`,
+  // K6.3 `?msEdge=zero|clamp`, `?msLevels=` ('multi-scale'); K6.Q1 `?ao=0|1` (default on, D35), `?aoPairs=`,
   // `?aoSteps=` (shadowed ambient); K6.5b `?occlusion=0` (no mesh → volume shadows: his renderer has none)
   const s = frameRenderer.settings;
-  s.froxelMix = params.get("froxelMix") === "over" ? "over" : "mixture";
   if (params.has("msEdge")) Object.assign(s, { multiScaleEdge: params.get("msEdge") === "clamp" ? "clamp" : "zero" });
   if (params.has("msLevels")) s.multiScaleLevels = Number(params.get("msLevels"));
   // K6.3a `?msSigma=paper`: the σ = 2^k levels (an internal core setting, VDBFrameInternalSettings)
@@ -720,7 +718,6 @@ async function main(): Promise<void> {
   if (params.has("ambientProbe")) Object.assign(s, { ambientProbe: params.get("ambientProbe") === "radiance" ? "radiance" : "irradiance" });
   if (params.get("occlusion") === "0") s.occlusion = false;
   result.backend = "core";
-  result.froxelMix = s.froxelMix;
   Object.assign(frameRenderer.settings, {
     width: FROXELS[0],
     height: FROXELS[1],

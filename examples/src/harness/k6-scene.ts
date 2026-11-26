@@ -5,12 +5,12 @@
  *
  * Query: `?scene=<name>` (K6_SCENES), `?lighting=volume|frame`, `?ms=0|1|two-sided|octaves|neural` (K6.3, core only:
  * `mlp`, `multi-scale` with `?msEdge=zero|clamp`, `?msLevels=`, K6.3a `?msSigma=his|paper`),
- * `?froxelMix=mixture|over` (K6.8: always the core; `?backend=` is ignored), `?w=&h=` (default 1280 × 720), `?froxels=WxHxD`
+ * (K6.8: always the core; `?backend=` is ignored), `?w=&h=` (default 1280 × 720), `?froxels=WxHxD`
  * (default his 512x512x24), `?lod=` (sparse sources: default 'coarse-pyramid', D28), `?shadowRes=`, `?shadowSteps=`.
  * Jitter and temporal reprojection off (deterministic); no MSAA (no meshes).
  *
  * Results: `window.__VDB_K6_SCENE__` = { done, error?, adapter, width, height, rgba (base64 RGBA8, sRGB, his background
- * 0x598eff), settings, backend, froxelMix, warnings, uncaptured }.
+ * 0x598eff), settings, backend, warnings, uncaptured }.
  */
 import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
@@ -28,7 +28,6 @@ interface Result {
   rgba?: string;
   settings?: Record<string, unknown>;
   backend?: string;
-  froxelMix?: string;
   sourceKind?: "dense" | "sparse";
   warnings: string[];
   uncaptured: string[];
@@ -103,10 +102,9 @@ async function main(): Promise<void> {
 
   const asset = await k6LoadAsset(def.asset);
   const frameRenderer = new VDBFrameRenderer();
-  // K6.8: always the core (`?backend=` ignored). `?froxelMix=`; K6.3 'multi-scale' (`?msEdge=`, `?msLevels=`); K6.Q1 shadowed
-  // ambient (`?ao=1`, `?aoPairs=`, `?aoSteps=`)
+  // K6.8: always the core (`?backend=` ignored). K6.3 'multi-scale' (`?msEdge=`, `?msLevels=`); K6.Q1 shadowed
+  // ambient (`?ao=0|1`, default on (D35), `?aoPairs=`, `?aoSteps=`)
   const cs = frameRenderer.settings;
-  cs.froxelMix = params.get("froxelMix") === "over" ? "over" : "mixture";
   if (params.has("msEdge")) Object.assign(cs, { multiScaleEdge: params.get("msEdge") === "clamp" ? "clamp" : "zero" });
   if (params.has("msLevels")) cs.multiScaleLevels = Number(params.get("msLevels"));
   // K6.3a `?msSigma=paper`: the σ = 2^k levels (an internal core setting, VDBFrameInternalSettings)
@@ -117,7 +115,6 @@ async function main(): Promise<void> {
   // K6.Q1a `?ambientProbe=radiance`: the probe's sky up / down terms as the hemisphere's mean radiance (internal setting)
   if (params.has("ambientProbe")) Object.assign(cs, { ambientProbe: params.get("ambientProbe") === "radiance" ? "radiance" : "irradiance" });
   result.backend = "core";
-  result.froxelMix = cs.froxelMix;
   Object.assign(frameRenderer.settings, {
     width: FROXELS[0],
     height: FROXELS[1],
@@ -220,7 +217,7 @@ async function main(): Promise<void> {
   result.width = W;
   result.height = H;
   result.rgba = await readImage(renderer, rt);
-  log(`${NAME} ${LIGHTING} ms ${String(MS)} (${cs.froxelMix}): ${W}x${H}`, "ok");
+  log(`${NAME} ${LIGHTING} ms ${String(MS)}: ${W}x${H}`, "ok");
   volume.dispose();
   source.dispose();
   rt.dispose();

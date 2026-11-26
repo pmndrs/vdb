@@ -19,7 +19,7 @@ export function frameSparse(renderer: WebGPURenderer, pool: VDBGridPool, scene: 
     const source = vdbSparseSource(
         grids,
         { density: id }, // optional: mask, albedo (one grid or three), emission
-        { lod: 'coarse-pyramid', pyramidMax: 128, pyramidBuild: 'gpu', images: { density: image } },
+        { lod: 'coarse-pyramid', pyramidMax: 128, images: { density: image } },
     );
 
     const volume = new VDBFrameVolume(source, { extinction: 100, hdda: false }); // the box is the grid's world box

@@ -10,7 +10,7 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 
 - `@pmndrs/vdb/three`: `VDBFrameRenderer` draws every frame with the core frame renderer (compute kernels on three's
   device; D34). The TSL pass materials, their shader chunks and the internal `backend` switch are deleted.
-  - `settings` is the core's `VDBFrameSettings` (his names and defaults, plus `froxelMix`, `occlusion`,
+  - `settings` is the core's `VDBFrameSettings` (his names and defaults, plus `occlusion`,
     `multiScaleLevels`, `ambientOcclusion`, `ambientOcclusionPairs`, `ambientOcclusionSteps`; the multi-scale A/B
     settings `multiScaleEdge` and `multiScaleSigma` stay internal).
     `VDBFrameRendererSettings` is removed; `VDBFramePhase` → `VDBFramePhaseName`, `VDBFrameMultipleScattering` →
@@ -29,7 +29,19 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
   - `vdbFrameLights` / `vdbFrameAllLights` → the core's `VDB_FRAME_LIGHT_BITS` (`ambient`, `point`, `directional`, `spot`,
     `hemisphere`, `environment`) / `VDB_FRAME_ALL_LIGHTS`, re-exported.
   - `VDBFrameVolume` drops `sourceUniforms`, `volumes` and the pass-material fields; its box is `boxMatrix`.
-    `vdbVolumeUniforms` / `vdbVolumeNodes` stay for custom TSL materials.
+    `vdbVolumeUniforms` / `vdbVolumeNodes` are deleted (K6.11, below).
+  - `ambientOcclusion` is **on by default** (4 direction pairs; D35): ambient, hemisphere, light-probe and environment
+    light is attenuated by the medium (about 35 to 148 % too bright in single scattering without it, against the K6.R
+    reference). `ambientOcclusion: false` gives 0.1's unshadowed light exactly; scenes without such lights do not change.
+  - `froxelMix` is deleted: overlapping volumes in a froxel always combine order-independently (the former
+    `'mixture'`); his draw-order `'over'` blend is gone (D35).
+  - `vdbVolumeUniforms`, `vdbVolumeNodes` and their types (`VDBVolumeNodes`, `VDBVolumeNodesOptions`, `VDBVolumeUniforms`,
+    `VDBVolumeUniformParameters`, `VDBThreeSourceFactory`) are deleted with the sources' TSL half, with no deprecation
+    cycle (D35): `vdbDenseTextures` / `vdbSparseSource` are handles with no GPU object. Gone from them: the dense
+    source's `textures` (`VDBDenseChannelTextures`), the sparse source's `pyramid`, `pyramidBuilds`, `refreshPyramid()`,
+    `nodeAverageFn()`, `skipEmptyFn()`, `createUniforms()`, `createNodes()`, `VDBSparsePyramid`,
+    `VDBSparseVolumeUniforms` and the `pyramidBuild` option; a sparse source's `gpuBytes` is `{ pool }`. A custom TSL
+    material uses `VDBGridNode`; custom WGSL or compute the core sources' `wgsl()`.
 - `VDBSequence` moves to the core (`@pmndrs/vdb`; engine-free); `@pmndrs/vdb/three` re-exports it.
 
 ### Added
@@ -81,10 +93,8 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
   `NvdbFormatError` (a 0 size used to loop over empty grids).
 - Tools: for `.nvdb` files whose FileMetaData leaves `indexBBox` and `voxelCount` zero (Warp writes them so),
   `NvdbGridMetadata` takes them from the grid image.
-- Three (K6.8a): `vdbSparseSource` / `vdbDenseTextures` are handles; `VDBFrameVolume` reads them into the core's own
-  sources. Their three-side GPU resources exist only for custom TSL materials and are made on first use: a dense
-  source's `textures` (it no longer uploads the texels twice), a sparse source's `pyramid` (it no longer builds a second
-  pyramid at creation). Until then a sparse source's `gpuBytes.pyramid` / `pyramidScratch` and `pyramidBuilds` are 0.
+- Three (K6.8a, K6.11): `vdbSparseSource` / `vdbDenseTextures` are handles with no GPU object; `VDBFrameVolume` reads them
+  into the core's own sources (no second texel upload, no second pyramid; the TSL half is deleted, see Breaking).
 - Three (K6.8a): the volume shadow receivers on meshes call the core's `vdbVolumeShadowWgsl` (one implementation),
   binding the map's `view` buffer through a storage stand-in; `VDBVolumeShadowMap.view` gains `STORAGE` usage.
 - Three (K6.8b): `VDBFrameEmissionLight` lights meshes with the core's `vdbEmissionProbeWgsl` (one implementation; frames
@@ -215,8 +225,6 @@ One package with three entry points plus `@pmndrs/vdb/pnanovdb.wgsl`: `@pmndrs/v
   'pingpong'` (default `'repeat'`, as `loop: true` was; `'once'` is the old `loop: false`, holding at the range end)
   is settable while playing with `setLoopMode()`. A ping-pong keeps its direction across `stop()` / `resume()`,
   `seek()` and `setRange()` (RV).
-- `VDBVolumeUniforms` has `dispose()`: a sparse source's uniforms drop the listeners they registered on the source.
-  `VDBFrameVolume.dispose()` calls it; call it for uniforms you made with `vdbVolumeUniforms` (RV).
 
 ### Fixed
 

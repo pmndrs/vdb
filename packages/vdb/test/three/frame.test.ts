@@ -89,7 +89,7 @@ describe("VDBFrameRenderer settings (K6.8: the core's)", () => {
     expect([s.temporalBlend, s.shadowResolution, s.shadowCascades, s.shadowDistance]).toEqual([0.2, 64, 1, 512]);
     expect([s.phase, s.phaseG, s.phaseBackG, s.phaseBackWeight, s.phaseGExponent]).toEqual(["henyey-greenstein", 0.8, -0.3, 0.2, 0]);
     expect([s.environmentLighting, s.environmentSamples, s.environmentShOrder]).toEqual(["directional", 8, 1]);
-    expect([s.froxelMix, s.occlusion, s.ambientOcclusion]).toEqual(["mixture", true, false]);
+    expect([s.occlusion, s.ambientOcclusion]).toEqual([true, true]);
     expect(fr.mlp?.layers.length).toBeGreaterThan(0);
     expect(fr.froxels).toBe(true);
     expect(fr.core).toBe(null);

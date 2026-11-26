@@ -79,10 +79,9 @@ export const ENV_GROUP0_LAYOUT: GPUBindGroupLayoutDescriptor = {
 
 /** Pipeline-key options of the gather kernel. */
 export interface VDBFrameGatherKey {
-  readonly mix: "mixture" | "over";
   readonly multi: boolean;
   readonly maxVolumes?: number;
-  /** K6.2: `'frame'` lighting fuses his density and lighting passes (the mix does not apply: his sums are additive). */
+  /** K6.2: `'frame'` lighting fuses his density and lighting passes (his sums are additive). */
   readonly lighting?: "volume" | "frame";
   /** K6.5: a validated user emission colour hook compiled into the group's kernels (sources with emission). */
   readonly hook?: string | null;
@@ -110,7 +109,7 @@ export function vdbFrameGatherKernelWgsl(source: VDBVolumeSource, key: VDBFrameG
   const body =
     key.lighting === "frame"
       ? vdbFrameLightingGatherWgsl({ multi: key.multi, channels: source.channels, hook, spectral: !!key.spectral })
-      : vdbFrameGatherWgsl({ mix: key.mix, multi: key.multi, channels: source.channels, hook, spectral: !!key.spectral });
+      : vdbFrameGatherWgsl({ multi: key.multi, channels: source.channels, hook, spectral: !!key.spectral });
   return `${sourcePrelude(source, key.maxVolumes, true)}\n${body}`;
 }
 
@@ -139,7 +138,7 @@ export function vdbFrameGatherSpec(source: VDBVolumeSource, key: VDBFrameGatherK
   group1.push(...vdbFrameOccluderLayoutEntries(STAGE.COMPUTE));
   const hooked = source.channels.emission && key.hook ? `, hook ${vdbHashText(key.hook)}` : "";
   return {
-    label: `vdb frame gather (${frame ? "frame lighting" : key.mix}${key.multi ? ", multi-group" : ""}${key.spectral ? ", spectral" : ""}; ${sourceChannels(source)}${hooked})`,
+    label: `vdb frame gather (${frame ? "frame lighting" : "volume lighting"}${key.multi ? ", multi-group" : ""}${key.spectral ? ", spectral" : ""}; ${sourceChannels(source)}${hooked})`,
     code: vdbFrameGatherKernelWgsl(source, key),
     entryPoint: "vdbFrameGatherCs",
     groups: [GROUP0_LAYOUT, { entries: group1 }, { entries: source.layoutEntries(SOURCE_SLOT, STAGE.COMPUTE) }],
