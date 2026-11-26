@@ -584,3 +584,13 @@ From v1; details in docs/archive/handoffs/.
   and shares the 20-input layout (`3 · 6 + 2`) of his, so a new phase needs a new input and a core change.
 - K6.N costs on an Apple M5 Pro (18 cores): 3000 scenes × 1000 points (ratio target) 29 min on 12 workers, 60 epochs on 3 M
   samples 9 min on one thread. A dataset or a run is a command, not a project; never commit `artifacts/k6-neural/`.
+- K6.11a (D36): `vdbFrameNeuralWeights` is OUR K6.N network (`train.mjs` writes `neural-weights.ts`; his weights and the
+  `?mlp=pmndrs` / `?mlp=his` option are gone). Scenes whose multiple scattering is 'neural' (the default mode) moved against
+  K6.10; his K3 captures of those scenes no longer match to float noise.
+- K6.11a (D36): no public name has a `Gpu` suffix; the core's `vdbSparseSource` / `vdbGridStats` / `vdbDecodeToAtlas` /
+  `VDBFrameRenderer` / `VDBFrameVolume` / `VDBSparseLod` / `VDBSparseSourceOptions` share their names with `./three`
+  declarations (different objects). A file importing both aliases the core's (`VDBFrameRenderer as VDBCoreFrameRenderer`);
+  a rename by search-and-replace of `XGpu` → `X` breaks every `./three` file that imports from the core: typecheck finds
+  them. `api-surface.test.ts` pins the pairs (`CORE_THREE_SAME_NAME`) and the `Cpu` ↔ unsuffixed rule.
+- K6.11a: `wvdbPrefixLength`, `nvdbResponseLength` and `vdbMakeFpNLeafCodec` are tools internals (D36): tests and scripts import
+  them from `src/tools/internal.ts` / `dist/tools/internal.js`; `./three` imports `nvdbResponseLength` from `../tools/nvdb-stream.js`.

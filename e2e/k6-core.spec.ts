@@ -216,7 +216,7 @@ const K63_PROBES: { name: string; query: string; keys: K63Key[]; mutations: Reco
   { name: "frame, 'two-sided'", query: "?probe=frame&ms=two-sided", keys: ["gridStats", "transmittanceStats", "stats"], mutations: { "two-sided": "transmittanceStats" } },
   { name: "frame, 'two-sided', sparse, environment 'spherical-harmonics'", query: "?probe=frame&ms=two-sided&source=sparse&env=spherical-harmonics", keys: ["gridStats", "transmittanceStats", "environmentGridStats", "stats"], mutations: { "two-sided": "transmittanceStats" } },
   {
-    name: "frame, 'mlp' (his network)",
+    name: "frame, 'mlp' (the default network)",
     query: "?probe=frame&ms=mlp",
     keys: ["gridStats", "mipStats", "transmittanceStats", "stats"],
     mutations: { "mlp-mip": "mipStats", "mlp-weights": "transmittanceStats", "mlp-depth": "transmittanceStats" },

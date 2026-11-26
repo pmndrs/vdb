@@ -40,7 +40,7 @@ shadowing the volumes (mesh → volume) and an emission light. It takes your `GP
 what it made and never submits. Sources: `vdbSparseSource` (every grid of a `VDBGridPool`, with LOD) and
 `vdbDenseSource` (`.wvdb` textures). `vdbCreateLevelSetPass` and `vdbCreatePointPass` draw level sets and points
 into your passes. Settings out of the device's range (`shadowResolution`, shadow map sizes) clamp with a one-time
-warning. `multipleScattering` defaults to `'neural'` (his trained network on the core's EXPERIMENTAL generic MLP).
+warning. `multipleScattering` defaults to `'neural'` (our trained network, K6.N, on the core's EXPERIMENTAL generic MLP).
 Demo 17 is a full raw-WebGPU page; see
 [docs/site/core/rendering-without-three.mdx](https://github.com/pmndrs/vdb/blob/main/docs/site/core/rendering-without-three.mdx).
 
