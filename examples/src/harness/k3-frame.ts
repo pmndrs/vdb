@@ -77,6 +77,7 @@ import {
   type VDBFrameVec3,
 } from "../../../packages/vdb/src/tools/internal.js";
 import cloudWvdbUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
+import { vdbFrameMlpFromNeural, vdbFrameNeuralWeightsProcedural } from "../../../packages/vdb/src/tools/internal.js";
 
 interface SceneDef {
   name: string;
@@ -714,6 +715,8 @@ async function main(): Promise<void> {
   // K6.3a `?msSigma=paper`: the σ = 2^k levels (an internal core setting, VDBFrameInternalSettings)
   if (params.has("msSigma")) Object.assign(s, { multiScaleSigma: params.get("msSigma") === "paper" ? "paper" : "his" });
   if (params.has("ao")) s.ambientOcclusion = params.get("ao") === "1";
+  // K6.N `?mlp=his|pmndrs`: the network of 'neural' / 'mlp' (default his; pmndrs = our procedural-only weights)
+  if (params.get("mlp") === "pmndrs") frameRenderer.mlp = vdbFrameMlpFromNeural(vdbFrameNeuralWeightsProcedural);
   if (params.has("aoPairs")) s.ambientOcclusionPairs = Number(params.get("aoPairs"));
   if (params.has("aoSteps")) s.ambientOcclusionSteps = Number(params.get("aoSteps"));
   // K6.Q1a `?ambientProbe=radiance`: the probe's sky up / down terms as the hemisphere's mean radiance (internal setting)

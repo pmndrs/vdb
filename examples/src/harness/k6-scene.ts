@@ -17,6 +17,7 @@ import { WebGPURenderer } from "three/webgpu";
 import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, vdbDenseTextures, vdbSparseSource, type VDBFrameMultipleScatteringMode, type VDBSparseLod, type VDBThreeVolumeSource } from "@pmndrs/vdb/three";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { K6_SCENES, k6LoadAsset, k6SceneFrame, k6SparseBox, type K6Lighting } from "./k6-scenes.js";
+import { vdbFrameMlpFromNeural, vdbFrameNeuralWeightsProcedural } from "../../../packages/vdb/src/tools/internal.js";
 
 interface Result {
   done: boolean;
@@ -112,6 +113,8 @@ async function main(): Promise<void> {
   // K6.3a `?msSigma=paper`: the σ = 2^k levels (an internal core setting, VDBFrameInternalSettings)
   if (params.has("msSigma")) Object.assign(cs, { multiScaleSigma: params.get("msSigma") === "paper" ? "paper" : "his" });
   if (params.has("ao")) cs.ambientOcclusion = params.get("ao") === "1";
+  // K6.N `?mlp=his|pmndrs`: the network of 'neural' / 'mlp' (default his; pmndrs = our procedural-only weights)
+  if (params.get("mlp") === "pmndrs") frameRenderer.mlp = vdbFrameMlpFromNeural(vdbFrameNeuralWeightsProcedural);
   if (params.has("aoPairs")) cs.ambientOcclusionPairs = Number(params.get("aoPairs"));
   if (params.has("aoSteps")) cs.ambientOcclusionSteps = Number(params.get("aoSteps"));
   // K6.Q1a `?ambientProbe=radiance`: the probe's sky up / down terms as the hemisphere's mean radiance (internal setting)
