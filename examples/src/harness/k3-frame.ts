@@ -322,6 +322,8 @@ interface Result {
   /** Screen rectangle of the volume box in pixels (top-left origin): x0, y0, x1, y1. */
   volumeRect?: number[];
   inPageIdentical?: boolean;
+  /** K6.11: max |first − second| (8-bit) and the number of differing bytes. */
+  inPageDiff?: { max: number; count: number };
   nonBackground?: number;
   timings?: { provisional: true; note: string; sceneMs: number | null; froxelsMs: number | null; fullMs: number | null; integrateMs: number | null; passes?: Record<string, number | null> };
   warnings: string[];
@@ -1042,6 +1044,17 @@ async function main(): Promise<void> {
   const first = toDisplay(firstLinear);
   const second = toDisplay(await frame());
   result.inPageIdentical = first.length === second.length && first.every((v, i) => v === second[i]);
+  // K6.11: how much the second frame differs (8-bit values; a static scene with temporal accumulation and the default AO)
+  {
+    let max = 0;
+    let count = 0;
+    for (let i = 0; i < first.length; i++) {
+      const d = Math.abs(first[i]! - second[i]!);
+      if (d > 0) count++;
+      max = Math.max(max, d);
+    }
+    result.inPageDiff = { max, count };
+  }
   const bg = BACKGROUND.clone().convertLinearToSRGB();
   const bgBytes = [bg.r, bg.g, bg.b].map((v) => Math.round(v * 255));
   let nonBackground = 0;

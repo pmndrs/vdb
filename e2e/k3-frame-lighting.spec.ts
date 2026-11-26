@@ -219,7 +219,11 @@ test("K3.3 sparse source: 'frame' lighting on identical voxels is >= 35 dB from 
 
 test("K3.3 temporal reprojection + jitter: a still camera converges toward the mean of the jittered frames", async ({ page }) => {
   test.setTimeout(500_000);
-  const r = await run(page, `?w=160&h=96&froxels=96x64x24&lighting=frame&lights=dir-hemi&temporalCheck=16`);
+  // K6.11 (D35): `&ao=0`. With jitter and temporal accumulation the shadowed ambient's direction ring turns by the frame's jitter
+  // (K6.Q1a, by design), so the temporal frames converge to the ring-averaged ambient, not to the mean of the un-accumulated
+  // frames (a fixed ring) this gate compares with: 5.6 dB further from it than a single frame (51.3 vs 56.9 dB, default AO), 4.9 dB nearer with AO off (62.0 vs 57.0 dB).
+  // The ring's accumulation is checked by k6-ambient's `aoJitter` probe.
+  const r = await run(page, `?w=160&h=96&froxels=96x64x24&lighting=frame&lights=dir-hemi&temporalCheck=16&ao=0`);
   const detail = detailOf(r);
   expect(r.error, detail).toBeUndefined();
   expect(r.uncaptured, detail).toEqual([]);

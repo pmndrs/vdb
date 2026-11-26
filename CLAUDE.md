@@ -564,4 +564,13 @@ From v1; details in docs/archive/handoffs/.
   unaffected.
 - K6.11: `froxelMix` is gone (only the order-independent mixture is left). The k6-core `?mutate=mix` is now the twin's
   order-dependent premultiplied "over" blend (a mutation-only code path in `k6-core-twin.ts`), still failing the gather probes.
+- K6.11: with `ambientOcclusion` on, a static un-jittered scene with `temporal` differs between frame 1 and frame 2 by a
+  rounding step (2 bytes of 1/255; `k3-frame` reports `inPageDiff`; `?ao=0`: identical), and with `jitter` + `temporal`
+  the ambient ring turns per frame by design (K6.Q1a), so a gate that compares temporal frames with the mean of
+  un-accumulated ones (K3.3, which now passes `ao=0`) sees the AO ring-average, not that mean. Byte-identity gates of
+  the 'frame' defaults (K3.4 `defaults=1`) accept ≤ 1/255 on a handful of bytes.
+- K6.11: `k6-core ?probe=frame&emissionColor=lut|hook` on a dense source needs `&groups=2` (one group gives B the source of
+  A, no emission channel: the mutation `emission-color` then does not fail). On Metal the 'frame' probe's transmittance
+  and stats exceed the 0.1 % bar already without the colour (hardware trilinear): compare with the baseline probe's
+  counts, not with zero.
 
