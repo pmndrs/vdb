@@ -305,6 +305,8 @@ export {
 } from "./frame/neural.js";
 export type { VDBFrameNeuralNetwork, VDBFrameNeuralMip } from "./frame/neural.js";
 export { vdbFrameNeuralWeights } from "./frame/neural-weights.js";
+// K6.N: our own weights, trained on procedural media only (scripts/k6/neural)
+export { vdbFrameNeuralWeightsProcedural } from "./frame/neural-weights-procedural.js";
 // K6.3: the experimental generic MLP of the core's 'mlp' multiple scattering (twins)
 export {
   VDB_FRAME_MLP_MAX_LAYERS,

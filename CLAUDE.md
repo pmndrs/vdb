@@ -573,4 +573,14 @@ From v1; details in docs/archive/handoffs/.
   A, no emission channel: the mutation `emission-color` then does not fail). On Metal the 'frame' probe's transmittance
   and stats exceed the 0.1 % bar already without the colour (hardware trilinear): compare with the baseline probe's
   counts, not with zero.
-
+- K6.N 'neural' training (`scripts/k6/neural/`): the MLP's target is the scattered FLUENCE at a shadow-grid voxel (isotropic,
+  total − direct), not pixel radiance, so the K6.R camera-ray tracer is not the oracle: the trainer has its own point
+  estimator (delta tracking, Henyey-Greenstein g 0.8) with an analytic single-scattering test
+  (`test/tools/frame-neural-train.test.ts`). His next-event transmittance (a light-depth GRID interpolated between voxel
+  centres) reads ~13 % LOW in our media (exp of a linearly interpolated depth over a trilinear density ramp): train on
+  `--nee=ratio` (the default; the checked-in weights) or `march`; `target-check.mjs` measures it.
+- K6.N: a procedural trainer `.mjs` is loaded by tests with `import(/* @vite-ignore */ url)`; the training sources keep a static
+  guard against file readers (D35 (2): procedural media only). The network has no anisotropy input: it is trained for g 0.8
+  and shares the 20-input layout (`3 · 6 + 2`) of his, so a new phase needs a new input and a core change.
+- K6.N costs on an Apple M5 Pro (18 cores): 3000 scenes × 1000 points (ratio target) 29 min on 12 workers, 60 epochs on 3 M
+  samples 9 min on one thread. A dataset or a run is a command, not a project; never commit `artifacts/k6-neural/`.
