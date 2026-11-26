@@ -5,7 +5,7 @@
 //   (renderGridMips: level sizes and atlas layouts).
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see THIRD_PARTY_NOTICES.md).
 // Changes: TypeScript; f64 CPU twins of the TSL (test oracles); the network is a value
-// (VDBFrameNeuralNetwork) so the weights module (./neural-weights.ts) can be swapped or left out.
+// (VDBFrameNeuralNetwork) so the weights module (./neural-weights.ts, ours: K6.N, D36) can be swapped or left out.
 // Divergences: DIVERGES.md (K3.4 rows).
 
 /**

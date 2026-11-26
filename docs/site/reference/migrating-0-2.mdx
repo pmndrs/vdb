@@ -28,7 +28,7 @@ points and the tools keep their 0.1 API.
 
 | 0.1 | 0.2 |
 |---|---|
-| `VDBFrameRenderer.neuralNetwork` | `VDBFrameRenderer.mlp` (`VDBFrameMlp`, EXPERIMENTAL; his trained weights by default; `null` runs `'neural'` / `'mlp'` as 1D diffusion) |
+| `VDBFrameRenderer.neuralNetwork` | `VDBFrameRenderer.mlp` (`VDBFrameMlp`, EXPERIMENTAL; our trained weights by default; `null` runs `'neural'` / `'mlp'` as 1D diffusion) |
 | `VDBFrameRenderer.renderFroxels()`, `holdFroxels` | `VDBFrameRenderer.froxels` (`false` keeps the last froxels) |
 | `VDBFrameRenderer.environment`, `environmentLights` (a readback) | none: the core extracts the environment lights on the GPU |
 | `VDBFrameRenderer.redrawStats` | the core's `VDBFrameRedrawStats` (adds `volumeShadows`) |
@@ -65,7 +65,7 @@ console.log(frameRenderer.core?.outputs);
   light is now attenuated by the medium, so scenes with such lights get darker (single scattering was 35 to 148 % too bright
   against a path-traced reference with it off). Frames without those lights do not change. `settings.ambientOcclusion = false`
   restores 0.1's unshadowed ambient exactly.
-- `multipleScattering` still defaults to `'neural'` (his trained network). It runs the core's generic MLP, which is
+- `multipleScattering` still defaults to `'neural'` (our network, trained on procedural media; 0.1 shipped his weights). It runs the core's generic MLP, which is
   EXPERIMENTAL: its data shape may change before 1.0.
 - Settings out of the device's range clamp with a one-time console warning instead of failing: `shadowResolution`
   (the transmittance stack must fit `maxTextureDimension3D` and `maxBufferSize`) and `castShadowMapSize`.

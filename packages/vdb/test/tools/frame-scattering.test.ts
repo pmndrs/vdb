@@ -316,7 +316,7 @@ describe("two-sided slab diffusion (multipleScattering 'two-sided')", () => {
 describe("neural indirect network (multipleScattering 'neural')", () => {
   const net = vdbFrameNeuralWeights;
 
-  it("his network fits the shader layout: 20 → 32 → 32 → 1, 441 vec4s", () => {
+  it("the network fits the shader layout: 20 → 32 → 32 → 1, 441 vec4s", () => {
     expect([net.levels, net.inputs, net.hidden]).toEqual([6, 20, 32]);
     expect(vdbFrameNeuralCheck(net)).toBeNull();
     expect(vdbFrameNeuralLayout(net)).toMatchObject({ w1: 0, b1: 160, w2: 168, b2: 424, w3: 432, b3: 440, vectors: 441 });

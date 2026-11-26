@@ -90,9 +90,7 @@ const coreMsRows = (make, base, captures = {}) =>
   [
     ["core ms two-sided", "two-sided", ""],
     ["core ms octaves", "octaves", ""],
-    ["core ms neural (generic MLP, his weights)", "neural", ""],
-    // K6.N: our own weights (procedural media only), `?mlp=pmndrs` (the harness pages set renderer.mlp)
-    ["core ms neural (generic MLP, pmndrs weights)", "neural", "&mlp=pmndrs"],
+    ["core ms neural (generic MLP)", "neural", ""],
     ["core ms multi-scale (edge zero)", "multi-scale", "&msEdge=zero"],
     ["core ms multi-scale (edge clamp, his)", "multi-scale", "&msEdge=clamp"],
     // K6.3a: the paper's wider levels (σ ≈ 2^k voxels: level k reads mip k + 1), edge zero (V75 item 5)
@@ -197,7 +195,6 @@ const GROUP_DEFS = {
     mie: "mono",
     rows: [
       k3("core ms neural", "scene=step4-frame-phase-lorenz-mie-dir-isolated", { lighting: "frame", capture: "step4-frame-phase-lorenz-mie-dir-isolated" }),
-      k3("core ms neural (pmndrs weights)", "scene=step4-frame-phase-lorenz-mie-dir-isolated&ms=neural&mlp=pmndrs", { lighting: "frame" }),
       k3("core ms two-sided", "scene=step4-frame-phase-lorenz-mie-dir-isolated&ms=two-sided", { lighting: "frame" }),
       k3("core ms diffusion", "scene=step4-frame-phase-lorenz-mie-dir-isolated&ms=1", { lighting: "frame" }),
       k3("core ms off", "scene=step4-frame-phase-lorenz-mie-dir-isolated&ms=0", { lighting: "frame", vsSingle: true }),
@@ -211,7 +208,6 @@ const GROUP_DEFS = {
     mie: "rgb",
     rows: [
       k3("core ms neural", "scene=step4-frame-phase-lorenz-mie-rgb-dir-isolated", { lighting: "frame", capture: "step4-frame-phase-lorenz-mie-rgb-dir-isolated" }),
-      k3("core ms neural (pmndrs weights)", "scene=step4-frame-phase-lorenz-mie-rgb-dir-isolated&ms=neural&mlp=pmndrs", { lighting: "frame" }),
       k3("core ms two-sided", "scene=step4-frame-phase-lorenz-mie-rgb-dir-isolated&ms=two-sided", { lighting: "frame" }),
       k3("core ms diffusion", "scene=step4-frame-phase-lorenz-mie-rgb-dir-isolated&ms=1", { lighting: "frame" }),
       k3("core ms off", "scene=step4-frame-phase-lorenz-mie-rgb-dir-isolated&ms=0", { lighting: "frame", vsSingle: true }),
@@ -228,8 +224,7 @@ const GROUP_DEFS = {
       k3("core outward, ms diffusion", "scene=step3-environment-sky-midday-env-isolated&envMode=outward&ms=1", { lighting: "frame" }),
       k3("core directional, ms diffusion", "scene=step3-environment-sky-midday-env-isolated&envMode=directional&ms=1", { lighting: "frame", capture: "step3-environment-sky-midday-env-isolated" }),
       k3("core directional, ms two-sided", "scene=step3-environment-sky-midday-env-isolated&envMode=directional&ms=two-sided", { lighting: "frame" }),
-      k3("core directional, ms neural (his weights)", "scene=step3-environment-sky-midday-env-isolated&envMode=directional&ms=neural", { lighting: "frame" }),
-      k3("core directional, ms neural (pmndrs weights)", "scene=step3-environment-sky-midday-env-isolated&envMode=directional&ms=neural&mlp=pmndrs", { lighting: "frame" }),
+      k3("core directional, ms neural", "scene=step3-environment-sky-midday-env-isolated&envMode=directional&ms=neural", { lighting: "frame" }),
     ],
   },
   // K6.3a: the three Step 4 scenes the core fails his strict bar on, at 640 × 360 (frames 2× down) so the 2.5 × 1.4 px

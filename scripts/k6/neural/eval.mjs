@@ -1,7 +1,7 @@
 // K6.N: compares the 'neural' networks on the held-out scenes of a dataset (scene index % 10 = 0, or any scenes a
-// dataset from another seed holds): ours, his (copied unchanged) and the diffusion / octave modes, against the
+// dataset from another seed holds): ours, optionally his (K6.N history: --his=<ts file>, e.g. from git show 070aae6:packages/vdb/src/tools/frame/neural-weights.ts) and the diffusion / octave modes, against the
 // path-traced scattered light. Our code (MIT).
-// Run: node scripts/k6/neural/eval.mjs [dataset] [--weights=<ts file>] [--all]   (--all: every scene, e.g. a fresh seed)
+// Run: node scripts/k6/neural/eval.mjs [dataset] [--weights=<ts file>] [--his=<ts file>] [--all]   (--all: every scene, e.g. a fresh seed)
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createNetwork, neuralHidden, neuralInputs, runNetwork } from './features.mjs';
@@ -11,8 +11,8 @@ const positional = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 const option = (name, fallback) => process.argv.find((a) => a.startsWith(`--${name}=`))?.split('=')[1] ?? fallback;
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const datasetPath = positional[0] ?? `${root}artifacts/k6-neural/dataset.bin`;
-const oursPath = option('weights', `${root}packages/vdb/src/tools/frame/neural-weights-procedural.ts`);
-const hisPath = `${root}packages/vdb/src/tools/frame/neural-weights.ts`;
+const oursPath = option('weights', `${root}packages/vdb/src/tools/frame/neural-weights.ts`);
+const hisPath = option('his', null);
 const all = process.argv.includes('--all');
 const floats = neuralInputs + 7;
 
@@ -35,9 +35,9 @@ const readWeights = (path) => {
 const buffer = readFileSync(datasetPath);
 const data = new Float32Array(buffer.buffer, buffer.byteOffset, buffer.length / 4);
 const count = data.length / floats;
-const networks = { ours: readWeights(oursPath), his: readWeights(hisPath) };
+const networks = { ours: readWeights(oursPath), ...(hisPath ? { his: readWeights(hisPath) } : {}) };
 const rows = [...mediumKinds, 'all'].map(() => ({ count: 0, target: 0, noise: 0, err: {}, bias: {}, rel: [] }));
-const modes = ['ours', 'his', 'diffusion', 'octaves'];
+const modes = hisPath ? ['ours', 'his', 'diffusion', 'octaves'] : ['ours', 'diffusion', 'octaves'];
 const inputs = new Float32Array(neuralInputs);
 const cache = { h1: new Float32Array(neuralHidden), h2: new Float32Array(neuralHidden) };
 
@@ -53,7 +53,7 @@ for (let i = 0; i < count; i++) {
   const target = data[offset + neuralInputs];
   const values = {
     ours: Math.exp(Math.min(runNetwork(networks.ours, inputs, cache), 4)),
-    his: Math.exp(Math.min(runNetwork(networks.his, inputs, cache), 4)),
+    ...(hisPath ? { his: Math.exp(Math.min(runNetwork(networks.his, inputs, cache), 4)) } : {}),
     diffusion: data[offset + neuralInputs + 2],
     octaves: data[offset + neuralInputs + 3],
   };

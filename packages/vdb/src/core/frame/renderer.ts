@@ -316,7 +316,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
   readonly #scattering: VDBFrameScattering;
   /**
    * K6.3 EXPERIMENTAL: the network of `multipleScattering: 'mlp'` (and `'neural'`) in 'frame' lighting, data for a
-   * generic MLP evaluator; default his trained weights (V48). null: those modes run as 1D diffusion (warned).
+   * generic MLP evaluator; default our trained weights (K6.N, D36). null: those modes run as 1D diffusion (warned).
    */
   mlp: VDBFrameMlp | null = vdbFrameMlpFromNeural(vdbFrameNeuralWeights);
   /** K6.4: rg16float storage (`texture-formats-tier1`) for the spectral alpha prefix; else rgba16float. */

@@ -50,7 +50,7 @@ export interface VDBFramePassHook {
   end?(update: VDBFrameUpdate): void;
 }
 
-/** His trained network as the core MLP (the default `mlp`; one object, so the core uploads it once). */
+/** Our trained network (K6.N, D36) as the core MLP (the default `mlp`; one object, so the core uploads it once). */
 const DEFAULT_MLP = vdbFrameMlpFromNeural(vdbFrameNeuralWeights);
 
 type RendererLike = WebGPURenderer & { isWebGPURenderer?: boolean };

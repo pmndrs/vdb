@@ -11,7 +11,7 @@
  * network is data: its layer shapes become a uniform and its weights a storage buffer, so a new network needs no shader
  * change. The inputs are his `'neural'` features at 3·L + 2 values (L feature levels): log(1 + σ h 2^k) at the voxel,
  * h 2^k toward the light and h 2^k away from it for k < L, then log(1 + direct optical depth) and √(absorption /
- * extinction) of level 1. The output is the scattered light (total − direct) of a light slot. His trained network
+ * extinction) of level 1. The output is the scattered light (total − direct) of a light slot. Our trained network (K6.N, D36)
  * ({@link vdbFrameMlpFromNeural} of `vdbFrameNeuralWeights`) is the first network, not the definition.
  */
 

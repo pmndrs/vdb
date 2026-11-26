@@ -15,8 +15,10 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
     settings `multiScaleEdge` and `multiScaleSigma` stay internal).
     `VDBFrameRendererSettings` is removed; `VDBFramePhase` → `VDBFramePhaseName`, `VDBFrameMultipleScattering` →
     `VDBFrameMultipleScatteringMode` (the core's declarations, re-exported).
-  - `neuralNetwork` → `mlp` (EXPERIMENTAL: the generic small-MLP data, `VDBFrameMlp`; default his trained weights; null
+  - `neuralNetwork` → `mlp` (EXPERIMENTAL: the generic small-MLP data, `VDBFrameMlp`; default our trained weights; null
     runs 'neural' / 'mlp' as 1D diffusion).
+  - The default network of `'neural'` / `'mlp'` is **our own**, trained on procedural media only (K6.N; D36): scenes that
+    select `'neural'` (the default mode) change a little. His weights are no longer shipped.
   - `renderFroxels()` / `holdFroxels` → `froxels` (false keeps the last froxels: the core's `update(…, { froxels })`).
   - `passHook` is `{ timestampWrites?, begin?, end? }`: timestamp writes bracket the kernels of each core update
     (`VDBFramePass` is removed).
@@ -60,7 +62,7 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
     `VDBEmissionColor`, `VDBFrameMlp` / `VDBFrameMlpLayer`, `VDBFramePhaseName`, `VDBFrameMultipleScatteringMode`,
     `VDBFrameWrap`, `VDBFrameMat4`, `VDBFrameVec3`; its outputs `VDBFrameOutputs`, `VDBFrameEmissionProbes`,
     `VDBFrameUpdate`, `VDBFrameRedrawStats`, `VDBFrameTimestamps`; `VDBFrameVolumeGpu`, `VDBFrameRendererGpuOptions`.
-  - `multipleScattering: 'neural'` (the default, his trained network) and `'mlp'` run the EXPERIMENTAL generic small MLP;
+  - `multipleScattering: 'neural'` (the default, our trained network) and `'mlp'` run the EXPERIMENTAL generic small MLP;
     its data shape (`VDBFrameMlp`) may change before 1.0.
 
 - NanoVDB **Half** grids (`GridType::Half` = 9, raw IEEE binary16 values; implemented in NanoVDB 13.2, OpenVDB PR 2335), end
