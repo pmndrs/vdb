@@ -1,6 +1,6 @@
 // Portions derived from mjurczyk/openvdb (MIT), commit 75e7345 (v0.26.0): scripts/neural-indirect/train.mjs.
 // Copyright (c) mjurczyk/openvdb contributors. Licensed under the MIT License (see packages/vdb/THIRD_PARTY_NOTICES.md).
-// Changes (K6.N): writes a TS data module (tools/frame/neural-weights-procedural.ts) and a JSON, held-out scenes by index, seed and epochs on the command line, a lr/width option, a per-kind report.
+// Changes (K6.N): writes a TS data module (tools/frame/neural-weights.ts) and a JSON, held-out scenes by index, seed and epochs on the command line, a lr/width option, a per-kind report.
 // Divergences: DIVERGES.md (K6.N rows).
 // NOTE Trains the neural indirect light network on the data of dataset.mjs and writes the weights module
 // src/three-openvdb/frame/core/frameNeuralIndirect.js.
@@ -22,7 +22,7 @@ const networkName = option('name', 'pmndrs procedural');
 const holdoutKind = option('holdout-kind', null);
 const outputPath = option(
   'out',
-  fileURLToPath(new URL('../../../packages/vdb/src/tools/frame/neural-weights-procedural.ts', import.meta.url)),
+  fileURLToPath(new URL('../../../packages/vdb/src/tools/frame/neural-weights.ts', import.meta.url)),
 );
 
 const sampleFloats = neuralInputs + 7;
@@ -299,9 +299,9 @@ import type { VDBFrameNeuralNetwork } from "./neural.js";
  * g 0.8. Inputs: for each of the ${neuralLevels} box mip levels k of the last shadow grid cascade, log(1 + σ h 2^k) at the
  * voxel, h 2^k toward the light and h 2^k away from it (h: the largest voxel side); then log(1 + direct optical depth)
  * and √(absorption / extinction) at level 1. Input scaling is folded into w1 and b1. vec4 layout: w1 rows, b1, w2
- * rows, b2, w3, b3 (x). Use it as \`renderer.mlp = vdbFrameMlpFromNeural(vdbFrameNeuralWeightsProcedural)\`.
+ * rows, b2, w3, b3 (x). Use it as \`renderer.mlp = vdbFrameMlpFromNeural(vdbFrameNeuralWeights)\`.
  */
-export const vdbFrameNeuralWeightsProcedural: VDBFrameNeuralNetwork = {
+export const vdbFrameNeuralWeights: VDBFrameNeuralNetwork = {
   name: "${networkName}",
   levels: ${neuralLevels},
   inputs: ${neuralInputs},

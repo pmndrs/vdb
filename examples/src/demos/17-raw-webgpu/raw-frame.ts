@@ -183,7 +183,7 @@ export class RawTargets {
     encoder.copyTextureToTexture({ texture: this.hdr }, { texture: this.sceneColor }, [this.width, this.height]);
   }
 
-  /** The core composite's targets (`VDBFrameRendererGpu.render`). `clampColors`: false when the host tone maps (his rule). */
+  /** The core composite's targets (`VDBFrameRenderer.render`). `clampColors`: false when the host tone maps (his rule). */
   composite(clampColors: boolean): VDBFrameTargets {
     return { color: this.hdr.createView(), size: [this.width, this.height], depth: this.depth.createView(), sceneColor: this.sceneColor.createView(), clampColors };
   }

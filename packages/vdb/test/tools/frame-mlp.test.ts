@@ -18,7 +18,7 @@ describe("K6.3 generic MLP (tools/frame/mlp.ts)", () => {
   let seed = 3;
   const r = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
 
-  it("his network as a generic MLP gives his forward pass (the same numbers, another layout)", () => {
+  it("the default network as a generic MLP gives the neural forward pass (the same numbers, another layout)", () => {
     const mlp = vdbFrameMlpFromNeural(vdbFrameNeuralWeights);
     expect(vdbFrameMlpCheck(mlp)).toBeNull();
     expect(mlp.layers.map((l) => [l.inputs, l.outputs, l.activation])).toEqual([

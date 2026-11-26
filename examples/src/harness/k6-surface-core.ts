@@ -4,8 +4,8 @@
  */
 import {
   VDBGridPool,
-  vdbCreateLevelSetPassGpu,
-  vdbCreatePointPassGpu,
+  vdbCreateLevelSetPass,
+  vdbCreatePointPass,
   vdbPointSpriteWgsl,
   type VDBLevelSetPassDraw,
   type VDBLevelSetPassFrame,
@@ -53,7 +53,7 @@ export async function renderLevelSetCore(
   w: number,
   h: number,
 ): Promise<CoreLevelSetImage> {
-  const surfaces = vdbCreateLevelSetPassGpu(device, pool, { colorFormat: "rgba32float", depthFormat: "depth32float", output, label: `k6.6 level set (${output})` });
+  const surfaces = vdbCreateLevelSetPass(device, pool, { colorFormat: "rgba32float", depthFormat: "depth32float", output, label: `k6.6 level set (${output})` });
   await surfaces.prepare();
   const color = device.createTexture({ size: [w, h], format: "rgba32float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
   const depth = device.createTexture({ size: [w, h], format: "depth32float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
@@ -79,7 +79,7 @@ export async function renderLevelSetCore(
 
 /** Renders the point pass into an `rgba32float` target (cleared to black) with a `depth24plus` buffer. */
 export async function renderPointsCore(device: GPUDevice, data: VDBPointPassData, frame: VDBPointPassFrame, w: number, h: number): Promise<{ rgba: Float32Array; count: number }> {
-  const points = vdbCreatePointPassGpu(device, { colorFormat: "rgba32float", depthFormat: "depth24plus", label: "k6.6 points" });
+  const points = vdbCreatePointPass(device, { colorFormat: "rgba32float", depthFormat: "depth24plus", label: "k6.6 points" });
   points.setPoints(data);
   await points.prepare();
   const color = device.createTexture({ size: [w, h], format: "rgba32float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });

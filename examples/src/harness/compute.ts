@@ -9,7 +9,7 @@
  * a host encoder (with the pool update), half let the tool submit.
  * Results go to `window.__VDB_COMPUTE__` for e2e/compute.spec.ts.
  */
-import { VDBGridPool, vdbApplyValueTransform, vdbDecodeToAtlasGpu, vdbGridStatsGpu } from "@pmndrs/vdb";
+import { VDBGridPool, vdbApplyValueTransform, vdbDecodeToAtlas, vdbGridStats } from "@pmndrs/vdb";
 import { installWgslPatch, type VDBWgslPatches } from "./wgsl-patch.js";
 
 /**
@@ -158,12 +158,12 @@ async function run(): Promise<ComputeReport> {
     if (k % 2 === 1) {
       const encoder = device.createCommandEncoder();
       pool.update(encoder);
-      job = vdbGridStatsGpu(device, pool, ids[k]!, { histogramBins, encoder });
+      job = vdbGridStats(device, pool, ids[k]!, { histogramBins, encoder });
       device.queue.submit([encoder.finish()]);
       job.submitted();
     } else {
       pool.flush();
-      job = vdbGridStatsGpu(device, pool, ids[k]!, { histogramBins });
+      job = vdbGridStats(device, pool, ids[k]!, { histogramBins });
     }
     const gpu = await job.read();
     const twin = vdbGridStatsCpu(images[k]!, { histogramBins });
@@ -198,11 +198,11 @@ async function run(): Promise<ComputeReport> {
       let job;
       if ((k + v) % 2 === 0) {
         const encoder = device.createCommandEncoder();
-        job = vdbDecodeToAtlasGpu(device, pool, ids[k]!, { ...options, encoder });
+        job = vdbDecodeToAtlas(device, pool, ids[k]!, { ...options, encoder });
         device.queue.submit([encoder.finish()]);
         job.submitted();
       } else {
-        job = vdbDecodeToAtlasGpu(device, pool, ids[k]!, options);
+        job = vdbDecodeToAtlas(device, pool, ids[k]!, options);
       }
       const gpu = await job.read();
       const twin = vdbDecodeToAtlasCpu(images[k]!, { filter: o.filter, maxDim: o.maxDim });
@@ -210,7 +210,7 @@ async function run(): Promise<ComputeReport> {
       const raw =
         !o.normalize && o.format === "float32"
           ? (gpu.data as Float32Array)
-          : ((await vdbDecodeToAtlasGpu(device, pool, ids[k]!, { filter: o.filter, maxDim: o.maxDim, format: "float32", normalize: false }).read()).data as Float32Array);
+          : ((await vdbDecodeToAtlas(device, pool, ids[k]!, { filter: o.filter, maxDim: o.maxDim, format: "float32", normalize: false }).read()).data as Float32Array);
       const { exact, maxAbs } = compareRaw(raw, twin.raw);
       const twinData = atlasFromRaw(twin.raw, { format: o.format, normalize: o.normalize, range: gpu.range });
       let dataDiff = 0;
@@ -227,7 +227,7 @@ async function run(): Promise<ComputeReport> {
 
   // readback: false keeps the GPU buffer; dispose() frees it; read() after dispose rejects.
   {
-    const job = vdbDecodeToAtlasGpu(device, pool, ids[0]!, { readback: false, maxDim: 16 });
+    const job = vdbDecodeToAtlas(device, pool, ids[0]!, { readback: false, maxDim: 16 });
     report.readbackFalseOk = job.buffer.size === job.dims[0] * job.dims[1] * job.dims[2] * 4;
     job.dispose();
     report.disposeRejects = await job.read().then(
@@ -240,7 +240,7 @@ async function run(): Promise<ComputeReport> {
   // (mapping the staging buffer first would fail that submit's validation).
   {
     const encoder = device.createCommandEncoder();
-    const job = vdbGridStatsGpu(device, pool, ids[0]!, { encoder });
+    const job = vdbGridStats(device, pool, ids[0]!, { encoder });
     const early = await job.read().then(
       () => "resolved",
       (e: unknown) => (e as { code?: string }).code ?? String(e),
@@ -282,9 +282,9 @@ async function run(): Promise<ComputeReport> {
         if (!Object.is(after, before)) tilesUnchanged = false;
       }
     }
-    const gpuAtlas = await vdbDecodeToAtlasGpu(device, pool, ids[k]!, { filter: "nearest", format: "float32", normalize: false }).read();
+    const gpuAtlas = await vdbDecodeToAtlas(device, pool, ids[k]!, { filter: "nearest", format: "float32", normalize: false }).read();
     const twinAtlas = vdbDecodeToAtlasCpu(transformed, { filter: "nearest" });
-    const gpuStats = await vdbGridStatsGpu(device, pool, ids[k]!).read();
+    const gpuStats = await vdbGridStats(device, pool, ids[k]!).read();
     const twinStats = vdbGridStatsCpu(transformed);
     report.transform = {
       grid: names[k]!,

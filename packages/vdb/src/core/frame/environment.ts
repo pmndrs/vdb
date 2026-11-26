@@ -87,11 +87,11 @@ export class VDBFrameEnvironmentState implements VDBFrameEnvironmentInfo {
     }
     const texture = env.texture;
     if (!texture || typeof (texture as { createView?: unknown }).createView !== "function") {
-      throw new VDBError("VDB_BAD_OPTION", "VDBFrameRendererGpu.update: environment.texture must be a GPUTexture (TEXTURE_BINDING usage) on the renderer's device.");
+      throw new VDBError("VDB_BAD_OPTION", "VDBFrameRenderer.update: environment.texture must be a GPUTexture (TEXTURE_BINDING usage) on the renderer's device.");
     }
     const projection = vdbFrameEnvironmentProjection(env);
     if (projection === "cube" && (texture.depthOrArrayLayers < 6 || texture.width !== texture.height)) {
-      throw new VDBError("VDB_BAD_OPTION", `VDBFrameRendererGpu.update: a cube environment needs 6 square layers (got ${texture.width}x${texture.height}x${texture.depthOrArrayLayers}).`);
+      throw new VDBError("VDB_BAD_OPTION", `VDBFrameRenderer.update: a cube environment needs 6 square layers (got ${texture.width}x${texture.height}x${texture.depthOrArrayLayers}).`);
     }
     this.present = true;
     const rotation = env.rotation ? Array.from(env.rotation).slice(0, 9) : [...VDB_FRAME_ENV_IDENTITY];

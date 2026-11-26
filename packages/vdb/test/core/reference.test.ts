@@ -13,8 +13,8 @@ import {
   vdbReferencePackUniforms,
   vdbReferenceTableLayout,
   vdbReferenceWgsl,
-  vdbCreateReferenceRendererGpu,
-  type VDBReferenceSourceGpu,
+  vdbCreateReferenceRenderer,
+  type VDBReferenceSource,
 } from "../../src/core/internal.js";
 import { VDB_REFERENCE_MAX_HEMISPHERES, VDB_REFERENCE_MAX_LIGHTS, VDB_REFERENCE_MAX_VOLUMES, vdbRefInvert4, vdbReferenceBlackbodyTable, vdbReferenceMiePhaseTable, type VDBReferenceMajorantGrid } from "../../src/tools/internal.js";
 import { wgslNameProblems } from "./wgsl-names.js";
@@ -35,7 +35,7 @@ fn vdbSrcEmission(v: u32, uvw: vec3f, lod: f32) -> f32 { return 0.0; }`,
   layoutEntries: () => [],
   bindEntries: () => [],
   dispose: () => {},
-} as unknown as VDBReferenceSourceGpu;
+} as unknown as VDBReferenceSource;
 
 /** WGSL struct layout (sizes and alignments of the scalar, vector, matrix, array and struct members we use). */
 function structLayout(wgsl: string, name: string): { offsets: Record<string, number>; size: number; align: number } {
@@ -237,7 +237,7 @@ describe("K6.10b reference renderer setScene", () => {
 
   it("retires the textures it replaces to a later task (fail-before: destroyed at once); dispose destroys the rest once", async () => {
     const { device, textures } = fakeDevice();
-    const ref = await vdbCreateReferenceRendererGpu(device, { source: stubSource, width: 4, height: 3 });
+    const ref = await vdbCreateReferenceRenderer(device, { source: stubSource, width: 4, height: 3 });
     const first = textures.filter((t) => /environment|majorants/.test(t.label));
     // the environment, the tables (same label) and the majorants
     expect(first).toHaveLength(3);

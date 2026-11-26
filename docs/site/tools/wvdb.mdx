@@ -34,7 +34,7 @@ console.log(volume.dimensions, volume.meanDensity);
 ## Stream
 
 `WvdbStreamReader` is the push parser. Each complete LOD is an event, coarsest first, so a viewer can show LOD 0 while
-the finer ones download. `readWvdbHeader`, `wvdbLodByteRange` and `wvdbPrefixLength` support range requests for one LOD.
+the finer ones download. `readWvdbHeader` and `wvdbLodByteRange` support range requests for one LOD.
 
 {/* snippet: wvdb-stream */}
 ```ts

@@ -235,7 +235,7 @@ volume.phaseG = 0.3;
 | `true` | 1D diffusion toward the light |
 | `'two-sided'` | 2D slab diffusion toward and away from the light |
 | `'octaves'` | Indirect octaves: octave n has extinction a^n, light b^n and phase g c^n (`scatteringOctave*`) |
-| `'neural'` (default) | His small trained network for the scene light slots in `'frame'` lighting, diffusion elsewhere. It runs in a generic small-MLP evaluator: `frameRenderer.mlp` (EXPERIMENTAL, `VDBFrameMlp` data) holds the network; `null` runs `'neural'` as 1D diffusion. `'mlp'` is the same evaluator by its own name. |
+| `'neural'` (default) | Our small trained network for the scene light slots in `'frame'` lighting, diffusion elsewhere. It runs in a generic small-MLP evaluator: `frameRenderer.mlp` (EXPERIMENTAL, `VDBFrameMlp` data) holds the network (our weights, trained on procedural media); `null` runs `'neural'` as 1D diffusion. `'mlp'` is the same evaluator by its own name. |
 | `'multi-scale'` | Multi-scale diffusion from mips of the shadow grid (`multiScaleLevels`). |
 
 The phase is `'isotropic'`, `'henyey-greenstein'`, `'dual-lobe'`, `'lorenz-mie'` or `'lorenz-mie-rgb'`, with
@@ -284,7 +284,7 @@ each use has a home:
 - **A custom TSL material over a NanoVDB grid:** `VDBGridNode` (see [VDBGridNode](/three/grid-node)) puts the pool in
   three's node system: `vdbSample` (trilinear), `vdbReadValue`, and its opt-in helpers (`cellBoundTrilinear`,
   `hddaCellEnd`, `nodeAverage`, `fastTrilinear`) as `wgslFn` includes. `VDBVolumeMaterial` is built on it.
-- **Custom WGSL or compute over a source:** the core's `vdbSparseSourceGpu` (one source per pool) and `vdbDenseSource`
+- **Custom WGSL or compute over a source:** the core's `vdbSparseSource` (one source per pool) and `vdbDenseSource`
   (a `.wvdb` volume) generate the `vdbSrc*` functions (`wgsl({ slot, profile })`: density, mask, albedo, emission, LOD,
   and the HDDA span in the `'march'` profile) and their bind group layout; see
   [Raw WebGPU](/core/raw-webgpu).

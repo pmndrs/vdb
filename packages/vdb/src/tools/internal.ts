@@ -305,8 +305,6 @@ export {
 } from "./frame/neural.js";
 export type { VDBFrameNeuralNetwork, VDBFrameNeuralMip } from "./frame/neural.js";
 export { vdbFrameNeuralWeights } from "./frame/neural-weights.js";
-// K6.N: our own weights, trained on procedural media only (scripts/k6/neural)
-export { vdbFrameNeuralWeightsProcedural } from "./frame/neural-weights-procedural.js";
 // K6.3: the experimental generic MLP of the core's 'mlp' multiple scattering (twins)
 export {
   VDB_FRAME_MLP_MAX_LAYERS,
@@ -494,3 +492,8 @@ export {
 export type { VDBFrameSpectralGridCaster, VDBFrameSpectralGridAt, VDBFrameSpectralSums, VDBFrameSpectralDensityInputs3d, VDBFrameSpectralVolumeFroxel } from "./frame/spectral-stack.js";
 // K6.R: the reference renderer's scene, random stream, CPU twin and analytic cases (internal only).
 export * from "./reference/index.js";
+// D36: helpers that are not public API (they were exported before 0.2): the byte length of a `.wvdb` LOD prefix (range
+// requests use `wvdbLodByteRange`), the `Content-Length` of a `.nvdb` response, and the FpN leaf codec factory.
+export { nvdbResponseLength } from "./nvdb-stream.js";
+export { vdbMakeFpNLeafCodec } from "./nanovdb/index.js";
+export { wvdbPrefixLength } from "./wvdb/read.js";

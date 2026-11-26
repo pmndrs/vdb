@@ -379,7 +379,7 @@ export interface VDBFrameTimestamps {
   readonly endOfPassWriteIndex?: number;
 }
 
-/** Options of `VDBFrameRendererGpu.update`. */
+/** Options of `VDBFrameRenderer.update`. */
 export interface VDBFrameUpdateOptions {
   /** False: keep the last froxels (no froxel work this update; the composite reads them again). Default true. */
   readonly froxels?: boolean;
@@ -405,7 +405,7 @@ export interface VDBFrameRedrawStats {
 }
 
 /** Handle of one volume in the renderer. */
-export interface VDBFrameVolumeGpu {
+export interface VDBFrameVolume {
   /** One writer (the host); packed at each `update()`. */
   params: VDBFrameVolumeParams;
   /** Drawn this frame (host culling, layers). */

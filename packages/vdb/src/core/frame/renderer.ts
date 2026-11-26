@@ -109,7 +109,7 @@ import {
   type VDBFrameRedrawStats,
   type VDBFrameTargets,
   type VDBFrameUpdate,
-  type VDBFrameVolumeGpu,
+  type VDBFrameVolume,
   type VDBFrameVolumeParams,
   type VDBFrameUpdateOptions,
   type VDBFroxelLayout,
@@ -118,7 +118,7 @@ import {
 } from "./types.js";
 
 /** Options of {@link vdbCreateFrameRenderer}. */
-export interface VDBFrameRendererGpuOptions {
+export interface VDBFrameRendererOptions {
   /** Initial settings (his names and v0.26 defaults, plus the K6 fields). */
   settings?: Partial<VDBFrameSettings>;
   /** The core composite pass (`render()`): the host's colour and depth formats; null: no `render()`. */
@@ -130,7 +130,7 @@ export interface VDBFrameRendererGpuOptions {
 }
 
 /** The core frame renderer (design §2.2). */
-export interface VDBFrameRendererGpu {
+export interface VDBFrameRenderer {
   readonly device: GPUDevice;
   /** Mutable; read at the next `update()`. */
   readonly settings: VDBFrameSettings;
@@ -142,7 +142,7 @@ export interface VDBFrameRendererGpu {
    * Default: mjurczyk's trained weights. null: those modes run as 1D diffusion.
    */
   mlp: VDBFrameMlp | null;
-  addVolume(slot: VDBVolumeSlot, params?: Partial<VDBFrameVolumeParams>): VDBFrameVolumeGpu;
+  addVolume(slot: VDBVolumeSlot, params?: Partial<VDBFrameVolumeParams>): VDBFrameVolume;
   /** Builds every pipeline the current volumes and settings reach, with the async creators. */
   prepare(options?: { lighting?: ("volume" | "frame")[] }): Promise<void>;
   /**
@@ -171,7 +171,7 @@ const EMPTY_SHADOWS = {
 const DEPTH_FORMATS = new Set<GPUTextureFormat>(["depth16unorm", "depth24plus", "depth24plus-stencil8", "depth32float", "depth32float-stencil8"]);
 const WRAP_CODE = { clamp: 0, repeat: 1, mirror: 2 } as const;
 
-class FrameVolume implements VDBFrameVolumeGpu {
+class FrameVolume implements VDBFrameVolume {
   params: VDBFrameVolumeParams;
   visible = true;
   castsShadow = true;
@@ -246,7 +246,7 @@ interface GridTextures {
   groups: number;
 }
 
-class FrameRenderer implements VDBFrameRendererGpu {
+class FrameRenderer implements VDBFrameRenderer {
   readonly device: GPUDevice;
   readonly settings: VDBFrameSettings;
   readonly redrawStats: VDBFrameRedrawStats = {
@@ -316,7 +316,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
   readonly #scattering: VDBFrameScattering;
   /**
    * K6.3 EXPERIMENTAL: the network of `multipleScattering: 'mlp'` (and `'neural'`) in 'frame' lighting, data for a
-   * generic MLP evaluator; default his trained weights (V48). null: those modes run as 1D diffusion (warned).
+   * generic MLP evaluator; default our trained weights (K6.N, D36). null: those modes run as 1D diffusion (warned).
    */
   mlp: VDBFrameMlp | null = vdbFrameMlpFromNeural(vdbFrameNeuralWeights);
   /** K6.4: rg16float storage (`texture-formats-tier1`) for the spectral alpha prefix; else rgba16float. */
@@ -325,7 +325,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
   #occluderViews: GPUTextureView[] = [];
   #occluderPlaceholder: { texture: GPUTexture; view: GPUTextureView } | null = null;
 
-  constructor(device: GPUDevice, o: VDBFrameRendererGpuOptions) {
+  constructor(device: GPUDevice, o: VDBFrameRendererOptions) {
     this.device = device;
     this.#label = o.label ?? "vdb frame";
     this.settings = { ...vdbFrameDefaultInternalSettings(), ...(o.settings ?? {}) };
@@ -361,10 +361,10 @@ class FrameRenderer implements VDBFrameRendererGpu {
 
   // ---------------------------------------------------------------- volumes
 
-  addVolume(slot: VDBVolumeSlot, params: Partial<VDBFrameVolumeParams> = {}): VDBFrameVolumeGpu {
+  addVolume(slot: VDBVolumeSlot, params: Partial<VDBFrameVolumeParams> = {}): VDBFrameVolume {
     this.#check();
     if (!slot || !slot.source || typeof slot.source.wgsl !== "function" || !Number.isInteger(slot.v)) {
-      throw new VDBError("VDB_BAD_OPTION", "VDBFrameRendererGpu.addVolume: pass a VDBVolumeSlot ({ source, v }); a dense source from vdbDenseSource() is its own slot.");
+      throw new VDBError("VDB_BAD_OPTION", "VDBFrameRenderer.addVolume: pass a VDBVolumeSlot ({ source, v }); a dense source from vdbDenseSource() is its own slot.");
     }
     const v = new FrameVolume(this, slot, params);
     this.#volumes.push(v);
@@ -567,7 +567,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
       const c = this.#colors.codeOf(r.volume.params.emissionColor);
       const g = groups.find((x) => x.source === r.volume.slot.source)!;
       if (c.hook) {
-        if (g.hook && g.hook !== c.hook) throw new VDBError("VDB_BAD_OPTION", "VDBFrameRendererGpu: volumes of one source use two different emission colour hooks; one hook per source (a pipeline key).");
+        if (g.hook && g.hook !== c.hook) throw new VDBError("VDB_BAD_OPTION", "VDBFrameRenderer: volumes of one source use two different emission colour hooks; one hook per source (a pipeline key).");
         g.hook = c.hook;
       }
       return c.code;
@@ -1380,7 +1380,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
       }
       const layers = o.viewProjection.length;
       if (layers < 1 || layers > VDB_FRAME_OCCLUDER_LAYERS) {
-        throw new VDBError("VDB_BAD_OPTION", `VDBFrameRendererGpu.update: occluder of light ${String(o.light)} has ${layers} view-projections; give 1–${VDB_FRAME_OCCLUDER_LAYERS} (one per layer of its depth view).`);
+        throw new VDBError("VDB_BAD_OPTION", `VDBFrameRenderer.update: occluder of light ${String(o.light)} has ${layers} view-projections; give 1–${VDB_FRAME_OCCLUDER_LAYERS} (one per layer of its depth view).`);
       }
       const slot = views.length;
       occluderOf[index] = o;
@@ -1497,7 +1497,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
   render(encoder: GPUCommandEncoder, targets: VDBFrameTargets): void {
     this.#check();
     const key = this.#compositeKey();
-    if (!key) throw new VDBError("VDB_BAD_OPTION", "VDBFrameRendererGpu.render: create the renderer with options.composite ({ colorFormat, depthFormat }).");
+    if (!key) throw new VDBError("VDB_BAD_OPTION", "VDBFrameRenderer.render: create the renderer with options.composite ({ colorFormat, depthFormat }).");
     const froxels = this.outputs.froxels;
     if (!this.#recorded || !froxels) return;
     const srgb = key.srgb && (targets.outputColorSpace ?? "srgb") === "srgb";
@@ -1505,10 +1505,10 @@ class FrameRenderer implements VDBFrameRendererGpu {
     const spectral = !!froxels.integratedAlpha;
     const finalKey: VDBFrameCompositeKey = { ...key, srgb, spectral };
     if (srgb && !targets.sceneColor) {
-      throw new VDBError("VDB_BAD_OPTION", "VDBFrameRendererGpu.render: sRGB blending reads the scene colour: pass targets.sceneColor (a copy of the colour target), or set settings.srgbBlending = false.");
+      throw new VDBError("VDB_BAD_OPTION", "VDBFrameRenderer.render: sRGB blending reads the scene colour: pass targets.sceneColor (a copy of the colour target), or set settings.srgbBlending = false.");
     }
     if (spectral && !targets.sceneColor) {
-      throw new VDBError("VDB_BAD_OPTION", "VDBFrameRendererGpu.render: spectral media composite over the scene colour themselves (three transmittances): pass targets.sceneColor (a copy of the colour target).");
+      throw new VDBError("VDB_BAD_OPTION", "VDBFrameRenderer.render: spectral media composite over the scene colour themselves (three transmittances): pass targets.sceneColor (a copy of the colour target).");
     }
     const [sw, sh] = targets.size;
     // Only the screen-size fields move here; the rest is the update's.
@@ -1553,7 +1553,7 @@ class FrameRenderer implements VDBFrameRendererGpu {
   }
 
   #check(): void {
-    if (this.#disposed) throw new VDBError("VDB_DISPOSED", "VDBFrameRendererGpu: the renderer was disposed; create a new one.");
+    if (this.#disposed) throw new VDBError("VDB_DISPOSED", "VDBFrameRenderer: the renderer was disposed; create a new one.");
   }
 
   dispose(): void {
@@ -1634,9 +1634,9 @@ class FrameRenderer implements VDBFrameRendererGpu {
  * its froxel textures at the first `update()` with volumes in view.
  *
  * @param device The host's `GPUDevice`.
- * @param options {@link VDBFrameRendererGpuOptions}.
+ * @param options {@link VDBFrameRendererOptions}.
  */
-export function vdbCreateFrameRenderer(device: GPUDevice, options: VDBFrameRendererGpuOptions = {}): VDBFrameRendererGpu {
+export function vdbCreateFrameRenderer(device: GPUDevice, options: VDBFrameRendererOptions = {}): VDBFrameRenderer {
   if (!device || typeof (device as { createTexture?: unknown }).createTexture !== "function") {
     throw new VDBError("VDB_UNSUPPORTED_DEVICE", "vdbCreateFrameRenderer: pass the host's GPUDevice.");
   }
@@ -1644,7 +1644,7 @@ export function vdbCreateFrameRenderer(device: GPUDevice, options: VDBFrameRende
 }
 
 /** @internal The froxel textures of a renderer from {@link vdbCreateFrameRenderer} (harness probes). */
-export function vdbFrameRendererTextures(r: VDBFrameRendererGpu): {
+export function vdbFrameRendererTextures(r: VDBFrameRenderer): {
   scatter: GPUTexture;
   integrated: GPUTexture;
   history: readonly GPUTexture[] | null;
@@ -1656,12 +1656,12 @@ export function vdbFrameRendererTextures(r: VDBFrameRendererGpu): {
 }
 
 /** @internal The emission textures of a renderer (harness probes). */
-export function vdbFrameRendererEmission(r: VDBFrameRendererGpu): { directions: GPUTexture | null; emitters: GPUTexture | null; probes: GPUTexture | null; slots: number } {
+export function vdbFrameRendererEmission(r: VDBFrameRenderer): { directions: GPUTexture | null; emitters: GPUTexture | null; probes: GPUTexture | null; slots: number } {
   return (r as unknown as { debugEmission: ReturnType<typeof vdbFrameRendererEmission> }).debugEmission;
 }
 
 /** @internal The 'frame' lighting grid of a renderer (harness probes): stacks, their layouts and the live cascades. */
-export function vdbFrameRendererGrid(r: VDBFrameRendererGpu): {
+export function vdbFrameRendererGrid(r: VDBFrameRenderer): {
   textures: { resolution: number; cascades: number; shadow: GPUTexture; shadowLayout: VDBFrameStackLayout; transmittance: GPUTexture; transmittanceLayout: VDBFrameStackLayout; partials: GPUTexture | null; environment: GPUTexture; absorption: GPUTexture | null; groups: number };
   count: number;
   gridMin: number[][];
@@ -1672,7 +1672,7 @@ export function vdbFrameRendererGrid(r: VDBFrameRendererGpu): {
 }
 
 /** @internal The environment of a renderer (harness probes): its buffer, maps and kernel counts (K6.2b). */
-export function vdbFrameRendererEnvironment(r: VDBFrameRendererGpu): {
+export function vdbFrameRendererEnvironment(r: VDBFrameRenderer): {
   buffer: GPUBuffer;
   maps: { work: GPUTexture; map: GPUTexture } | null;
   runs: { prefilter: number; blur: number; reduce: number };
@@ -1683,6 +1683,6 @@ export function vdbFrameRendererEnvironment(r: VDBFrameRendererGpu): {
 }
 
 /** @internal K6.3 (harness probes): the 'mlp' feature mips, the 'multi-scale' chain and the network in use. */
-export function vdbFrameRendererScattering(r: VDBFrameRendererGpu): VDBFrameScattering["debug"] {
+export function vdbFrameRendererScattering(r: VDBFrameRenderer): VDBFrameScattering["debug"] {
   return (r as unknown as { debugScattering: VDBFrameScattering["debug"] }).debugScattering;
 }

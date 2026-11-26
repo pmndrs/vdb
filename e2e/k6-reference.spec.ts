@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { collectErrors } from "./console-errors";
 
-// K6.R: the reference renderer (core `vdbCreateReferenceRendererGpu`) on raw WebGPU (examples/src/harness/k6-reference.ts):
+// K6.R: the reference renderer (core `vdbCreateReferenceRenderer`) on raw WebGPU (examples/src/harness/k6-reference.ts):
 // - analytic: Beer–Lambert (slab, ball), emission only, single scattering (slab, ball) against the quadrature, white
 //   furnace, each per pixel within 4.5σ and unbiased over the image; every WGSL mutation fails some case;
 // - twin: the GPU kernel against its CPU twin (same random stream) on the committed cloud (dense source) and on

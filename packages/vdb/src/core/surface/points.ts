@@ -1,7 +1,7 @@
 /**
  * Point sprites (K6.6, design §3.9): the sprite size and attenuation as core WGSL
  * (`vdbPointSpriteWgsl`), which `VDBPoints` (`./three`) calls from its TSL vertex, and a raw sprite pass
- * (`vdbCreatePointPassGpu`) for engine-free hosts. The disc is the adapters' (three keeps his mipmapped
+ * (`vdbCreatePointPass`) for engine-free hosts. The disc is the adapters' (three keeps his mipmapped
  * alpha map); the raw pass cuts an analytic disc.
  *
  * Portions derived from mjurczyk/openvdb (MIT), commit 75e7345
@@ -63,8 +63,8 @@ export function vdbPointPixelScale(diameter: number, projection: VDBMat4, height
   return diameter * (model ? vdbMat4MaxScale(model) : 1) * projection[5]! * height * 0.5;
 }
 
-/** Options of {@link vdbCreatePointPassGpu}. */
-export interface VDBPointPassGpuOptions {
+/** Options of {@link vdbCreatePointPass}. */
+export interface VDBPointPassOptions {
   readonly colorFormat: GPUTextureFormat;
   /** Depth attachment format, or null for none. Default null. */
   readonly depthFormat?: GPUTextureFormat | null;
@@ -83,7 +83,7 @@ export interface VDBPointPassData {
   readonly count?: number;
 }
 
-/** The camera of one {@link VDBPointPassGpu.record}. Matrices are column-major. */
+/** The camera of one {@link VDBPointPass.record}. Matrices are column-major. */
 export interface VDBPointPassFrame {
   readonly view: VDBMat4;
   readonly projection: VDBMat4;
@@ -102,7 +102,7 @@ export interface VDBPointPassFrame {
 }
 
 /** A raw point-sprite pass (see the file comment). */
-export interface VDBPointPassGpu {
+export interface VDBPointPass {
   readonly device: GPUDevice;
   /** Points of the last {@link setPoints}. */
   readonly count: number;
@@ -174,7 +174,7 @@ fn vdbPointPassFs(v: VdbPointPassVaryings) -> @location(0) vec4f {
 }
 
 function bad(message: string): VDBError {
-  return new VDBError("VDB_BAD_OPTION", `vdbCreatePointPassGpu: ${message}`);
+  return new VDBError("VDB_BAD_OPTION", `vdbCreatePointPass: ${message}`);
 }
 
 /**
@@ -183,7 +183,7 @@ function bad(message: string): VDBError {
  *
  * @throws VDBError `VDB_BAD_OPTION` for bad options or data.
  */
-export function vdbCreatePointPassGpu(device: GPUDevice, options: VDBPointPassGpuOptions): VDBPointPassGpu {
+export function vdbCreatePointPass(device: GPUDevice, options: VDBPointPassOptions): VDBPointPass {
   if (!options || typeof options.colorFormat !== "string") throw bad("colorFormat is required.");
   const label = options.label ?? "vdb point pass";
   const groups = [{ entries: [{ binding: 0, visibility: STAGE.VERTEX | STAGE.FRAGMENT, buffer: { type: "uniform" as const } }] }];

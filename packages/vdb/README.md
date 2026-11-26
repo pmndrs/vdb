@@ -7,7 +7,7 @@ passes, pure-TypeScript CPU tools and a thin three.js adapter. One package, thre
 
 | Import | What it is | Needs a GPU / three? |
 |---|---|---|
-| `@pmndrs/vdb` | the engine-free WebGPU core: `VDBGridPool`, the generated `vdb*` WGSL module (`vdbModuleWgsl`), GPU compute tools, the froxel renderer (`vdbCreateFrameRenderer`), volume sources (`vdbSparseSourceGpu`, `vdbDenseSource`), level-set and point passes, `VDBSequence` | WebGPU, no engine |
+| `@pmndrs/vdb` | the engine-free WebGPU core: `VDBGridPool`, the generated `vdb*` WGSL module (`vdbModuleWgsl`), GPU compute tools, the froxel renderer (`vdbCreateFrameRenderer`), volume sources (`vdbSparseSource`, `vdbDenseSource`), level-set and point passes, `VDBSequence` | WebGPU, no engine |
 | `@pmndrs/vdb/tools` | CPU side: `.nvdb` and `.wvdb` read/write, CPU reads (`vdbReadValueCpu`, `vdbSampleTrilinear`), `.vdb` parser, NanoVDB builder, quantizer, resampler | no |
 | `@pmndrs/vdb/three` | the three.js adapter: `VDBGridNode` (a pool in three's node system), `VDBVolumeMaterial`, `VDBFrameVolume` / `VDBFrameRenderer` (the core's froxel renderer on three's device), `VDBLevelSetMaterial`, `VDBPoints`, compute utilities | `three` (optional peer, `>=0.187.0 <0.188.0`) |
 | `@pmndrs/vdb/pnanovdb.wgsl` | the raw WGSL text (use `?raw` in Vite) | no |
@@ -32,15 +32,15 @@ three.js or any other engine. Loading `.nvdb` files is in `@pmndrs/vdb/tools` (`
 
 ### The froxel renderer on raw WebGPU (0.2.0)
 
-`vdbCreateFrameRenderer(device)` (`VDBFrameRendererGpu`) renders volumes through a froxel grid as WGSL compute
+`vdbCreateFrameRenderer(device)` (`VDBFrameRenderer`) renders volumes through a froxel grid as WGSL compute
 kernels: `'volume'` or `'frame'` lighting, temporal accumulation, phase functions (including Lorenz-Mie), multiple
 scattering, spectral media, an environment, volume shadow maps for your meshes (volume → mesh), your depth maps
 shadowing the volumes (mesh → volume) and an emission light. It takes your `GPUDevice`, records into your encoder
 (`update(encoder, input)`, then `render(encoder, targets)` or `vdbFrameIntegrateWgsl` in your own pass), frees only
-what it made and never submits. Sources: `vdbSparseSourceGpu` (every grid of a `VDBGridPool`, with LOD) and
-`vdbDenseSource` (`.wvdb` textures). `vdbCreateLevelSetPassGpu` and `vdbCreatePointPassGpu` draw level sets and points
+what it made and never submits. Sources: `vdbSparseSource` (every grid of a `VDBGridPool`, with LOD) and
+`vdbDenseSource` (`.wvdb` textures). `vdbCreateLevelSetPass` and `vdbCreatePointPass` draw level sets and points
 into your passes. Settings out of the device's range (`shadowResolution`, shadow map sizes) clamp with a one-time
-warning. `multipleScattering` defaults to `'neural'` (his trained network on the core's EXPERIMENTAL generic MLP).
+warning. `multipleScattering` defaults to `'neural'` (our trained network, K6.N, on the core's EXPERIMENTAL generic MLP).
 Demo 17 is a full raw-WebGPU page; see
 [docs/site/core/rendering-without-three.mdx](https://github.com/pmndrs/vdb/blob/main/docs/site/core/rendering-without-three.mdx).
 
@@ -319,12 +319,12 @@ records into your encoder and hands back a readback you resolve after
 submitting; the three wrappers take the renderer and return promises:
 
 ```ts
-import { VDBGridPool, vdbGridStatsGpu, vdbDecodeToAtlasGpu, vdbApplyValueTransform } from "@pmndrs/vdb";
+import { VDBGridPool, vdbGridStats, vdbDecodeToAtlas, vdbApplyValueTransform } from "@pmndrs/vdb";
 
 const id = pool.add(image);
 pool.update(encoder); // or pool.flush()
-const stats = vdbGridStatsGpu(device, pool, id, { encoder, histogramBins: 256 });
-const atlas = vdbDecodeToAtlasGpu(device, pool, id, { encoder, maxDim: 128, format: "uint8" });
+const stats = vdbGridStats(device, pool, id, { encoder, histogramBins: 256 });
+const atlas = vdbDecodeToAtlas(device, pool, id, { encoder, maxDim: 128, format: "uint8" });
 device.queue.submit([encoder.finish()]);
 // With your encoder, say it was submitted before reading (read() earlier rejects with VDB_BAD_OPTION):
 await stats.submitted().read();  // { min, max, mean, histogram, activeVoxelCount, usedAtomicFastPath, range }
@@ -345,9 +345,9 @@ The three wrappers submit their own encoder. The value transform has no three
 wrapper: call the core `vdbApplyValueTransform`.
 
 Each tool frees only the buffers it allocated (in `read()` or `dispose()`).
-`vdbGridStatsGpu` bins over the grid's root min/max statistics (a grid with a
+`vdbGridStats` bins over the grid's root min/max statistics (a grid with a
 negative root min takes the dump path, 8 B per bbox voxel, and is refused up
-front when that exceeds the device's buffer limits); `vdbDecodeToAtlasGpu`
+front when that exceeds the device's buffer limits); `vdbDecodeToAtlas`
 normalizes to them by default. Atlas cell `i` of an axis with `n` cells over `[min, max]` samples index position
 `min + (i + 0.5) * (max - min + 1) / n - 0.5`, so at full resolution cell `i` is
 voxel `min + i` (the last cell is `max`); the texture spans the voxel-centred box
@@ -428,7 +428,7 @@ the update that wrote it.
 through a froxel grid with `'volume'` or `'frame'` lighting, temporal accumulation, phase functions (including
 Lorenz-Mie), multiple scattering (two-sided, octaves, neural, multi-scale), spectral media and measured presets, mesh
 shadows both ways and an emission light. Since 0.2.0 every frame is drawn by the core's froxel renderer (above) on
-three's device: `VDBFrameRenderer` is a thin adapter (`frameRenderer.core` is the `VDBFrameRendererGpu`), and its
+three's device: `VDBFrameRenderer` is a thin adapter (`frameRenderer.core` is the `VDBFrameRenderer`), and its
 `settings` are the core's `VDBFrameSettings`. Volume sources are dense (`vdbDenseTextures`) or sparse
 (`vdbSparseSource`, with LOD). See
 [docs/site/three/frame-renderer.mdx](https://github.com/pmndrs/vdb/blob/main/docs/site/three/frame-renderer.mdx).

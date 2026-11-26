@@ -17,11 +17,11 @@
  *   gain-map decoder; three's `UltraHDRLoader` is the one the repo has) and the as-is scenes (his skybox and ground).
  *
  * Query: `&w=&h=`, `&froxels=WxHxD`, `&source=dense|sparse` (sparse: the same texels as a NanoVDB FLOAT grid through
- * `vdbSparseSourceGpu`, LOD 'coarse-pyramid'), `&lighting=volume|frame`, `&ms=0|1`.
+ * `vdbSparseSource`, LOD 'coarse-pyramid'), `&lighting=volume|frame`, `&ms=0|1`.
  * Results in `window.__VDB_K6_CORE__.scene` (+ `width`, `height`, `rgba`: base64 sRGB RGBA8, top row first).
  */
 import { VDBGridPool } from "@pmndrs/vdb";
-import { vdbCreateFrameRenderer, vdbDenseSource, vdbSparseSourceGpu, type VDBFrameLight, type VDBFrameVolumeParams, type VDBVolumeSlot } from "../../../packages/vdb/src/core/internal.js";
+import { vdbCreateFrameRenderer, vdbDenseSource, vdbSparseSource, type VDBFrameLight, type VDBFrameVolumeParams, type VDBVolumeSlot } from "../../../packages/vdb/src/core/internal.js";
 import { readWvdb, vdbHalfToFloat, vdbSrgbEotf, vdbSrgbOetf, wvdbDenseToNvdb, wvdbDenseVolume } from "../../../packages/vdb/src/tools/internal.js";
 import { boxMatrix, lookAt, multiply, normalize, perspective, rawCamera, RawTargets, readTextureRows, type Vec3 } from "../demos/17-raw-webgpu/raw-frame.js";
 import cloudWvdbUrl from "../../../packages/vdb/test/tools/fixtures/wvdb/cloud_04_variant_0000.wvdb?url";
@@ -137,14 +137,14 @@ export async function runRawScene(device: GPUDevice, name: string, params: URLSe
   const box = boxMatrix(lo, hi);
   let slot: VDBVolumeSlot;
   let pool: VDBGridPool | null = null;
-  let sparse: ReturnType<typeof vdbSparseSourceGpu> | null = null;
+  let sparse: ReturnType<typeof vdbSparseSource> | null = null;
   if (sourceKind === "sparse") {
     const grid = wvdbDenseToNvdb(dense);
     pool = await VDBGridPool.create(device, { label: "k6.1c raw" });
     const id = pool.add(grid.image);
     pool.flush();
     await pool.settled();
-    sparse = vdbSparseSourceGpu(pool, { lod: "coarse-pyramid", types: ["float"], label: "k6.1c raw sparse" });
+    sparse = vdbSparseSource(pool, { lod: "coarse-pyramid", types: ["float"], label: "k6.1c raw sparse" });
     slot = sparse.volume({ density: id }, { indexBox: grid.textureIndexBox, stats: { meanNonZero: dense.meanDensity, max: dense.maxDensity, activeVoxels: dense.activeTexels } });
   } else {
     slot = vdbDenseSource(device, dense, { label: "k6.1c raw dense" });

@@ -257,7 +257,7 @@ From v1; details in docs/archive/handoffs/.
   v14 grid and ours even when every node is equal. Compare trees by (level, origin), not by index.
 - The fake device's `queue.writeBuffer` (`test/core/fake-gpu.ts`) reads `data.buffer`: pass an `ArrayBufferView`
   (`new Uint8Array(bytes)`), never a bare `ArrayBuffer`, or it writes zeros silently (real WebGPU accepts both).
-- The core sparse source (K6.7, `vdbSparseSourceGpu`) serves every volume of a pool through one uniform table indexed
+- The core sparse source (K6.7, `vdbSparseSource`) serves every volume of a pool through one uniform table indexed
   by `v`: call `source.update(encoder)` after `pool.update(encoder)` in the same encoder, then (re)build bind group 2
   when `source.version` moved. Its `wgsl()` has no VDB module (compose `source.module`'s helpers into the shader's one
   module), and per-volume info (`texels`, `stats`, `lodLevels`, `bbox`) is on the slot, not the source.
@@ -290,7 +290,7 @@ From v1; details in docs/archive/handoffs/.
   to T = 1. Its x, y filtering acts on the prefix, so core-vs-TSL and core-vs-his frames differ only on volume
   silhouettes (≤ 41/255). `scripts/k3/compare.mjs` measures inside the volume rect (fractions ~10× the full-frame
   ones): quote which one you mean.
-- `VDBFrameRendererGpu.render()` with sRGB blending needs `targets.sceneColor` (a copy of the colour target before the
+- The core `VDBFrameRenderer.render()` with sRGB blending needs `targets.sceneColor` (a copy of the colour target before the
   volumes); without it, use `settings.srgbBlending = false` or composite with `vdbFrameIntegrateWgsl` yourself.
 - K6 twin probes on hardware: hardware trilinear quantizes filter weights (8 bits), so the k6-core probes use smooth
   data (< ~3/255 per texel) and a static camera for the temporal taps; SwiftShader filters exactly.
@@ -371,7 +371,7 @@ From v1; details in docs/archive/handoffs/.
   group 0 by hand needs it too (`mieEntry` in `k6-core.ts`), or the bind group is invalid and the dispatch writes nothing.
 - K6.3: K7.3's `mips.record(encoder, …)` opens its own compute pass. The core renderer ends its update pass, records the
   chain and begins a new pass ('multi-scale' only); anything recorded between them must follow the same order.
-- `'neural'` in the core is the generic MLP running `renderer.mlp` (`./three`'s `VDBFrameRenderer.mlp`, his weights by
+- `'neural'` in the core is the generic MLP running `renderer.mlp` (`./three`'s `VDBFrameRenderer.mlp`, our K6.N weights by
   default); spectral runs 'mlp' / 'multi-scale' as 1D diffusion (V133).
 - Fail-before mutations on edge-only or far-field terms can pass silently: on the k6-core 16³ grid the 6th multi-scale level
   samples outside the box (levels − 1 changes nothing) and an edge-clamp change only moves texels where density reaches the
@@ -410,7 +410,7 @@ From v1; details in docs/archive/handoffs/.
   pass does; `vdbFrameCompositeColor` divides by α and makes NaN there.
 - Demo 17 (and any raw-WebGPU demo) imports the gallery UI from `showcase-ui.ts`, never `showcase-shell.ts` (three):
   `examples/test/demo-08-imports.test.ts` walks its module graph.
-- Two `vdbCreateLevelSetPassGpu` instances with the same formats share one pipeline (the cache key has no label): use a
+- Two `vdbCreateLevelSetPass` instances with the same formats share one pipeline (the cache key has no label): use a
   second instance for a light's depth map (one `record()` per instance per encoder); its pass needs a colour attachment
   of the pass's `colorFormat` beside the depth (no depth-only variant yet).
 - K6.4 spectral composite (core `render()` and `./three`'s core material) needs the scene colour and draws without
@@ -470,7 +470,7 @@ From v1; details in docs/archive/handoffs/.
   His 'planck' with the CIE table (D33) is `{ lut: vdbFrameEmissionLutRow(0, vdbFrameBlackbodyTable(cie)) }`.
 - `vdbSparseSource` / `vdbDenseTextures` are `./three` source HANDLES with no GPU object (K6.11 deleted their TSL half:
   `vdbVolumeUniforms` / `vdbVolumeNodes`, the three textures, the three-side pyramid): the frame renderer reads their
-  pool, ids, boxes and stats into the core's own sources (`vdbSparseSourceGpu`, `vdbDenseSource`), whose LOD bytes are
+  pool, ids, boxes and stats into the core's own sources (`vdbSparseSource`, `vdbDenseSource`), whose LOD bytes are
   `frameRenderer.coreVolumeOf(volume).slot.source.gpuBytes` (demo 15). Nothing refreshes a handle's `stats` for you
   now: `await source.refreshStats()` when the first frame must have the new mean (else the core slot re-reads it).
   A harness that checks sparse or dense sampling reads the core sources (`k6-sparse`, `k3-dense`'s core probe, k6-core),
@@ -489,7 +489,7 @@ From v1; details in docs/archive/handoffs/.
 - To re-render a "before" set from an older commit, `git archive <sha> | tar -x` into the scratchpad, `pnpm install`,
   copy the git-ignored fixtures and the current `e2e/k6-frames.spec.ts` in, and give it its own `WEBVDB_E2E_PORT`
   (K6.10 reproduced K6.8's 98/98 this way; the old tree still has the TSL path for core-vs-TSL A/Bs, `K6_CORE_AB=1`).
-- K6.10a: `VDBRetireQueue` (frame renderer, level-set and point passes, `vdbSparseSourceGpu`, `vdbDenseSource.replace`)
+- K6.10a: `VDBRetireQueue` (frame renderer, level-set and point passes, `vdbSparseSource`, `vdbDenseSource.replace`)
   destroys due objects in a later task (`setTimeout(0)`), never inside `update()` / `record()`. A unit test that checks
   `destroyed` after the second update must `await new Promise((r) => setTimeout(r, 0))` first; `drain()` / `dispose()`
   still destroy at once. Hosts must submit in the task that recorded (no `await` between `update()` and `submit`).
@@ -584,3 +584,19 @@ From v1; details in docs/archive/handoffs/.
   and shares the 20-input layout (`3 · 6 + 2`) of his, so a new phase needs a new input and a core change.
 - K6.N costs on an Apple M5 Pro (18 cores): 3000 scenes × 1000 points (ratio target) 29 min on 12 workers, 60 epochs on 3 M
   samples 9 min on one thread. A dataset or a run is a command, not a project; never commit `artifacts/k6-neural/`.
+- K6.11a (D36): `vdbFrameNeuralWeights` is OUR K6.N network (`train.mjs` writes `neural-weights.ts`; his weights and the
+  `?mlp=pmndrs` / `?mlp=his` option are gone). Scenes whose multiple scattering is 'neural' (the default mode) moved against
+  K6.10; his K3 captures of those scenes no longer match to float noise.
+- K6.11a (D36): no public name has a `Gpu` suffix; the core's `vdbSparseSource` / `vdbGridStats` / `vdbDecodeToAtlas` /
+  `VDBFrameRenderer` / `VDBFrameVolume` / `VDBSparseLod` / `VDBSparseSourceOptions` share their names with `./three`
+  declarations (different objects). A file importing both aliases the core's (`VDBFrameRenderer as VDBCoreFrameRenderer`);
+  a rename by search-and-replace of `XGpu` → `X` breaks every `./three` file that imports from the core: typecheck finds
+  them. `api-surface.test.ts` pins the pairs (`CORE_THREE_SAME_NAME`) and the `Cpu` ↔ unsuffixed rule.
+- K6.11a: a fresh `git archive` copy's first Vite start re-optimises dependencies and reloads pages mid-run: 2 of 81 k6-frames
+  hung (no CPU, the page never set `done`) until interrupted, and ran in 4 s alone. Warm each fresh copy with one
+  `K6_FRAMES_ONLY=smoke-frame-sparse` run; a full k6-frames run takes about 3 min on a quiet machine, so a longer one is a
+  hang. Find your own pids by cwd (`lsof -a -p <pid> -d cwd`) before killing; never `pkill -f playwright`.
+- K6.11a: the k6-core `mlp-weights` mutation shifts the OUTPUT BIAS (the last weight), which every voxel reads. K6.3's weight 7
+  barely moves our trained network (2 / 16384 values over the bar, need > 16): a mutation on a hidden weight depends on the data.
+- K6.11a: `wvdbPrefixLength`, `nvdbResponseLength` and `vdbMakeFpNLeafCodec` are tools internals (D36): tests and scripts import
+  them from `src/tools/internal.ts` / `dist/tools/internal.js`; `./three` imports `nvdbResponseLength` from `../tools/nvdb-stream.js`.

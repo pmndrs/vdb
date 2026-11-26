@@ -43,9 +43,9 @@ import { VDBError } from "../core/errors.js";
 import type { VDBBrickMajorant } from "../core/index.js";
 import { VDB_GRID_TYPE_NAMES, type VDBGridTypeName } from "../core/types.js";
 import { vdbProxyGeometry, type VDBProxyGridInfo } from "./material.js";
+import { nvdbResponseLength } from "../tools/nvdb-stream.js";
 import {
   NvdbStreamReader,
-  nvdbResponseLength,
   parseNvdbLodName,
   type NvdbGridMetadata,
   type NvdbProgress,

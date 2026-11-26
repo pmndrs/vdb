@@ -207,7 +207,7 @@ export interface VDBReferenceMajorantGridSparseOptions {
 }
 
 /**
- * Majorants of one sparse volume (a NanoVDB float grid read through `indexBox`, `vdbSparseSourceGpu` at level 0) from
+ * Majorants of one sparse volume (a NanoVDB float grid read through `indexBox`, `vdbSparseSource` at level 0) from
  * the tree: each leaf's max (node stats) and each active tile's value bound every cell its voxels can reach under a
  * trilinear read (the node's index box dilated by one voxel; uvw 0 is index min − ½). Cells no node reaches are 0
  * (the background is assumed 0: fog volumes; a non-zero background is a violation the twin counts).

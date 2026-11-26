@@ -218,7 +218,7 @@ export function vdbFrameSkipEmpty(image: Uint32Array, o: Vec3, d: Vec3, t0: numb
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// K6.7: twins of the core sparse source (`core/source/sparse.ts`, `vdbSparseSourceGpu`): its `vdbSrc*` WGSL on one
+// K6.7: twins of the core sparse source (`core/source/sparse.ts`, `vdbSparseSource`): its `vdbSrc*` WGSL on one
 // volume, the density stats it computes and the f16 pyramid it samples.
 // ---------------------------------------------------------------------------------------------------------------
 

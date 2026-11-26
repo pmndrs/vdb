@@ -105,7 +105,7 @@ fn csStatsDump(@builtin(global_invocation_id) gid: vec3u) {
 `,
 };
 
-/** Options of {@link vdbGridStatsGpu}. */
+/** Options of {@link vdbGridStats}. */
 export interface VDBGridStatsOptions {
   /** Histogram bins over `[rootMin, rootMax]`. Default 256. */
   histogramBins?: number;
@@ -117,7 +117,7 @@ export interface VDBGridStatsOptions {
   encoder?: GPUCommandEncoder;
 }
 
-/** What {@link vdbGridStatsGpu} reads back (v1's `GridStatsResult` plus the range). */
+/** What {@link vdbGridStats} reads back (v1's `GridStatsResult` plus the range). */
 export interface VDBGridStats {
   /** Exact extremes over the active voxels (0 when there are none). */
   min: number;
@@ -158,7 +158,7 @@ const WHERE = "gridStats";
  *   per-voxel outputs (`voxels * 4` bytes each, `voxels * 8` to read back)
  *   exceed `device.limits.maxStorageBufferBindingSize` / `maxBufferSize`.
  */
-export function vdbGridStatsGpu(device: GPUDevice, pool: VDBGridPool, gridId: number, options: VDBGridStatsOptions = {}): VDBReadback<VDBGridStats> {
+export function vdbGridStats(device: GPUDevice, pool: VDBGridPool, gridId: number, options: VDBGridStatsOptions = {}): VDBReadback<VDBGridStats> {
   const bins = options.histogramBins ?? DEFAULT_BINS;
   checkPositiveInt(WHERE, "histogramBins", bins);
   const info = checkTarget(WHERE, device, pool, gridId);

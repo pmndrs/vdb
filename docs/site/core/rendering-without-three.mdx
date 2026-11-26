@@ -10,7 +10,7 @@ Live: [rendering without three](https://pmndrs.github.io/vdb/examples/src/demos/
 level set with no three.js: the page's own passes draw the sky, the ground and an obelisk, read the volumes' shadow map
 and fire light, and hand their own depth map back so the obelisk shadows the cloud.
 
-Everything on this page is public in `@pmndrs/vdb` since 0.2.0: `vdbCreateFrameRenderer`, `vdbSparseSourceGpu`, the
+Everything on this page is public in `@pmndrs/vdb` since 0.2.0: `vdbCreateFrameRenderer`, `vdbSparseSource`, the
 receiver WGSL (`vdbVolumeShadowWgsl`, `vdbEmissionProbeWgsl`, `vdbFrameIntegrateWgsl`) and the level-set and point
 passes. `@pmndrs/vdb/three`'s froxel renderer is a thin adapter over the same renderer.
 
@@ -52,7 +52,7 @@ const device = await adapter.requestDevice({ requiredLimits: VDBGridPool.require
 const pool = await VDBGridPool.create(device);
 
 // One sparse source serves every volume of one pool: one bind group, one dispatch per frame.
-const source = vdbSparseSourceGpu(pool, { types: ['fp8', 'float'] });
+const source = vdbSparseSource(pool, { types: ['fp8', 'float'] });
 const cloudSlot = source.volume({ density: pool.add(cloudImage) }, { image: cloudImage });
 const fireSlot = source.volume({ density: pool.add(fireDensity), emission: pool.add(fireTemperature) });
 
@@ -224,12 +224,12 @@ that the two give the same image (within one 8-bit step).
 
 ## Level sets and points
 
-Level sets are surfaces, not media, so they are drawn in your render pass: `vdbCreateLevelSetPassGpu(device, pool,
+Level sets are surfaces, not media, so they are drawn in your render pass: `vdbCreateLevelSetPass(device, pool,
 { colorFormat, depthFormat, output })` rasterizes each grid's box and traces the pixel-centre ray, writing `frag_depth`
 (so it depth-tests against your meshes and the volumes composite in front of or behind it) and either a Lambert shade or
 a G-buffer texel (world normal, ray distance) for your own lighting. Call `record(renderPass, { view, projection,
 viewport }, [{ grid }])` after the pool's update. The same pass with a light's orthographic camera draws the level set
-into that light's depth map. `vdbCreatePointPassGpu` draws point grids as sprites the same way. See
+into that light's depth map. `vdbCreatePointPass` draws point grids as sprites the same way. See
 [Level sets and points](/three/level-sets-and-points) for the three.js materials over the same WGSL.
 
 ## Things to know

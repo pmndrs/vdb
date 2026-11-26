@@ -47,7 +47,7 @@ export type {
   VDBSequenceStats,
   VDBSequenceTarget,
   VDBSequencePoolLike,
-  VDBFrameLoader,
+  VDBSequenceFrameLoader,
 } from "../core/sequence.js";
 
 // K3.7 (R1 §6 Step 7): level-set surfaces traced on the sparse pool, and point grids as sprites.
@@ -57,7 +57,7 @@ export { VDBPoints } from "./points.js";
 export type { VDBPointsData, VDBPointsOptions } from "./points.js";
 
 // K2.3: compute wrappers over the core tools (renderer in, promise out). The
-// core's `vdbGridStatsGpu` / `vdbDecodeToAtlasGpu` take a device and an encoder;
+// core's `vdbGridStats` / `vdbDecodeToAtlas` take a device and an encoder;
 // the value transform is the core's `vdbApplyValueTransform` (CPU).
 export { vdbGridStats, vdbDecodeToAtlas } from "./compute.js";
 export type { VDBThreeGridStatsOptions, VDBGridStatsResult, VDBThreeDecodeToAtlasOptions, VDBDecodeToAtlasResult } from "./compute.js";
@@ -105,5 +105,4 @@ export type { VDBFrameVolumeProps, VDBFramePassHook, VDBFramePhaseSettings, VDBF
 export { VDB_FRAME_ALL_LIGHTS, VDB_FRAME_LIGHT_BITS } from "../core/frame/types.js";
 export type { VDBEmissionColor, VDBFrameRedrawStats, VDBFrameTimestamps, VDBFrameUpdate } from "../core/frame/types.js";
 export type { VDBFrameSettings, VDBFramePhaseName, VDBFrameMultipleScatteringMode } from "../core/frame/settings.js";
-export type { VDBFrameRendererGpu } from "../core/frame/renderer.js";
 export type { VDBFrameMlp, VDBFrameMlpLayer } from "../tools/frame/mlp.js";

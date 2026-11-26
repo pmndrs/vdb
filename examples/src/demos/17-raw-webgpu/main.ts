@@ -3,7 +3,7 @@
  * three.js and no engine. The page owns the device, the encoder and every pass that is not a volume; the core records
  * its compute kernels into that encoder and hands back textures the page's own shaders read.
  *
- * - The WDAS cloud (sparse, Fp8, `vdbSparseSourceGpu`; the committed CC0 JangaFX cloud when the git-ignored fixture is
+ * - The WDAS cloud (sparse, Fp8, `vdbSparseSource`; the committed CC0 JangaFX cloud when the git-ignored fixture is
  *   absent) and a CC0 EmberGen explosion frame (sparse density + temperature, emissive), in one pool and one source.
  * - 'frame' lighting (or 'volume') with a procedural HDR sky as the environment (an equirect GPU texture the core
  *   reduces on the GPU) and a sun that requests a volume shadow map.
@@ -12,7 +12,7 @@
  *   back in as an occluder (`VDBFrameInput.occluders`: mesh → volume).
  * - The explosion lights the ground through the emission probes (`vdbEmissionProbeWgsl`).
  * - A level set (the OpenVDB icosahedron, or a procedural one) through the core's raw level-set pass
- *   (`vdbCreateLevelSetPassGpu`, G-buffer output) shaded by the page with the same lighting.
+ *   (`vdbCreateLevelSetPass`, G-buffer output) shaded by the page with the same lighting.
  * - The volumes composite either through the core's pass (`frame.render`) or in the page's own present shader
  *   (`vdbFrameIntegrateWgsl`, the host-side seam).
  *
@@ -29,13 +29,13 @@ import { NvdbFile, buildFromVdb, parseVdb, readWvdb, vdbBuildFromDense, wvdbDens
 import {
   VDBGridPool,
   vdbCreateFrameRenderer,
-  vdbCreateLevelSetPassGpu,
-  vdbSparseSourceGpu,
+  vdbCreateLevelSetPass,
+  vdbSparseSource,
   type VDBFrameInput,
   type VDBFrameLight,
   type VDBFrameOccluder,
-  type VDBFrameRendererGpu,
-  type VDBFrameVolumeGpu,
+  type VDBFrameRenderer,
+  type VDBFrameVolume,
 } from "@pmndrs/vdb";
 import { MiB, PRESENTATION, QUALITY, STILL, fetchWithProgress, initialQuality, mountShowcase, params, probe, snapshotOf, type Quality, type Snapshot } from "../showcase-ui.js";
 import { RawPresenter, RawTargets, boxMatrix, lookAt, multiply, normalize, orthographic, perspective, rawCamera, type RawCamera, type Vec3 } from "./raw-frame.js";
@@ -124,7 +124,7 @@ async function main(): Promise<void> {
   const pool = await VDBGridPool.create(device, { label: "demo-17 volumes" });
   const wantWdas = params.get("cloud") !== "cc0";
   const wdas = wantWdas && (await probe(WDAS_URL));
-  const source = vdbSparseSourceGpu(pool, { types: ["fp8", "float"], lod: "coarse-pyramid", label: "demo-17 sparse" });
+  const source = vdbSparseSource(pool, { types: ["fp8", "float"], lod: "coarse-pyramid", label: "demo-17 sparse" });
   let cloudSlot;
   let cloudName: string;
   if (wdas) {
@@ -153,9 +153,9 @@ async function main(): Promise<void> {
   ui.status("loading the level set…", null);
   const lsPool = await VDBGridPool.create(device, { label: "demo-17 level set" });
   const levelSet = await loadLevelSet(lsPool);
-  const lsMain = vdbCreateLevelSetPassGpu(device, lsPool, { colorFormat: RawTargets.COLOR_FORMAT, depthFormat: RawTargets.DEPTH_FORMAT, output: "gbuffer", types: ["float"], label: "demo-17 level set" });
+  const lsMain = vdbCreateLevelSetPass(device, lsPool, { colorFormat: RawTargets.COLOR_FORMAT, depthFormat: RawTargets.DEPTH_FORMAT, output: "gbuffer", types: ["float"], label: "demo-17 level set" });
   // the same pipeline (one compile) drawn from the sun into its depth map
-  const lsShadow = vdbCreateLevelSetPassGpu(device, lsPool, { colorFormat: RawTargets.COLOR_FORMAT, depthFormat: RawTargets.DEPTH_FORMAT, output: "gbuffer", types: ["float"], label: "demo-17 level set (sun)" });
+  const lsShadow = vdbCreateLevelSetPass(device, lsPool, { colorFormat: RawTargets.COLOR_FORMAT, depthFormat: RawTargets.DEPTH_FORMAT, output: "gbuffer", types: ["float"], label: "demo-17 level set (sun)" });
 
   //* 4. The core renderer and its two volumes.
   const frame = vdbCreateFrameRenderer(device, { composite: { colorFormat: RawTargets.COLOR_FORMAT, depthFormat: RawTargets.DEPTH_FORMAT }, label: "demo-17 frame" });
@@ -187,7 +187,7 @@ async function main(): Promise<void> {
     emissiveIntensity: look.flames,
     emissionColor: { spectrum: "planck" },
   });
-  const volumes: VDBFrameVolumeGpu[] = [cloud, explosion];
+  const volumes: VDBFrameVolume[] = [cloud, explosion];
 
   //* 5. The environment: a procedural HDR sky as an equirect rgba16float texture (also the background).
   const sky = device.createTexture({ label: "demo-17 sky", size: [SKY_WIDTH, SKY_HEIGHT], format: "rgba16float", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
@@ -242,7 +242,7 @@ async function main(): Promise<void> {
   let inFlight = false;
   const frameTimes: number[] = [];
   let lighting: { inputs: readonly object[]; group: GPUBindGroup } | null = null;
-  let lastUpdate: ReturnType<VDBFrameRendererGpu["update"]> | null = null;
+  let lastUpdate: ReturnType<VDBFrameRenderer["update"]> | null = null;
 
   function sunVectors(): { toSun: Vec3; direction: Vec3 } {
     const e = (look.sunElevation * Math.PI) / 180;
@@ -469,7 +469,7 @@ async function main(): Promise<void> {
   }
 
   /** Group 1 of the page's passes: our depth map, the core's volume shadow map + view, its emission probes + grid. */
-  function lightingGroup(u: ReturnType<VDBFrameRendererGpu["update"]>): GPUBindGroup {
+  function lightingGroup(u: ReturnType<VDBFrameRenderer["update"]>): GPUBindGroup {
     const map = u.outputs.volumeShadows.get("sun");
     const probes = u.outputs.emissionProbes;
     // Rebuild when any input is a new object (the core bumps outputs.version when it reallocates a texture)
@@ -494,7 +494,7 @@ async function main(): Promise<void> {
     return group;
   }
 
-  function describe(u: ReturnType<VDBFrameRendererGpu["update"]>, width: number, height: number): void {
+  function describe(u: ReturnType<VDBFrameRenderer["update"]>, width: number, height: number): void {
     const map = u.outputs.volumeShadows.get("sun");
     const fx = u.outputs.froxels?.layout;
     state.info = {

@@ -8,8 +8,8 @@
  *
  * | v1 | core (`@pmndrs/vdb`) | this file (`@pmndrs/vdb/three`) |
  * |---|---|---|
- * | `vdbGridStatsGpu(device, grid, pnanovdbSource, opts)` | `vdbGridStatsGpu(device, pool, id, opts)` → `VDBReadback` | `vdbGridStats(renderer, pool, id, opts)` → `Promise` |
- * | `vdbDecodeToAtlasGpu(device, grid, pnanovdbSource, opts)` | `vdbDecodeToAtlasGpu(device, pool, id, opts)` → `VDBAtlasReadback` | `vdbDecodeToAtlas(renderer, pool, id, opts)` → `Promise`, plus a ready `Data3DTexture` |
+ * | `vdbGridStatsGpu(device, grid, pnanovdbSource, opts)` | `vdbGridStats(device, pool, id, opts)` (core) → `VDBReadback` | `vdbGridStats(renderer, pool, id, opts)` → `Promise` |
+ * | `vdbDecodeToAtlasGpu(device, grid, pnanovdbSource, opts)` | `vdbDecodeToAtlas(device, pool, id, opts)` (core) → `VDBAtlasReadback` | `vdbDecodeToAtlas(renderer, pool, id, opts)` → `Promise`, plus a ready `Data3DTexture` |
  * | `valueTransform(device, grid, pnanovdbSource, wgslBodyOrPreset)` | `vdbApplyValueTransform(pool, id, sourceImage, fnOrPreset)` (CPU + `pool.replace`) | — (use the core function) |
  *
  * The `vdb` prefix keeps these apart from the core functions of the same job
@@ -19,8 +19,8 @@
  */
 import { Data3DTexture, FloatType, LinearFilter, RedFormat, UnsignedByteType } from "three";
 import type { VDBGridPool } from "../core/pool/pool.js";
-import { vdbGridStatsGpu, type VDBGridStats } from "../core/compute/stats.js";
-import { vdbDecodeToAtlasGpu, type VDBAtlas, type VDBDecodeToAtlasOptions } from "../core/compute/atlas.js";
+import { vdbGridStats as vdbCoreGridStats, type VDBGridStats } from "../core/compute/stats.js";
+import { vdbDecodeToAtlas as vdbCoreDecodeToAtlas, type VDBAtlas, type VDBDecodeToAtlasOptions } from "../core/compute/atlas.js";
 import { getDevice, type VDBThreeRendererLike } from "./device.js";
 
 /** Options of {@link vdbGridStats}. */
@@ -50,7 +50,7 @@ export function vdbGridStats(
   options: VDBThreeGridStatsOptions = {},
 ): Promise<VDBGridStatsResult> {
   try {
-    return vdbGridStatsGpu(getDevice(renderer), pool, gridId, options.histogramBins === undefined ? {} : { histogramBins: options.histogramBins }).read();
+    return vdbCoreGridStats(getDevice(renderer), pool, gridId, options.histogramBins === undefined ? {} : { histogramBins: options.histogramBins }).read();
   } catch (e) {
     return Promise.reject(e);
   }
@@ -94,7 +94,7 @@ export async function vdbDecodeToAtlas(
   options: VDBThreeDecodeToAtlasOptions = {},
 ): Promise<VDBDecodeToAtlasResult> {
   const { encoder: _e, readback: _r, ...rest } = options as VDBDecodeToAtlasOptions;
-  const atlas = await vdbDecodeToAtlasGpu(getDevice(renderer), pool, gridId, rest).read();
+  const atlas = await vdbCoreDecodeToAtlas(getDevice(renderer), pool, gridId, rest).read();
   const [dx, dy, dz] = atlas.dims;
   const texture = new Data3DTexture(atlas.data, dx, dy, dz);
   texture.format = RedFormat;

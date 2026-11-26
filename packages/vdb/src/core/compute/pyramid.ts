@@ -285,7 +285,7 @@ export function warmBoxPyramidPipelines(device: GPUDevice, types: Iterable<VDBGr
 }
 
 /** Options of {@link vdbCreateBoxPyramid}. */
-export interface VDBBoxPyramidGpuOptions {
+export interface VDBBoxPyramidOptions {
   /** Inclusive voxel index box the pyramid covers. Default: the grid's index bbox now (fixed afterwards). */
   indexBox?: { min: VDBVec3; max: VDBVec3 };
   /** Texels on the longest side of the base level at most (default 128). */
@@ -304,14 +304,14 @@ export interface VDBBoxPyramidGpuOptions {
   label?: string;
 }
 
-/** Options of {@link VDBBoxPyramidGpu.record}. */
+/** Options of {@link VDBBoxPyramid.record}. */
 export interface VDBBoxPyramidRecordOptions {
   /** Timestamps around the build's one compute pass (the `timestamp-query` feature). */
   timestampWrites?: GPUComputePassTimestampWrites;
 }
 
 /** A coarse pyramid on the GPU (see the file comment). */
-export interface VDBBoxPyramidGpu {
+export interface VDBBoxPyramid {
   /** The pool id of the grid the pyramid is built from. */
   readonly gridId: number;
   /** The sizes and level layout of the textures. */
@@ -347,7 +347,7 @@ const bad = (message: string): never => {
   throw new VDBError("VDB_BAD_OPTION", `vdbCreateBoxPyramid: ${message}`);
 };
 
-class BoxPyramidGpu implements VDBBoxPyramidGpu {
+class BoxPyramid implements VDBBoxPyramid {
   readonly gridId: number;
   readonly layout: VDBBoxPyramidLayout;
   readonly base: GPUTexture;
@@ -371,7 +371,7 @@ class BoxPyramidGpu implements VDBBoxPyramidGpu {
   #group1: GPUBindGroup | null = null;
   #destroyed = false;
 
-  constructor(device: GPUDevice, pool: VDBGridPool, gridId: number, o: VDBBoxPyramidGpuOptions) {
+  constructor(device: GPUDevice, pool: VDBGridPool, gridId: number, o: VDBBoxPyramidOptions) {
     if (!device || typeof (device as { createBuffer?: unknown }).createBuffer !== "function") bad("expected a GPUDevice as the first argument.");
     if (!pool || typeof (pool as { info?: unknown }).info !== "function") bad("expected a VDBGridPool as the second argument.");
     if (pool.device !== device) bad("the pool lives on a different GPUDevice. Pass pool.device.");
@@ -558,8 +558,8 @@ class BoxPyramidGpu implements VDBBoxPyramidGpu {
  * @param device The host's `GPUDevice`; the pool must live on it.
  * @param pool The pool that holds the grid.
  * @param gridId The grid's pool id.
- * @param options Index box, size cap, level, target textures and label ({@link VDBBoxPyramidGpuOptions}).
+ * @param options Index box, size cap, level, target textures and label ({@link VDBBoxPyramidOptions}).
  */
-export function vdbCreateBoxPyramid(device: GPUDevice, pool: VDBGridPool, gridId: number, options: VDBBoxPyramidGpuOptions = {}): VDBBoxPyramidGpu {
-  return new BoxPyramidGpu(device, pool, gridId, options);
+export function vdbCreateBoxPyramid(device: GPUDevice, pool: VDBGridPool, gridId: number, options: VDBBoxPyramidOptions = {}): VDBBoxPyramid {
+  return new BoxPyramid(device, pool, gridId, options);
 }

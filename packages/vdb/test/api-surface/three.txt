@@ -9,7 +9,6 @@ type VDBDecodeToAtlasResult
 type VDBEmissionColor
 value VDBFrameEmissionLight
 type VDBFrameEmissionLightProps
-type VDBFrameLoader
 type VDBFrameMediumVolumeProps
 type VDBFrameMlp
 type VDBFrameMlpLayer
@@ -19,7 +18,6 @@ type VDBFramePhaseName
 type VDBFramePhaseSettings
 type VDBFrameRedrawStats
 value VDBFrameRenderer
-type VDBFrameRendererGpu
 type VDBFrameSettings
 type VDBFrameTimestamps
 type VDBFrameUpdate
@@ -38,6 +36,7 @@ type VDBPointsOptions
 type VDBProxyGridInfo
 type VDBSampleOptions
 value VDBSequence
+type VDBSequenceFrameLoader
 type VDBSequenceLoopMode
 type VDBSequenceOptions
 type VDBSequencePoolLike

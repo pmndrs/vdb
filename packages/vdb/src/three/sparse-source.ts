@@ -13,7 +13,7 @@
  *   const volume = new VDBFrameVolume(source, { extinction: 100 });   // box: the grid's world box
  *
  * K6.8a / K6.11: the source is a handle (grids, ids, options, boxes, stats, the image-follow state). `VDBFrameRenderer`
- * reads it into the core's sparse source (`vdbSparseSourceGpu`), which builds its own pyramids and reads the grids itself.
+ * reads it into the core's sparse source (`vdbSparseSource`), which builds its own pyramids and reads the grids itself.
  * The handle holds no GPU object. (Custom TSL materials sample a pooled grid through `VDBGridNode`; custom WGSL or compute
  * uses the core source's `wgsl()`.)
  *

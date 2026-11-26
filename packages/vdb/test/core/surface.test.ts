@@ -13,8 +13,8 @@ import {
   VDB_LEVEL_SET_PASS_DRAW,
   VDB_LEVEL_SET_PASS_FRAME,
   VDB_POINT_PASS_FRAME,
-  vdbCreateLevelSetPassGpu,
-  vdbCreatePointPassGpu,
+  vdbCreateLevelSetPass,
+  vdbCreatePointPass,
   vdbLevelSetPassWgsl,
   vdbLevelSetProxyCorners,
   vdbLevelSetSurfaceWgsl,
@@ -228,7 +228,7 @@ describe("K6.6 level-set proxy box", () => {
   });
 });
 
-describe("K6.6 vdbCreateLevelSetPassGpu", () => {
+describe("K6.6 vdbCreateLevelSetPass", () => {
   const view = lookAt([3, 4, 20], [1, 2, 3]);
   const projection = perspective(50, 16 / 9, 0.1, 100);
   const frame = { view, projection, viewport: [0, 0, 320, 180] as const };
@@ -236,7 +236,7 @@ describe("K6.6 vdbCreateLevelSetPassGpu", () => {
   it("packs the camera, lights and draws, binds draws by dynamic offset, and reuses the pipeline", () => {
     const { device, rec } = recordingDevice();
     const pool = fakePool();
-    const ls = vdbCreateLevelSetPassGpu(device, pool, { colorFormat: "rgba8unorm", depthFormat: "depth24plus", maxSamplesCap: 64 });
+    const ls = vdbCreateLevelSetPass(device, pool, { colorFormat: "rgba8unorm", depthFormat: "depth24plus", maxSamplesCap: 64 });
     expect(ls.types).toEqual(["float"]);
     expect(ls.spec.depthStencil).toEqual({ format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" });
     expect(ls.spec.primitive).toEqual({ topology: "triangle-list", cullMode: "front", frontFace: "ccw" });
@@ -283,7 +283,7 @@ describe("K6.6 vdbCreateLevelSetPassGpu", () => {
 
   it("orthographic projections set the flag; no light means black direct light; growth retires the old buffer", async () => {
     const { device, rec } = recordingDevice();
-    const ls = vdbCreateLevelSetPassGpu(device, fakePool(), { colorFormat: "rgba16float", depthFormat: "depth32float", output: "gbuffer" });
+    const ls = vdbCreateLevelSetPass(device, fakePool(), { colorFormat: "rgba16float", depthFormat: "depth32float", output: "gbuffer" });
     const ortho = new Float64Array([0.1, 0, 0, 0, 0, 0.1, 0, 0, 0, 0, -0.01, 0, 0, 0, 0.5, 1]);
     ls.record(recordingPass(rec), { ...frame, projection: ortho, light: null }, [{ grid: 0 }]);
     const first = rec.buffers.find((b) => b.label.includes("uniforms"))!;
@@ -315,11 +315,11 @@ describe("K6.6 vdbCreateLevelSetPassGpu", () => {
       }
       return undefined;
     };
-    expect(code(() => vdbCreateLevelSetPassGpu(device, fakePool(), { colorFormat: "rgba8unorm" } as never))).toBe("VDB_BAD_OPTION");
-    expect(code(() => vdbCreateLevelSetPassGpu(device, fakePool(), { colorFormat: "rgba8unorm", depthFormat: "depth24plus", output: "x" as never }))).toBe("VDB_BAD_OPTION");
-    expect(code(() => vdbCreateLevelSetPassGpu(device, fakePool(), { colorFormat: "rgba8unorm", depthFormat: "depth24plus", maxSamplesCap: 0 }))).toBe("VDB_BAD_OPTION");
+    expect(code(() => vdbCreateLevelSetPass(device, fakePool(), { colorFormat: "rgba8unorm" } as never))).toBe("VDB_BAD_OPTION");
+    expect(code(() => vdbCreateLevelSetPass(device, fakePool(), { colorFormat: "rgba8unorm", depthFormat: "depth24plus", output: "x" as never }))).toBe("VDB_BAD_OPTION");
+    expect(code(() => vdbCreateLevelSetPass(device, fakePool(), { colorFormat: "rgba8unorm", depthFormat: "depth24plus", maxSamplesCap: 0 }))).toBe("VDB_BAD_OPTION");
     const pool = fakePool(["float"]);
-    const ls = vdbCreateLevelSetPassGpu(device, pool, { colorFormat: "rgba8unorm", depthFormat: "depth24plus" });
+    const ls = vdbCreateLevelSetPass(device, pool, { colorFormat: "rgba8unorm", depthFormat: "depth24plus" });
     expect(code(() => ls.record(recordingPass(rec), frame, [{ grid: -1 }]))).toBe("VDB_BAD_OPTION");
     expect(code(() => ls.record(recordingPass(rec), { ...frame, viewport: [0, 0, 0, 10] }, [{ grid: 0 }]))).toBe("VDB_BAD_OPTION");
     expect(code(() => ls.record(recordingPass(rec), frame, [{ grid: 0, sdfToIndex: -1 }]))).toBe("VDB_BAD_OPTION");
@@ -327,19 +327,19 @@ describe("K6.6 vdbCreateLevelSetPassGpu", () => {
     expect(code(() => ls.record(recordingPass(rec), frame, [{ grid: 0 }]))).toBe("VDB_TYPE_NOT_COMPILED");
     // No draws: nothing recorded.
     const before = rec.calls.length;
-    vdbCreateLevelSetPassGpu(device, fakePool(), { colorFormat: "rgba8unorm", depthFormat: "depth24plus" }).record(recordingPass(rec), frame, []);
+    vdbCreateLevelSetPass(device, fakePool(), { colorFormat: "rgba8unorm", depthFormat: "depth24plus" }).record(recordingPass(rec), frame, []);
     expect(rec.calls.length).toBe(before);
     await ls.prepare();
   });
 });
 
-describe("K6.6 vdbCreatePointPassGpu", () => {
+describe("K6.6 vdbCreatePointPass", () => {
   const view = lookAt([0, 0, 12], [0, 0, 0]);
   const projection = perspective(60, 1, 0.1, 100);
 
   it("draws 6 vertices per point instance, picks the colour pipeline, packs the frame", () => {
     const { device, rec } = recordingDevice();
-    const pts = vdbCreatePointPassGpu(device, { colorFormat: "rgba8unorm", depthFormat: "depth24plus" });
+    const pts = vdbCreatePointPass(device, { colorFormat: "rgba8unorm", depthFormat: "depth24plus" });
     expect(pts.specs[0].buffers).toHaveLength(1);
     expect(pts.specs[1].buffers).toHaveLength(2);
     pts.setPoints({ positions: new Float32Array([0, 0, 0, 1, 1, 1, 2, 2, 2]), colors: new Float32Array(9).fill(0.5) });
@@ -367,10 +367,10 @@ describe("K6.6 vdbCreatePointPassGpu", () => {
 
   it("rejects bad data", () => {
     const { device } = recordingDevice();
-    const pts = vdbCreatePointPassGpu(device, { colorFormat: "rgba8unorm" });
+    const pts = vdbCreatePointPass(device, { colorFormat: "rgba8unorm" });
     expect(() => pts.setPoints({ positions: new Float32Array(4) })).toThrow(VDBError);
     expect(() => pts.setPoints({ positions: new Float32Array(6), count: 3 })).toThrow(VDBError);
     expect(() => pts.setPoints({ positions: new Float32Array(6), colors: new Float32Array(3) })).toThrow(VDBError);
-    expect(() => vdbCreatePointPassGpu(device, {} as never)).toThrow(VDBError);
+    expect(() => vdbCreatePointPass(device, {} as never)).toThrow(VDBError);
   });
 });

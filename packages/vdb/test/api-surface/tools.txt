@@ -125,7 +125,6 @@ value buildFromVdb
 value buildFromVdbDetailed
 value decodeWvdbLod
 value nvdbLodName
-value nvdbResponseLength
 value nvdbToWvdb
 value parseNvdbLodName
 value parseVdb
@@ -148,7 +147,6 @@ value vdbFrameMediumProps
 value vdbGridStatsCpu
 value vdbHalfToFloat
 value vdbInspect
-value vdbMakeFpNLeafCodec
 value vdbPointRenderData
 value vdbQuantize
 value vdbQuantizeDetailed
@@ -170,6 +168,5 @@ value wvdbDenseToNvdb
 value wvdbDenseVolume
 value wvdbLodByteRange
 value wvdbPointLods
-value wvdbPrefixLength
 value wvdbSourceFromNvdb
 value wvdbSourceFromVdbGrid

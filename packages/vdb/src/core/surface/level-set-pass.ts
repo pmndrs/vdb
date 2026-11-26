@@ -4,7 +4,7 @@
  * Writes `frag_depth` (so surfaces depth-test against the host's meshes) and either a Lambert + ambient
  * shade or a G-buffer texel (world normal, ray distance).
  *
- *   const surfaces = vdbCreateLevelSetPassGpu(device, pool, { colorFormat: 'rgba8unorm', depthFormat: 'depth24plus' });
+ *   const surfaces = vdbCreateLevelSetPass(device, pool, { colorFormat: 'rgba8unorm', depthFormat: 'depth24plus' });
  *   // per frame, after pool.update(encoder):
  *   const pass = encoder.beginRenderPass({ colorAttachments: [...], depthStencilAttachment: { ... } });
  *   surfaces.record(pass, { view, projection, viewport: [0, 0, width, height] }, [{ grid: id, color: [1, 0.8, 0.6] }]);
@@ -39,8 +39,8 @@ export interface VDBLevelSetPassPool {
   };
 }
 
-/** Options of {@link vdbCreateLevelSetPassGpu}. */
-export interface VDBLevelSetPassGpuOptions {
+/** Options of {@link vdbCreateLevelSetPass}. */
+export interface VDBLevelSetPassOptions {
   /** Format of the one colour attachment. */
   readonly colorFormat: GPUTextureFormat;
   /** Format of the depth attachment (`frag_depth` needs one). */
@@ -59,7 +59,7 @@ export interface VDBLevelSetPassGpuOptions {
   readonly label?: string;
 }
 
-/** The camera and lights of one {@link VDBLevelSetPassGpu.record}. Matrices are column-major. */
+/** The camera and lights of one {@link VDBLevelSetPass.record}. Matrices are column-major. */
 export interface VDBLevelSetPassFrame {
   /** World → view. */
   readonly view: VDBMat4;
@@ -90,7 +90,7 @@ export interface VDBLevelSetPassDraw {
 }
 
 /** A level-set pass (see the file comment). */
-export interface VDBLevelSetPassGpu {
+export interface VDBLevelSetPass {
   readonly device: GPUDevice;
   readonly output: "shade" | "gbuffer";
   /** Grid types the module decodes. */
@@ -156,7 +156,7 @@ export const VDB_LEVEL_SET_BOX_TRIANGLES: readonly number[] = Object.freeze([
 ]);
 
 function bad(message: string): VDBError {
-  return new VDBError("VDB_BAD_OPTION", `vdbCreateLevelSetPassGpu: ${message}`);
+  return new VDBError("VDB_BAD_OPTION", `vdbCreateLevelSetPass: ${message}`);
 }
 
 /** The entry points (after the module and the surface functions). */
@@ -235,10 +235,10 @@ const DEFAULT_LIGHT: VDBVec3 = [-0.4, -0.8, -0.45];
  *
  * @param device The host's device (the pool's).
  * @param pool The `VDBGridPool` holding the level sets.
- * @param options Formats, output and module types ({@link VDBLevelSetPassGpuOptions}).
+ * @param options Formats, output and module types ({@link VDBLevelSetPassOptions}).
  * @throws VDBError `VDB_BAD_OPTION` for bad options.
  */
-export function vdbCreateLevelSetPassGpu(device: GPUDevice, pool: VDBLevelSetPassPool, options: VDBLevelSetPassGpuOptions): VDBLevelSetPassGpu {
+export function vdbCreateLevelSetPass(device: GPUDevice, pool: VDBLevelSetPassPool, options: VDBLevelSetPassOptions): VDBLevelSetPass {
   if (!options || typeof options.colorFormat !== "string" || typeof options.depthFormat !== "string") throw bad("colorFormat and depthFormat are required.");
   const output = options.output ?? "shade";
   if (output !== "shade" && output !== "gbuffer") throw bad(`output must be 'shade' or 'gbuffer', got ${JSON.stringify(output)}.`);

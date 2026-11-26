@@ -1,7 +1,8 @@
 // K6.N: the A/B table of the 'neural' weights from reference-report.mjs reports (report.json): per scene group, the
 // luminance bias and the median relative luminance error against the path-traced reference (multiple scattering) of
 // two-sided, his weights and ours (and diffusion for context), then the means of |bias| and of the median error over the
-// groups. Our code (MIT).
+// groups. Our code (MIT). History (D36): it reads K6.N-era reports, whose rows named the weights ("his" / "pmndrs"); since
+// K6.11a reference-report.mjs has one "neural" row (ours): in a new report it lands in the "his" column and "ours" is empty.
 // Run: node scripts/k6/neural/ab-table.mjs <report.json> [<report.json> ...]   (one table per file)
 import { readFileSync } from 'node:fs';
 

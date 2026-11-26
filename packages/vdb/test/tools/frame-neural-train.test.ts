@@ -5,7 +5,7 @@ import {
   vdbFrameMlpForward,
   vdbFrameMlpFromNeural,
   vdbFrameMlpInputs,
-  vdbFrameNeuralWeightsProcedural,
+  vdbFrameNeuralWeights,
 } from "../../src/tools/internal.js";
 
 // K6.N: the trainer of our own 'neural' / 'mlp' weights (scripts/k6/neural/*.mjs, derived from his scripts/neural-indirect).
@@ -128,7 +128,7 @@ describe("K6.N neural trainer (scripts/k6/neural)", () => {
   });
 
   it("our weights are a valid generic MLP of the same shape as his, with finite outputs", () => {
-    const mlp = vdbFrameMlpFromNeural(vdbFrameNeuralWeightsProcedural);
+    const mlp = vdbFrameMlpFromNeural(vdbFrameNeuralWeights);
     expect(vdbFrameMlpCheck(mlp)).toBeNull();
     expect(mlp.layers.map((l) => [l.inputs, l.outputs])).toEqual([
       [20, 32],

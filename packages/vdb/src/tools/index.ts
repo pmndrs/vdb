@@ -65,7 +65,6 @@ export {
   VDB_FP8_LEAF_CODEC,
   VDB_FP16_LEAF_CODEC,
   VDB_HALF_LEAF_CODEC,
-  vdbMakeFpNLeafCodec,
   VDB_VEC3F_LEAF_CODEC,
 } from "./nanovdb/index.js";
 export type { VDBBuildFromDenseOptions, VDBBuildFromLeavesOptions, VDBBuiltGrid, VDBLeafCodec } from "./nanovdb/index.js";
@@ -108,7 +107,7 @@ export { NvdbFile, NvdbCodec, NVDB_SUPPORTED_GRID_TYPES } from "./nvdb-file.js";
 export type { NvdbGridMetadata } from "./nvdb-file.js";
 export { writeNvdb } from "./nanovdb/index.js";
 export type { WriteNvdbOptions } from "./nanovdb/index.js";
-export { NvdbStreamReader, nvdbLodName, nvdbResponseLength, parseNvdbLodName, readNvdbStream } from "./nvdb-stream.js";
+export { NvdbStreamReader, nvdbLodName, parseNvdbLodName, readNvdbStream } from "./nvdb-stream.js";
 export type { NvdbProgress, NvdbStreamGrid, NvdbStreamReaderOptions, NvdbStreamSource } from "./nvdb-stream.js";
 export { vdbBakeCoarseFirst } from "./nanovdb/index.js";
 export type { VDBBakeCoarseFirstOptions } from "./nanovdb/index.js";
@@ -128,7 +127,7 @@ export type { VDBSampleCpuOptions } from "./cpu/sample-trilinear.js";
 /**
  * CPU versions of the core compute tools (K2.3): grid stats and the decode to a
  * dense atlas (the WebGL fallback path). The core's GPU versions are
- * `vdbGridStatsGpu` / `vdbDecodeToAtlasGpu`.
+ * `vdbGridStats` / `vdbDecodeToAtlas`.
  */
 export { vdbDecodeToAtlasCpu, vdbGridStatsCpu } from "./cpu/compute.js";
 export type {
@@ -153,7 +152,6 @@ export {
   readWvdbHeader,
   decodeWvdbLod,
   wvdbLodByteRange,
-  wvdbPrefixLength,
   WvdbStreamReader,
   writeWvdb,
   wvdbPointLods,

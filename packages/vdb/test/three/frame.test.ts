@@ -80,7 +80,7 @@ describe("VDBFrameVolume (K3.1, K6.8)", () => {
 });
 
 describe("VDBFrameRenderer settings (K6.8: the core's)", () => {
-  it("his defaults (V33: 'frame' lighting, temporal, 'neural'), the K6 fields, the default MLP (his network)", () => {
+  it("his defaults (V33: 'frame' lighting, temporal, 'neural'), the K6 fields, the default MLP (ours, K6.N)", () => {
     const fr = new VDBFrameRenderer();
     const s = fr.settings;
     expect(s).toEqual(vdbFrameDefaultSettings());
