@@ -3,7 +3,7 @@
  *
  * No native Fp4/Fp16 fixtures exist, so the oracle is the Float source: every
  * active voxel must decode within one leaf quantum, `readValue` (f64) and
- * `vdbReadValueF32` (GPU order) must agree to f32 rounding, and the leaf geometry
+ * `vdbReadValueF32Cpu` (GPU order) must agree to f32 rounding, and the leaf geometry
  * must be NanoVDB's `LeafData<Fp4|Fp16>` (96-byte header + 256 / 1024 code bytes).
  */
 import { describe, expect, it } from "vitest";
@@ -14,9 +14,9 @@ import {
   NvdbFile,
   vdbQuantize,
   vdbReadValueCpu,
-  vdbReadValueF32,
-  vdbSampleNearest,
-  vdbSampleTrilinear,
+  vdbReadValueF32Cpu,
+  vdbSampleNearestCpu,
+  vdbSampleTrilinearCpu,
   writeNvdb,
 } from "../../src/tools/index.js";
 
@@ -58,7 +58,7 @@ describe.each(MODES)("$type grids", ({ mode, type, levels, leafBytes }) => {
           expect(err).toBeLessThanOrEqual(bound);
           maxErr = Math.max(maxErr, err);
           // GPU-order oracle: same code, f32 arithmetic, within f32 rounding.
-          expect(Math.abs(vdbReadValueF32(q, [x, y, z]) - got.value)).toBeLessThan(1e-6);
+          expect(Math.abs(vdbReadValueF32Cpu(q, [x, y, z]) - got.value)).toBeLessThan(1e-6);
         }
     if (mode === "fp4") expect(maxErr).toBeGreaterThan(1 / 255); // visibly lossy
   });
@@ -80,8 +80,8 @@ describe.each(MODES)("$type grids", ({ mode, type, levels, leafBytes }) => {
 
   it("samples nearest and trilinear against the source", () => {
     for (const p of [[12, 12, 12], [10.5, 11.25, 12.75], [6.2, 12, 9.9]] as [number, number, number][]) {
-      expect(Math.abs(vdbSampleTrilinear(q, p) - vdbSampleTrilinear(floatImg, p))).toBeLessThanOrEqual(bound);
-      expect(Math.abs(vdbSampleNearest(q, p) - vdbSampleNearest(floatImg, p))).toBeLessThanOrEqual(bound);
+      expect(Math.abs(vdbSampleTrilinearCpu(q, p) - vdbSampleTrilinearCpu(floatImg, p))).toBeLessThanOrEqual(bound);
+      expect(Math.abs(vdbSampleNearestCpu(q, p) - vdbSampleNearestCpu(floatImg, p))).toBeLessThanOrEqual(bound);
     }
   });
 });

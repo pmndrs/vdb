@@ -237,7 +237,7 @@ function gridTypeNameFor(id: number): SupportedGridTypeName {
   throw new VDBToolsError("VDB_UNSUPPORTED_GRID_TYPE", 
     `readValue: unsupported grid type ${id}${knownName ? ` (${knownName})` : ""}; ` +
       `only FLOAT (${gridTypeIds.FLOAT}), HALF (${gridTypeIds.HALF}), FP4 (${gridTypeIds.FP4}), FP8 (${gridTypeIds.FP8}), FP16 (${gridTypeIds.FP16}) and FPN (${gridTypeIds.FPN}) are implemented` +
-      (knownName === "VEC3F" ? "; use vdbReadValueVec3 for VEC3F grids" : ""),
+      (knownName === "VEC3F" ? "; use vdbReadValueVec3Cpu for VEC3F grids" : ""),
   );
 }
 
@@ -368,9 +368,9 @@ function checkMagic(gridWords: Uint32Array, fn: string): void {
  * at every level: voxels, tiles and the background).
  *
  * The value is the exact f64 decode (ground truth). It is NOT the GPU's
- * evaluation order: `vdbReadValueF32` (CPU twin of `vdbReadValue`) matches the
+ * evaluation order: `vdbReadValueF32Cpu` (CPU twin of `vdbReadValue`) matches the
  * shader's f32 arithmetic, and the two can differ by 1 ulp (f32) on Fp grids.
- * Use `vdbReadValueF32` as the oracle for GPU parity.
+ * Use `vdbReadValueF32Cpu` as the oracle for GPU parity.
  *
  * @param gridWords The grid image (little-endian u32 words, `GridData` at word 0).
  * @param ijk Integer index coordinates of the voxel.
@@ -448,13 +448,13 @@ export interface VDBReadVec3Result {
  * @param gridWords The VEC3F grid image (little-endian u32 words, `GridData` at word 0).
  * @param ijk Integer index coordinates of the voxel.
  */
-export function vdbReadValueVec3(gridWords: Uint32Array, ijk: [number, number, number]): VDBReadVec3Result {
-  checkMagic(gridWords, "vdbReadValueVec3");
+export function vdbReadValueVec3Cpu(gridWords: Uint32Array, ijk: [number, number, number]): VDBReadVec3Result {
+  checkMagic(gridWords, "vdbReadValueVec3Cpu");
   const gridTypeId = readU32(gridWords, GRID_OFF_GRID_TYPE);
   if (gridTypeId !== gridTypeIds.VEC3F) {
     const knownName = Object.entries(gridTypeIds).find(([, v]) => v === gridTypeId)?.[0];
     throw new VDBToolsError("VDB_UNSUPPORTED_GRID_TYPE", 
-      `vdbReadValueVec3: grid type ${gridTypeId}${knownName ? ` (${knownName})` : ""} is not VEC3F (${gridTypeIds.VEC3F})`,
+      `vdbReadValueVec3Cpu: grid type ${gridTypeId}${knownName ? ` (${knownName})` : ""} is not VEC3F (${gridTypeIds.VEC3F})`,
     );
   }
   const gt = gridTypeConstantsFor("VEC3F");

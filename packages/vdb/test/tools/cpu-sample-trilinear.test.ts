@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { probePoints } from "../../src/tools/cpu/probe-coords.js";
 import { vdbReadValueCpu } from "../../src/tools/cpu/read-value.js";
-import { vdbSampleTrilinear } from "../../src/tools/cpu/sample-trilinear.js";
+import { vdbSampleTrilinearCpu } from "../../src/tools/cpu/sample-trilinear.js";
 import { defineNumber, gridTypeConstantsFor } from "../../src/tools/cpu/stride-tables.js";
 
 /**
@@ -86,14 +86,14 @@ async function loadFixture(name: string): Promise<{ words: Uint32Array; sidecar:
 }
 
 describe.skipIf(!fixturesPresent)("cpu trilinear sample vs. baked ground-truth (sphere_fog_float)", () => {
-  it("at integer coords, vdbSampleTrilinear equals readValue's value for a dozen sidecar coords", async () => {
+  it("at integer coords, vdbSampleTrilinearCpu equals readValue's value for a dozen sidecar coords", async () => {
     const { words, sidecar } = await loadFixture("sphere_fog_float");
     const dozen = sidecar.samples.slice(0, 12);
     expect(dozen.length).toBe(12);
 
     for (const sample of dozen) {
       const expected = vdbReadValueCpu(words, sample.ijk).value;
-      const got = vdbSampleTrilinear(words, sample.ijk);
+      const got = vdbSampleTrilinearCpu(words, sample.ijk);
       expect(got, `ijk=${JSON.stringify(sample.ijk)}`).toBeCloseTo(expected, 5);
     }
   });
@@ -121,7 +121,7 @@ describe.skipIf(!fixturesPresent)("cpu trilinear sample vs. baked ground-truth (
         (a[1] + b[1]) / 2,
         (a[2] + b[2]) / 2,
       ];
-      const got = vdbSampleTrilinear(words, midpoint);
+      const got = vdbSampleTrilinearCpu(words, midpoint);
       expect(got, `midpoint of ${JSON.stringify(a)} / ${JSON.stringify(b)}`).toBeCloseTo(
         (va + vb) / 2,
         5,
@@ -158,7 +158,7 @@ describe.skipIf(!fixturesPresent)("cpu trilinear sample vs. baked ground-truth (
         }
       }
 
-      const got = vdbSampleTrilinear(words, xyz);
+      const got = vdbSampleTrilinearCpu(words, xyz);
       const epsilon = 1e-4;
       expect(got, `xyz=${JSON.stringify(xyz)} got=${got} lo=${lo} hi=${hi}`).toBeGreaterThanOrEqual(
         lo - epsilon,
@@ -186,7 +186,7 @@ describe.skipIf(!fixturesPresent)("cpu trilinear sample vs. baked ground-truth (
     const background = f32[(rootAddress + gt.root_off_background) / 4]!;
 
     const deepOutside: [number, number, number] = [1_000_000.37, 1_000_000.5, 1_000_000.9];
-    const got = vdbSampleTrilinear(words, deepOutside);
+    const got = vdbSampleTrilinearCpu(words, deepOutside);
     expect(got).toBe(background);
 
     // Sanity: readValue at the same integer taps is also background (inactive).

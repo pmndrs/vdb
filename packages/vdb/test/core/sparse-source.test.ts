@@ -23,7 +23,7 @@ import {
   vdbBoxPyramid,
   vdbPyramidToHalf,
   vdbSparseDensityCpu,
-  vdbSampleTrilinear,
+  vdbSampleTrilinearCpu,
 } from "../../src/tools/internal.js";
 import { computeFake } from "./fake-compute.js";
 import { FakeDevice } from "./fake-gpu.js";
@@ -456,7 +456,7 @@ describe("CPU twins (K6.7)", () => {
     const vol = { lod: "coarse-pyramid" as const, density: { image, box: b }, pyramid };
     const uvw = [0.3, 0.71, 0.45];
     const p: [number, number, number] = [0.3 * 24 - 0.5, 0.71 * 20 - 0.5, 0.45 * 16 - 0.5];
-    expect(vdbSparseDensityCpu(vol, uvw, 0).value).toBeCloseTo(vdbSampleTrilinear(image, p), 5);
+    expect(vdbSparseDensityCpu(vol, uvw, 0).value).toBeCloseTo(vdbSampleTrilinearCpu(image, p), 5);
     // At a base texel centre, lod L0 reads that texel exactly.
     const d = pyramid.dimensions;
     const centre = [(1 + 0.5) / d[0], (2 + 0.5) / d[1], (0 + 0.5) / d[2]];

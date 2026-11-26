@@ -10,7 +10,7 @@
  * grid is parsed, built to a NanoVDB Vec3f grid and written to `.nvdb`.
  *
  * Oracles: the spec values (parser); the parsed tree through
- * `vdbReadValueVec3` / `vdbSampleTrilinearVec3` (NanoVDB image); NanoVDB
+ * `vdbReadValueVec3Cpu` / `vdbSampleTrilinearVec3Cpu` (NanoVDB image); NanoVDB
  * `tools/GridStats.h` `Stats<Vec3f, 1>` recomputed by brute force (stats);
  * the vendored PNanoVDB stride tables (layout).
  */
@@ -23,8 +23,8 @@ import {
   FILE_METADATA_SIZE,
   vdbInspect,
   vdbReadValueCpu,
-  vdbReadValueVec3,
-  vdbSampleTrilinearVec3,
+  vdbReadValueVec3Cpu,
+  vdbSampleTrilinearVec3Cpu,
   writeNvdb,
   type VdbGrid,
   type VdbVec3Grid,
@@ -300,17 +300,17 @@ describe("buildFromVdb — Vec3f NanoVDB grid", () => {
     ]);
   });
 
-  it("vdbReadValueVec3 matches the parsed tree everywhere we probe", () => {
-    for (const ijk of PROBES) expect(vdbReadValueVec3(image, ijk), `at ${ijk}`).toEqual(grid.readValue(ijk));
+  it("vdbReadValueVec3Cpu matches the parsed tree everywhere we probe", () => {
+    for (const ijk of PROBES) expect(vdbReadValueVec3Cpu(image, ijk), `at ${ijk}`).toEqual(grid.readValue(ijk));
     for (const leaf of grid.iterLeaves()) {
       for (let n = 0; n < 512; n++) {
         const ijk = leafCoord(leaf.origin, n);
-        expect(vdbReadValueVec3(image, ijk)).toEqual(grid.readValue(ijk));
+        expect(vdbReadValueVec3Cpu(image, ijk)).toEqual(grid.readValue(ijk));
       }
     }
   });
 
-  it("vdbSampleTrilinearVec3 is componentwise trilinear of the parsed tree", () => {
+  it("vdbSampleTrilinearVec3Cpu is componentwise trilinear of the parsed tree", () => {
     const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
     const points: V3[] = [
       [3.25, 4.5, 6.75],
@@ -331,10 +331,10 @@ describe("buildFromVdb — Vec3f NanoVDB grid", () => {
         const c11 = lerp(v(0, 1, 1)[c]!, v(1, 1, 1)[c]!, f[0]!);
         return lerp(lerp(c00, c10, f[1]!), lerp(c01, c11, f[1]!), f[2]!);
       });
-      expect(vdbSampleTrilinearVec3(image, p)).toEqual(want);
+      expect(vdbSampleTrilinearVec3Cpu(image, p)).toEqual(want);
     }
     // outside: 'zero' — taps beyond the root bbox read 0.
-    expect(vdbSampleTrilinearVec3(image, [-5000, -5000, -5000], { outside: "zero" })).toEqual([0, 0, 0]);
+    expect(vdbSampleTrilinearVec3Cpu(image, [-5000, -5000, -5000], { outside: "zero" })).toEqual([0, 0, 0]);
   });
 
   it("node stats follow GridStats Stats<Vec3f>: extremes by lengthSqr, ave/std of lengthSqr", () => {
@@ -374,11 +374,11 @@ describe("buildFromVdb — Vec3f NanoVDB grid", () => {
   });
 
   it("the scalar and vector CPU readers refuse each other's grids", () => {
-    expect(() => vdbReadValueCpu(image, [0, 0, 1])).toThrow(/vdbReadValueVec3/);
+    expect(() => vdbReadValueCpu(image, [0, 0, 1])).toThrow(/vdbReadValueVec3Cpu/);
     const floatGrid = parseVdb(
       writeSyntheticVdb({ background: 0, rootTiles: [{ origin: [0, 0, 0], value: 1, active: true }], uppers: [] }),
     ).grids[0]! as VdbGrid;
     const floatImage = buildFromVdbDetailed(floatGrid).image;
-    expect(() => vdbReadValueVec3(floatImage, [0, 0, 0])).toThrow(/not VEC3F/);
+    expect(() => vdbReadValueVec3Cpu(floatImage, [0, 0, 0])).toThrow(/not VEC3F/);
   });
 });

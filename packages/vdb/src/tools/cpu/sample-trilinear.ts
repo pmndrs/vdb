@@ -28,7 +28,7 @@
  * blend using its background value, exactly like a GPU texture sampler would
  * (it has no notion of "active" — it just reads whatever is in the texel).
  * This is a deliberate divergence from `readValue`'s `{ value, active }`
- * pair: `vdbSampleTrilinear` only ever returns a value.
+ * pair: `vdbSampleTrilinearCpu` only ever returns a value.
  *
  * Interpolation order (numerically order-independent, but WGSL should match
  * this exact structure so intermediate rounding lines up under float32):
@@ -47,7 +47,7 @@
  */
 import { VDBToolsError } from "../errors.js";
 import { indexBBox } from "./march.js";
-import { vdbReadValueCpu, vdbReadValueVec3 } from "./read-value.js";
+import { vdbReadValueCpu, vdbReadValueVec3Cpu } from "./read-value.js";
 import { defineNumber } from "./stride-tables.js";
 
 type Coord = readonly [number, number, number];
@@ -97,7 +97,7 @@ function zeroOutside(
  * @param xyz Position in index space.
  * @param options The `outside` mode.
  */
-export function vdbSampleNearest(gridWords: Uint32Array, xyz: [number, number, number], options?: VDBSampleCpuOptions): number {
+export function vdbSampleNearestCpu(gridWords: Uint32Array, xyz: [number, number, number], options?: VDBSampleCpuOptions): number {
   const ijk: [number, number, number] = [Math.floor(xyz[0] + 0.5), Math.floor(xyz[1] + 0.5), Math.floor(xyz[2] + 0.5)];
   const outside = zeroOutside(gridWords, options);
   if (outside?.(ijk)) return 0;
@@ -117,7 +117,7 @@ function lerp(a: number, b: number, t: number): number {
  * @param xyz Position in index space.
  * @param options The `outside` mode.
  */
-export function vdbSampleTrilinear(gridWords: Uint32Array, xyz: [number, number, number], options?: VDBSampleCpuOptions): number {
+export function vdbSampleTrilinearCpu(gridWords: Uint32Array, xyz: [number, number, number], options?: VDBSampleCpuOptions): number {
   const outside = zeroOutside(gridWords, options);
   const bx = Math.floor(xyz[0]);
   const by = Math.floor(xyz[1]);
@@ -154,14 +154,14 @@ export function vdbSampleTrilinear(gridWords: Uint32Array, xyz: [number, number,
 
 /**
  * Componentwise trilinear sample of a VEC3F grid image: the same eight taps,
- * lerp order and `outside` handling as {@link vdbSampleTrilinear}, applied to x,
+ * lerp order and `outside` handling as {@link vdbSampleTrilinearCpu}, applied to x,
  * y and z independently (NanoVDB `TrilinearSampler` on a `Vec3f` grid).
  *
  * @param gridWords The VEC3F grid image (little-endian u32 words, `GridData` at word 0).
  * @param xyz Position in index space.
  * @param options The `outside` mode.
  */
-export function vdbSampleTrilinearVec3(
+export function vdbSampleTrilinearVec3Cpu(
   gridWords: Uint32Array,
   xyz: [number, number, number],
   options?: VDBSampleCpuOptions,
@@ -177,7 +177,7 @@ export function vdbSampleTrilinearVec3(
   const tap = (dx: 0 | 1, dy: 0 | 1, dz: 0 | 1): [number, number, number] => {
     const coord: [number, number, number] = [bx + dx, by + dy, bz + dz];
     if (outside?.(coord)) return [0, 0, 0];
-    return vdbReadValueVec3(gridWords, coord).value;
+    return vdbReadValueVec3Cpu(gridWords, coord).value;
   };
 
   const v000 = tap(0, 0, 0);

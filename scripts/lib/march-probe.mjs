@@ -12,7 +12,7 @@
 //             level, voxel, active), max exact, t within 1e-5 relative
 //   nodeMax   vdbNodeMax at active voxels of the Fp grids (leaf stats fix), dims 8/128/4096/2^20
 //   dead      ids 1 (removed) and 99 (out of range): no ray hit, type 0, empty bbox, zero transforms
-//   zero      vdbSample with outside 'zero', trilinear and nearest, on id 4 vs vdbSampleTrilinear/vdbSampleNearest
+//   zero      vdbSample with outside 'zero', trilinear and nearest, on id 4 vs vdbSampleTrilinearCpu/vdbSampleNearestCpu
 
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
@@ -92,8 +92,8 @@ export async function buildMarchProbe() {
   for (let k = 0; k < 64; k++) samplePoints.push([-2 + 12 * r(), -2 + 12 * r(), -2 + 12 * r()].map(Math.fround));
   const zero = { outside: "zero" };
   const sampleWant = {
-    trilinear: samplePoints.map((p) => tools.vdbSampleTrilinear(images[4], p, zero)),
-    nearest: samplePoints.map((p) => tools.vdbSampleNearest(images[4], p, zero)),
+    trilinear: samplePoints.map((p) => tools.vdbSampleTrilinearCpu(images[4], p, zero)),
+    nearest: samplePoints.map((p) => tools.vdbSampleNearestCpu(images[4], p, zero)),
   };
 
   const types = ["float", "fp8", "fpn"];

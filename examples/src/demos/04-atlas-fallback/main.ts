@@ -45,7 +45,7 @@ import { Fn, texture3D, uniform } from "three/tsl";
 import { VolumeNodeMaterial, WebGPURenderer } from "three/webgpu";
 import type { Node } from "three/webgpu";
 import { VDBGridPool, vdbApplyValueTransform } from "@pmndrs/vdb";
-import { NvdbFile, vdbGridStatsCpu, vdbReadValueF32 } from "@pmndrs/vdb/tools";
+import { NvdbFile, vdbGridStatsCpu, vdbReadValueF32Cpu } from "@pmndrs/vdb/tools";
 // `getDim` (leaf voxel vs tile) is a CPU twin of the WGSL march helper, not public API (D32): this check imports it
 // from the tools internals by path.
 import { getDim } from "../../../../packages/vdb/src/tools/internal.js";
@@ -241,7 +241,7 @@ async function run(): Promise<void> {
   let sawLeaf = false;
   let transformOk = activeSamples.length > 0 && pool.version === versionBefore;
   for (const s of activeSamples) {
-    const got = vdbReadValueF32(transformedImage, s.ijk);
+    const got = vdbReadValueF32Cpu(transformedImage, s.ijk);
     if (getDim(statsImage, s.ijk) === 1) {
       sawLeaf = true;
       if (Math.abs(got - 2 * s.value) > TRANSFORM_VALUE_EPS) transformOk = false;

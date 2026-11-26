@@ -5,7 +5,7 @@
  * ## Conventions
  *
  * Voxels are centred at integer index coordinates, the convention of the CPU
- * oracle's `readValue`/`vdbSampleTrilinear` (and the WGSL sampler), and of
+ * oracle's `readValue`/`vdbSampleTrilinearCpu` (and the WGSL sampler), and of
  * mjurczyk's `.wvdb` bake (`Math.round` in index space). Voxel `i` therefore
  * covers the index interval `[i - 0.5, i + 0.5]`.
  *
@@ -42,7 +42,7 @@
  *   flickering in or out with the sampling phase. A downsample by 2 on an
  *   aligned box is the exact 2x2x2 mean.
  * - `'trilinear'`: the trilinear interpolation of the source at the target
- *   voxel centre (`vdbSampleTrilinear`). Smooth for upsampling and small ratios;
+ *   voxel centre (`vdbSampleTrilinearCpu`). Smooth for upsampling and small ratios;
  *   aliases like `'point'` at large downsampling ratios.
  *
  * ## Sparsity
@@ -61,7 +61,7 @@ import { vdbHalfToFloat } from "./half.js";
 import { gridTypeConstantsForId } from "../cpu/stride-tables.js";
 import { leafVoxels, treeNodes } from "../cpu/march.js";
 import type { VdbFile, VdbFloatGrid, VdbGrid } from "../vdb/types.js";
-import { vdbSampleTrilinear } from "../cpu/sample-trilinear.js";
+import { vdbSampleTrilinearCpu } from "../cpu/sample-trilinear.js";
 import {
   GRID_NAME_MAX,
   GRID_OFF_GRID_CLASS,
@@ -817,7 +817,7 @@ export interface VDBResampleErrorResult {
  * The error metric of the mjurczyk comparison (docs/dev/research/INDEX): mean absolute
  * difference over every `stride`-th active source voxel, as a percentage of the
  * mean source value there. The target (any NanoVDB FLOAT/Fp8/FpN image with an
- * axis-aligned Map) is read back with `vdbSampleTrilinear` at each source voxel
+ * axis-aligned Map) is read back with `vdbSampleTrilinearCpu` at each source voxel
  * centre. Active tiles are not sampled (leaves only).
  *
  * @param source The full-resolution source (image, `.vdb` grid or file).
@@ -852,7 +852,7 @@ export function vdbResampleError(
         xyz[a] = (world - tVec[a]!) * tInv[a]!;
       }
       const src = leaf.values[n]!;
-      sumAbs += Math.abs(vdbSampleTrilinear(target, xyz) - src);
+      sumAbs += Math.abs(vdbSampleTrilinearCpu(target, xyz) - src);
       sumVal += src;
       count++;
     }

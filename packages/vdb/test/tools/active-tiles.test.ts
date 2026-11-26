@@ -8,14 +8,14 @@
  * stage is checked against the values the spec put in.
  *
  * Oracles: the spec itself (parser), the proven CPU reader `readValue` /
- * `vdbSampleTrilinear` (NanoVDB), and NanoVDB `GridStats` for stats weighting.
+ * `vdbSampleTrilinearCpu` (NanoVDB), and NanoVDB `GridStats` for stats weighting.
  */
 
 import { describe, expect, it } from "vitest";
 
 import { buildFromVdbDetailed, vdbInspect, vdbQuantizeDetailed, writeNvdb } from "../../src/tools/index.js";
 import { vdbReadValueCpu } from "../../src/tools/cpu/read-value.js";
-import { vdbSampleTrilinear } from "../../src/tools/cpu/sample-trilinear.js";
+import { vdbSampleTrilinearCpu } from "../../src/tools/cpu/sample-trilinear.js";
 import { vdbBuildFromLeavesDetailed } from "../../src/tools/nanovdb/serialize.js";
 import { VDB_FLOAT_LEAF_CODEC } from "../../src/tools/nanovdb/leaf-codec.js";
 import { parseVdb } from "../../src/tools/vdb/index.js";
@@ -217,12 +217,12 @@ describe("buildFromVdb — active tiles become NanoVDB tiles", () => {
     }
   });
 
-  it("vdbSampleTrilinear inside a tile is the tile value, and blends across a tile edge", () => {
-    expect(vdbSampleTrilinear(image, [190.3, 60.7, 3.2])).toBeCloseTo(0.5, 6);
-    expect(vdbSampleTrilinear(image, [-2000.5, 100.25, 7.75])).toBeCloseTo(0.25, 6);
-    expect(vdbSampleTrilinear(image, [11.5, 3.5, 3.5])).toBeCloseTo(0.75, 6);
+  it("vdbSampleTrilinearCpu inside a tile is the tile value, and blends across a tile edge", () => {
+    expect(vdbSampleTrilinearCpu(image, [190.3, 60.7, 3.2])).toBeCloseTo(0.5, 6);
+    expect(vdbSampleTrilinearCpu(image, [-2000.5, 100.25, 7.75])).toBeCloseTo(0.25, 6);
+    expect(vdbSampleTrilinearCpu(image, [11.5, 3.5, 3.5])).toBeCloseTo(0.75, 6);
     // Halfway between the upper tile (x=128) and empty space (x=127, outside every leaf/tile).
-    expect(vdbSampleTrilinear(image, [127.5, 64, 64])).toBeCloseTo(0.25, 6);
+    expect(vdbSampleTrilinearCpu(image, [127.5, 64, 64])).toBeCloseTo(0.25, 6);
   });
 
   it("node stats follow NanoVDB GridStats tile weighting", () => {

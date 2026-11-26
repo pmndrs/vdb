@@ -249,7 +249,7 @@ From v1; details in docs/archive/handoffs/.
 - Native OpenVDB/NanoVDB v14 builds without Docker in minutes on macOS: oneTBB from source, then OpenVDB's CMake with `USE_ZSTD=OFF` (Blosc is vendored, Boost gone); NanoVDB is header-only plus one C file for Blosc. Recipe: `packages/vdb/test/tools/fixtures/native-v14/README.md`.
 - Half grids (K7.H, `GridType::Half` = 9): values, tile values, the background AND min/max stats are binary16 at
   2-byte-aligned addresses (root background/min/max at 28/30/32, leaf min/max 80/82, values from 96 at 2 bytes);
-  ave/stddev stay f32 (root 36/40, leaf 84/88). Never read them as f32: use `nodeStats` / `vdbReadValueF32` /
+  ave/stddev stay f32 (root 36/40, leaf 84/88). Never read them as f32: use `nodeStats` / `vdbReadValueF32Cpu` /
   `readImageHeader` or the WGSL readers. Generation transform 8 strips the Half readers from modules without `'half'`.
 - `nanovdb_convert` (even v14) has no Half option: native Half grids come from `createNanoGrid<…, nanovdb::Half>` in
   C++. `pnpm fixtures:bake-half` builds them with OpenVDB v14.0.0 headers (needs the float primitives first).

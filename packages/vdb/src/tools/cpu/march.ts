@@ -322,7 +322,7 @@ export function isActive(gridWords: Uint32Array, ijk: Vec3): boolean {
  * @param gridWords The grid image (little-endian u32 words, `GridData` at word 0).
  * @param ijk Integer index coordinates of the voxel.
  */
-export function vdbReadValueF32(gridWords: Uint32Array, ijk: Vec3): number {
+export function vdbReadValueF32Cpu(gridWords: Uint32Array, ijk: Vec3): number {
   const g = grid(gridWords);
   const path = locate(g, ijk);
   if (path.level !== 0) return readValueSlot(g, path.valueAddress);
@@ -620,7 +620,7 @@ export function nodeAverage(gridWords: Uint32Array, ijk: Vec3, dim: number): num
   const g = grid(gridWords);
   const path = locate(g, ijk);
   const a = DIM_OF_LEVEL[path.level]!;
-  if ((a > 1 && dim <= a) || !g.hasStats || dim <= 1) return vdbReadValueF32(gridWords, ijk);
+  if ((a > 1 && dim <= a) || !g.hasStats || dim <= 1) return vdbReadValueF32Cpu(gridWords, ijk);
   if (dim <= 8) {
     let n = 0;
     for (let w = 0; w < 16; w++) {

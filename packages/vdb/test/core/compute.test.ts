@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
 import { VDBError, VDBGridPool, vdbApplyValueTransform, vdbDecodeToAtlas, vdbGridStats } from "../../src/core/index.js";
 import { kernelWgsl } from "../../src/core/compute/shared.js";
-import { NvdbFile, getDim, vdbReadValueF32 } from "../../src/tools/internal.js";
+import { NvdbFile, getDim, vdbReadValueF32Cpu } from "../../src/tools/internal.js";
 import { computeFake, type FakePass } from "./fake-compute.js";
 import { FakeBuffer, FakeDevice } from "./fake-gpu.js";
 import { makeImage } from "./synthetic-image.js";
@@ -219,6 +219,6 @@ describe("vdbApplyValueTransform", () => {
     const gpu = (pool.buffer as unknown as FakeBuffer).data.subarray(info.imageOffset!, info.imageOffset! + info.imageBytes);
     expect(new Uint8Array(out.buffer, out.byteOffset, out.byteLength)).toEqual(gpu);
     const leaf = ([[-40, -20, -30], [40, 20, 30], [0, 0, 0], [-40, 0, 0]] as [number, number, number][]).find((p) => getDim(image, p) === 1)!;
-    expect(vdbReadValueF32(out, leaf)).toBe(Math.fround(vdbReadValueF32(image, leaf) * 3));
+    expect(vdbReadValueF32Cpu(out, leaf)).toBe(Math.fround(vdbReadValueF32Cpu(image, leaf) * 3));
   }, 30_000); // CPU transform of a full fixture: slow under parallel load
 });

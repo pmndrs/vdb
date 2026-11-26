@@ -33,7 +33,9 @@ encoder, the `./three` one a three renderer or object. Import by path; alias whe
 | `vdbCreatePointPassGpu`, `VDBPointPassGpu`, `VDBPointPassGpuOptions` | `vdbCreatePointPass`, `VDBPointPass`, `VDBPointPassOptions` |
 | `VDBFrameRendererGpu` (type, from `@pmndrs/vdb/three`) | removed: it would collide with the `./three` class. `frameRenderer.core` is typed by the core's `VDBFrameRenderer` |
 | `VDBFrameLoader` (core and `./three`) | `VDBSequenceFrameLoader` |
-| `wvdbPrefixLength`, `nvdbResponseLength`, `vdbMakeFpNLeafCodec` (`@pmndrs/vdb/tools`) | not public API (`tools/internal`); X |
+| `wvdbPrefixLength`, `nvdbResponseLength`, `vdbMakeFpNLeafCodec` (`@pmndrs/vdb/tools`) | not public API (`tools/internal`) |
+| `vdbSampleTrilinear`, `vdbSampleNearest`, `vdbSampleTrilinearVec3` (`@pmndrs/vdb/tools`) | `vdbSampleTrilinearCpu`, `vdbSampleNearestCpu`, `vdbSampleTrilinearVec3Cpu` |
+| `vdbReadValueF32`, `vdbReadValueVec3` (`@pmndrs/vdb/tools`) | `vdbReadValueF32Cpu`, `vdbReadValueVec3Cpu` |
 
 ## Removed names
 

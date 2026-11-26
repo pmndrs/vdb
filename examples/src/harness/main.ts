@@ -3,7 +3,7 @@
  * deterministic voxel probes and trilinear samples across all nine fixtures
  * through the extended vendored WGSL module (`@pmndrs/vdb/pnanovdb.wgsl`),
  * comparing against the CPU reference (`@pmndrs/vdb/tools`'s own `readValue`/
- * `vdbSampleTrilinear` — Phase 1-proven `packages/vdb/src/tools/cpu/*`
+ * `vdbSampleTrilinearCpu` — Phase 1-proven `packages/vdb/src/tools/cpu/*`
  * descent, package-exported since Phase 5's dedup, see
  * docs/archive/handoffs/PHASE-5.md's "Known debts").
  *
@@ -39,7 +39,7 @@
  *     `window.__GPU_PARITY__` (the e2e gate's read channel) and an on-page
  *     table.
  */
-import { NvdbFile, defineNumber, probeCoords, probePoints, vdbReadValueCpu, vdbSampleTrilinear } from "../../../packages/vdb/src/tools/internal.js";
+import { NvdbFile, defineNumber, probeCoords, probePoints, vdbReadValueCpu, vdbSampleTrilinearCpu } from "../../../packages/vdb/src/tools/internal.js";
 import pnanovdbWgsl from "@pmndrs/vdb/pnanovdb.wgsl?raw";
 
 import { HARNESS_FOOTER_WGSL } from "./shader-footer";
@@ -262,7 +262,7 @@ async function run(): Promise<void> {
   // 1. Layout constants for the byte this harness reads straight out of every
   //    grid image (the numeric grid-type id, for logging + the GPU
   //    `harness_grid_type` buffer). `@pmndrs/vdb/tools`'s own `readValue`/
-  //    `vdbSampleTrilinear` (used below as this harness's CPU truth) detect the
+  //    `vdbSampleTrilinearCpu` (used below as this harness's CPU truth) detect the
   //    grid type themselves from the same bytes, so this is the only offset
   //    this file needs directly.
   // -------------------------------------------------------------------------
@@ -385,7 +385,7 @@ async function run(): Promise<void> {
       }
       const expectedTri = new Float32Array(TRILINEAR_COUNT);
       for (let i = 0; i < TRILINEAR_COUNT; i++) {
-        expectedTri[i] = vdbSampleTrilinear(gridImage, points[i]!);
+        expectedTri[i] = vdbSampleTrilinearCpu(gridImage, points[i]!);
       }
 
       // ---- flat GPU inputs ----

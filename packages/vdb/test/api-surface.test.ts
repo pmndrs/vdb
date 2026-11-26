@@ -9,7 +9,8 @@
  * 3. A name exported from two subpaths is one declaration (one `VDBAtlasFilter`, one `VDBVec3`), except the core / `./three`
  *    pairs of D36 (the core object and the `./three` wrapper share a name; the import path tells them apart).
  * 4. D36: no public name ends in `Gpu` (the GPU is the default); a name with a `Cpu` suffix is a CPU function that has a GPU
- *    counterpart, so its unsuffixed name is exported by core or `./three`.
+ *    counterpart, so its unsuffixed name is exported by core or `./three`, once a filter / precision / type qualifier
+ *    (`Trilinear`, `Nearest`, `F32`, `Vec3`) is dropped: `vdbSampleTrilinearCpu` is a twin of `./three`'s `vdbSample`.
  *
  * Internals (`src/{core,tools,three}/internal.ts`) are not package exports and are not snapshotted.
  */
@@ -144,12 +145,18 @@ describe("public API surface (D32)", () => {
   it("D36: no public name has a Gpu suffix; a Cpu name has an unsuffixed GPU counterpart in core or three", () => {
     const names = (sub: Subpath) => new Set(api[sub].map((e) => e.name));
     const gpuSide = new Set([...names("."), ...names("./three")]);
+    // A name and each name left after dropping a trailing qualifier, longest first.
+    const counterparts = (name: string): string[] => {
+      const out = [name];
+      for (let m; (m = /(Trilinear|Nearest|F32|Vec3)$/.exec(out[out.length - 1])); ) out.push(out[out.length - 1].slice(0, m.index));
+      return out;
+    };
     const gpu: string[] = [];
     const orphans: string[] = [];
     for (const sub of Object.keys(SUBPATHS) as Subpath[]) {
       for (const e of api[sub]) {
         if (/Gpu([A-Z]|$)/.test(e.name)) gpu.push(`${e.name} (${sub})`);
-        if (/Cpu/.test(e.name) && !gpuSide.has(e.name.replace("Cpu", ""))) orphans.push(`${e.name} (${sub})`);
+        if (/Cpu/.test(e.name) && !counterparts(e.name.replace("Cpu", "")).some((n) => gpuSide.has(n))) orphans.push(`${e.name} (${sub})`);
       }
     }
     expect(gpu).toEqual([]);

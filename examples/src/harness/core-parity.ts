@@ -35,9 +35,9 @@ import {
   vdbQuantize,
   rayClip,
   rayClipSupport,
-  vdbReadValueF32,
-  vdbSampleNearest,
-  vdbSampleTrilinear,
+  vdbReadValueF32Cpu,
+  vdbSampleNearestCpu,
+  vdbSampleTrilinearCpu,
   treeNodes,
 } from "../../../packages/vdb/src/tools/internal.js";
 import type { HddaSegment, TreeNode, Vec3 } from "../../../packages/vdb/src/tools/internal.js";
@@ -263,12 +263,12 @@ function readRows(image: Uint32Array, seed: number, sidecar: Sidecar | null): Re
   const { min, max } = indexBBox(image);
   const rows: ReadRow[] = probeCoords({ seed: BigInt(seed), count: READ_RANDOM, bboxMin: min, bboxMax: max, dilate: 4 }).map((ijk) => ({
     ijk,
-    value: vdbReadValueF32(image, ijk),
+    value: vdbReadValueF32Cpu(image, ijk),
     active: isActive(image, ijk),
     sidecar: null,
   }));
   for (const s of sidecar?.samples ?? []) {
-    rows.push({ ijk: s.ijk, value: vdbReadValueF32(image, s.ijk), active: isActive(image, s.ijk), sidecar: { value: s.value, active: s.active } });
+    rows.push({ ijk: s.ijk, value: vdbReadValueF32Cpu(image, s.ijk), active: isActive(image, s.ijk), sidecar: { value: s.value, active: s.active } });
   }
   return rows;
 }
@@ -730,7 +730,7 @@ function buildBatch(spec: Spec, grids: Grid[], deadIds: number[], gridCount: num
             c.eq("negative", got === 0 ? 1 : 0, 1, tag(`type ${g.info.type} not compiled: sample ${p} -> ${got}`));
             return;
           }
-          const want = tri ? vdbSampleTrilinear(g.image, p, opt) : vdbSampleNearest(g.image, p, opt);
+          const want = tri ? vdbSampleTrilinearCpu(g.image, p, opt) : vdbSampleNearestCpu(g.image, p, opt);
           const d = Math.abs(got - want);
           if (tri) c.rec("sample", d <= SAMPLE_TOL * Math.max(1, Math.abs(want)), () => `${tag(`trilinear ${p}`)()}: gpu ${got} want ${want}`, d);
           else c.val("sample", got, fr(want), tag(`nearest ${p}`));
@@ -800,7 +800,7 @@ function buildBatch(spec: Spec, grids: Grid[], deadIds: number[], gridCount: num
         b.add(6, g.id, p, (out, o) => {
           // The GPU's own index position is the oracle's input: this checks the shader composes the two calls consistently.
           const idx: Vec3 = [out[o + 1]!, out[o + 2]!, out[o + 3]!];
-          const want = tri ? vdbSampleTrilinear(g.image, idx, opt) : vdbSampleNearest(g.image, idx, opt);
+          const want = tri ? vdbSampleTrilinearCpu(g.image, idx, opt) : vdbSampleNearestCpu(g.image, idx, opt);
           const d = Math.abs(out[o]! - want);
           c.rec("world-sample", d <= SAMPLE_TOL * Math.max(1, Math.abs(want)), () => `${tag(`world ${p} -> idx ${idx}`)()}: gpu ${out[o]} want ${want}`, d);
         });

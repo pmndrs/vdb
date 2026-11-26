@@ -25,9 +25,9 @@ import {
   buildFromVdbDetailed,
   type VDBBuiltGrid,
   vdbReadValueCpu,
-  vdbReadValueVec3,
+  vdbReadValueVec3Cpu,
   readWvdb,
-  vdbSampleTrilinearVec3,
+  vdbSampleTrilinearVec3Cpu,
   writeNvdb,
   type VdbFile,
   type VdbGrid,
@@ -147,7 +147,7 @@ describe.skipIf(!has("explosion.vdb"))("explosion.vdb — every grid, incl. the 
       image = undefined as unknown as Uint32Array;
     });
 
-    it("vdbReadValueVec3 equals the parsed tree at every active voxel and 4000 random bbox coords", () => {
+    it("vdbReadValueVec3Cpu equals the parsed tree at every active voxel and 4000 random bbox coords", () => {
       expect(built.voxelCount).toBe(Number(v.activeVoxelCount));
       expect(built.indexBBox).toEqual({ min: v.metadata["file_bbox_min"], max: v.metadata["file_bbox_max"] });
       let mismatches = 0;
@@ -155,7 +155,7 @@ describe.skipIf(!has("explosion.vdb"))("explosion.vdb — every grid, incl. the 
         for (let n = 0; n < 512; n++) {
           if (!isOn(leaf.valueMask, n)) continue;
           const ijk = leafCoord(leaf.origin, n);
-          const got = vdbReadValueVec3(image, ijk);
+          const got = vdbReadValueVec3Cpu(image, ijk);
           const want = v.readValue(ijk);
           if (!got.active || got.value[0] !== want.value[0] || got.value[1] !== want.value[1] || got.value[2] !== want.value[2]) {
             mismatches++;
@@ -168,11 +168,11 @@ describe.skipIf(!has("explosion.vdb"))("explosion.vdb — every grid, incl. the 
       const hi = v.metadata["file_bbox_max"] as Coord;
       for (let i = 0; i < 4000; i++) {
         const ijk = [0, 1, 2].map((a) => lo[a]! - 4 + Math.floor(r() * (hi[a]! - lo[a]! + 9))) as Coord;
-        expect(vdbReadValueVec3(image, ijk)).toEqual(v.readValue(ijk));
+        expect(vdbReadValueVec3Cpu(image, ijk)).toEqual(v.readValue(ijk));
       }
     });
 
-    it("vdbSampleTrilinearVec3 is componentwise trilinear of the parsed tree (500 points)", () => {
+    it("vdbSampleTrilinearVec3Cpu is componentwise trilinear of the parsed tree (500 points)", () => {
       const r = rng(7);
       const lo = v.metadata["file_bbox_min"] as Coord;
       const hi = v.metadata["file_bbox_max"] as Coord;
@@ -189,7 +189,7 @@ describe.skipIf(!has("explosion.vdb"))("explosion.vdb — every grid, incl. the 
           const c11 = lerp(tap(0, 1, 1)[c]!, tap(1, 1, 1)[c]!, f[0]!);
           return lerp(lerp(c00, c10, f[1]!), lerp(c01, c11, f[1]!), f[2]!);
         });
-        expect(vdbSampleTrilinearVec3(image, p)).toEqual(want);
+        expect(vdbSampleTrilinearVec3Cpu(image, p)).toEqual(want);
       }
     });
 

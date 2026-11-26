@@ -118,10 +118,10 @@ export type { VDBBakeCoarseFirstOptions } from "./nanovdb/index.js";
  * trilinear samplers on it. `vdbReadValueCpu` carries the `Cpu` suffix because
  * `@pmndrs/vdb/three` exports the GPU `vdbReadValue` (D32).
  */
-export { vdbReadValueCpu, vdbReadValueVec3 } from "./cpu/read-value.js";
+export { vdbReadValueCpu, vdbReadValueVec3Cpu } from "./cpu/read-value.js";
 export type { VDBReadResult, VDBReadVec3Result } from "./cpu/read-value.js";
-export { vdbReadValueF32 } from "./cpu/march.js";
-export { vdbSampleNearest, vdbSampleTrilinear, vdbSampleTrilinearVec3 } from "./cpu/sample-trilinear.js";
+export { vdbReadValueF32Cpu } from "./cpu/march.js";
+export { vdbSampleNearestCpu, vdbSampleTrilinearCpu, vdbSampleTrilinearVec3Cpu } from "./cpu/sample-trilinear.js";
 export type { VDBSampleCpuOptions } from "./cpu/sample-trilinear.js";
 
 /**

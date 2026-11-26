@@ -19,6 +19,9 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
   apart; `./three` wraps the core object): alias when you import both. `@pmndrs/vdb/three` no longer exports the type
   `VDBFrameRendererGpu` (import `VDBFrameRenderer` from `@pmndrs/vdb`).
 - `VDBFrameLoader` → `VDBSequenceFrameLoader` (core and `./three`).
+- `@pmndrs/vdb/tools`: the CPU samplers and readers take the `Cpu` suffix like `vdbReadValueCpu`: `vdbSampleTrilinear` /
+  `vdbSampleNearest` / `vdbSampleTrilinearVec3` → `vdbSampleTrilinearCpu` / `vdbSampleNearestCpu` /
+  `vdbSampleTrilinearVec3Cpu`, `vdbReadValueF32` / `vdbReadValueVec3` → `vdbReadValueF32Cpu` / `vdbReadValueVec3Cpu`.
 - `wvdbPrefixLength`, `nvdbResponseLength` and `vdbMakeFpNLeafCodec` are no longer exported from `@pmndrs/vdb/tools`
   (they are in `tools/internal`).
 

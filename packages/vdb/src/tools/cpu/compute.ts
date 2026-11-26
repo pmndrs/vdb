@@ -15,7 +15,7 @@
  */
 import { VDBToolsError } from "../errors.js";
 import { vdbHalfToFloat } from "../nanovdb/half.js";
-import { indexBBox, isActive, vdbReadValueF32, treeNodes, type Vec3 } from "./march.js";
+import { indexBBox, isActive, vdbReadValueF32Cpu, treeNodes, type Vec3 } from "./march.js";
 import { defineNumber, gridTypeConstantsFor, gridTypeConstantsForId, gridTypeIds } from "./stride-tables.js";
 
 const f = Math.fround;
@@ -123,7 +123,7 @@ export function vdbGridStatsCpu(gridWords: Uint32Array, options: VDBGridStatsCpu
         ijk[1] = y;
         ijk[2] = z;
         if (!isActive(gridWords, ijk)) continue;
-        const v = vdbReadValueF32(gridWords, ijk);
+        const v = vdbReadValueF32Cpu(gridWords, ijk);
         count++;
         if (v < min) min = v;
         if (v > max) max = v;
@@ -221,7 +221,7 @@ export function vdbDecodeToAtlasCpu(
       for (let x = 0; x < dims[0]; x++) {
         const g: Vec3 = [x, y, z];
         for (let a = 0; a < 3; a++) pos[a] = f(bbox.min[a]! + f(f(f(f(g[a]! + 0.5) * size[a]!) / dims[a]!) - 0.5));
-        raw[i++] = trilinear ? trilinearF32(gridWords, pos) : vdbReadValueF32(gridWords, [Math.floor(f(pos[0] + 0.5)), Math.floor(f(pos[1] + 0.5)), Math.floor(f(pos[2] + 0.5))]);
+        raw[i++] = trilinear ? trilinearF32(gridWords, pos) : vdbReadValueF32Cpu(gridWords, [Math.floor(f(pos[0] + 0.5)), Math.floor(f(pos[1] + 0.5)), Math.floor(f(pos[2] + 0.5))]);
       }
     }
   }
@@ -232,7 +232,7 @@ export function vdbDecodeToAtlasCpu(
 function trilinearF32(gridWords: Uint32Array, xyz: Vec3): number {
   const b: Vec3 = [Math.floor(xyz[0]), Math.floor(xyz[1]), Math.floor(xyz[2])];
   const u = [f(xyz[0] - b[0]), f(xyz[1] - b[1]), f(xyz[2] - b[2])];
-  const tap = (dx: number, dy: number, dz: number) => vdbReadValueF32(gridWords, [b[0] + dx, b[1] + dy, b[2] + dz]);
+  const tap = (dx: number, dy: number, dz: number) => vdbReadValueF32Cpu(gridWords, [b[0] + dx, b[1] + dy, b[2] + dz]);
   const mix = (a: number, c: number, t: number) => f(a + f(t * f(c - a)));
   const x00 = mix(tap(0, 0, 0), tap(1, 0, 0), u[0]!);
   const x10 = mix(tap(0, 1, 0), tap(1, 1, 0), u[0]!);

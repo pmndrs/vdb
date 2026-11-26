@@ -12,9 +12,9 @@ import {
   indexBBox,
   isActive,
   vdbReadValueCpu,
-  vdbReadValueF32,
+  vdbReadValueF32Cpu,
   rootStats,
-  vdbSampleTrilinear,
+  vdbSampleTrilinearCpu,
   transformLeafValues,
 } from "../../src/tools/internal.js";
 
@@ -114,11 +114,11 @@ describe.skipIf(FIXTURES.length === 0)("vdbDecodeToAtlasCpu", () => {
     for (let z = 0; z < dims[2]; z++)
       for (let y = 0; y < dims[1]; y++)
         for (let x = 0; x < dims[0]; x++) {
-          if (raw[i] !== vdbReadValueF32(image, [min[0] + x, min[1] + y, min[2] + z])) throw new Error(`cell ${x},${y},${z} is not voxel min + i`);
+          if (raw[i] !== vdbReadValueF32Cpu(image, [min[0] + x, min[1] + y, min[2] + z])) throw new Error(`cell ${x},${y},${z} is not voxel min + i`);
           i++;
         }
     // The last cell is voxel max, not the background past it.
-    expect(raw[raw.length - 1]).toBe(vdbReadValueF32(image, [max[0], max[1], max[2]]));
+    expect(raw[raw.length - 1]).toBe(vdbReadValueF32Cpu(image, [max[0], max[1], max[2]]));
   });
 
   it.each(FIXTURES)("%s: full-resolution trilinear cell i equals voxel min + i (no blending)", (name) => {
@@ -130,11 +130,11 @@ describe.skipIf(FIXTURES.length === 0)("vdbDecodeToAtlasCpu", () => {
       const y = Math.floor(i / dims[0]) % dims[1];
       const z = Math.floor(i / (dims[0] * dims[1]));
       // `+ 0` folds -0 (a lerp of equal zeros) into +0.
-      expect(raw[i]! + 0).toBe(vdbReadValueF32(image, [min[0] + x, min[1] + y, min[2] + z]) + 0);
+      expect(raw[i]! + 0).toBe(vdbReadValueF32Cpu(image, [min[0] + x, min[1] + y, min[2] + z]) + 0);
     }
   });
 
-  it.each(FIXTURES)("%s: trilinear agrees with the f64 vdbSampleTrilinear twin to f32 rounding", (name) => {
+  it.each(FIXTURES)("%s: trilinear agrees with the f64 vdbSampleTrilinearCpu twin to f32 rounding", (name) => {
     const image = load(name);
     const { raw, dims } = vdbDecodeToAtlasCpu(image, { maxDim: 24 });
     const bbox = indexBBox(image);
@@ -143,7 +143,7 @@ describe.skipIf(FIXTURES.length === 0)("vdbDecodeToAtlasCpu", () => {
     for (let i = 0; i < raw.length; i += 7) {
       const g = [i % dims[0], Math.floor(i / dims[0]) % dims[1], Math.floor(i / (dims[0] * dims[1]))];
       const p = [0, 1, 2].map((a) => bbox.min[a]! + ((g[a]! + 0.5) * size[a]!) / dims[a]! - 0.5) as [number, number, number];
-      maxAbs = Math.max(maxAbs, Math.abs(raw[i]! - vdbSampleTrilinear(image, p)));
+      maxAbs = Math.max(maxAbs, Math.abs(raw[i]! - vdbSampleTrilinearCpu(image, p)));
     }
     expect(maxAbs).toBeLessThan(1e-4);
   });
@@ -162,10 +162,10 @@ describe.skipIf(!has("box_fog_float"))("transformLeafValues", () => {
       const ijk = [0, 1, 2].map((a) => min[a]! + ((n * [7919, 104729, 1299709][a]!) % (max[a]! - min[a]! + 1))) as [number, number, number];
       if (getDim(image, ijk) === 1) {
         leaves++;
-        expect(vdbReadValueF32(out, ijk)).toBe(Math.fround(vdbReadValueF32(image, ijk) * 2 + 1));
+        expect(vdbReadValueF32Cpu(out, ijk)).toBe(Math.fround(vdbReadValueF32Cpu(image, ijk) * 2 + 1));
       } else {
         tiles++;
-        expect(vdbReadValueF32(out, ijk)).toBe(vdbReadValueF32(image, ijk));
+        expect(vdbReadValueF32Cpu(out, ijk)).toBe(vdbReadValueF32Cpu(image, ijk));
       }
       expect(isActive(out, ijk)).toBe(isActive(image, ijk));
     }

@@ -18,7 +18,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { NvdbFile, VDB_HALF_LEAF_CODEC, vdbBuildFromLeavesDetailed, vdbFloatToHalf, vdbHalfToFloat, vdbQuantize, vdbReadValueCpu } from "../../src/tools/index.js";
-import { isActive, nodeStats, treeNodes, vdbReadValueF32, type TreeNode, type Vec3 } from "../../src/tools/cpu/march.js";
+import { isActive, nodeStats, treeNodes, vdbReadValueF32Cpu, type TreeNode, type Vec3 } from "../../src/tools/cpu/march.js";
 
 const FIXTURES = new URL("../../../../fixtures/", import.meta.url);
 const read = (rel: string) => readFileSync(new URL(rel, FIXTURES));
@@ -193,7 +193,7 @@ describe("half_edge: our writer vs native createNanoGrid<build::Grid<float>, Hal
     const native = loadImage("half/half_edge.nvdb");
     for (const v of sc.voxels) {
       expect(halfBits(native, v.ijk)).toBe(v.bits);
-      expect(vdbFloatToHalf(vdbReadValueF32(native, v.ijk))).toBe(v.bits);
+      expect(vdbFloatToHalf(vdbReadValueF32Cpu(native, v.ijk))).toBe(v.bits);
     }
     for (const p of sc.inactive) expect(halfBits(native, p.ijk)).toBe(p.bits);
     expect(leafValuesHash(native)).toBe(sc.native.leafValuesFnv1a);
@@ -253,7 +253,7 @@ describe.each(PRIMITIVES)("%s: vdbQuantize(float, 'half') vs native createNanoGr
     const native = loadImage(`primitives/${name}_half.nvdb`);
     for (const s of sc.samples) {
       expect(halfBits(native, s.ijk), `${s.ijk}`).toBe(s.bits);
-      expect(vdbReadValueF32(native, s.ijk)).toBe(Math.fround(s.value));
+      expect(vdbReadValueF32Cpu(native, s.ijk)).toBe(Math.fround(s.value));
       expect(isActive(native, s.ijk)).toBe(s.active);
     }
     expect(leafValuesHash(native)).toBe(sc.native.leafValuesFnv1a);

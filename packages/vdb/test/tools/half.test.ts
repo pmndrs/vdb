@@ -18,9 +18,9 @@ import {
   vdbInspect,
   vdbQuantize,
   vdbReadValueCpu,
-  vdbReadValueF32,
+  vdbReadValueF32Cpu,
   vdbRoundToHalf,
-  vdbSampleTrilinear,
+  vdbSampleTrilinearCpu,
   writeNvdb,
 } from "../../src/tools/index.js";
 import { defaultValueMax, nodeMax, nodeStats, treeNodes, leafVoxels } from "../../src/tools/cpu/march.js";
@@ -204,7 +204,7 @@ describe("vdbQuantize(…, 'half')", () => {
           expect(got.active).toBe(src.active);
           const want = vdbRoundToHalf(src.value);
           if (got.value !== want) expect(got.value, `${x},${y},${z}`).toBe(want);
-          const g32 = vdbReadValueF32(half, [x, y, z]);
+          const g32 = vdbReadValueF32Cpu(half, [x, y, z]);
           if (g32 !== want) expect(g32, `f32 twin ${x},${y},${z}`).toBe(want);
           if (src.active && src.value === 2.5) tiles++;
         }
@@ -257,8 +257,8 @@ describe("vdbQuantize(…, 'half')", () => {
 
   it("samples trilinearly between halves", () => {
     const p: [number, number, number] = [13.25, 12.5, 14.75];
-    const s = vdbSampleTrilinear(half, p);
-    const ref = vdbSampleTrilinear(floatImg, p);
+    const s = vdbSampleTrilinearCpu(half, p);
+    const ref = vdbSampleTrilinearCpu(floatImg, p);
     expect(Math.abs(s - ref)).toBeLessThan(4 * 2 ** -11);
   });
 

@@ -2,7 +2,7 @@
  * K4.6: uniform regions collapse into tiles in our own builds (OpenVDB
  * `tools::prune`, tolerance 0).
  *
- * Oracles: the CPU reader (`readValue`, `vdbSampleTrilinear`) on the image built
+ * Oracles: the CPU reader (`readValue`, `vdbSampleTrilinearCpu`) on the image built
  * without collapse; the K4.1 tile path (a collapsed build must be the same
  * bytes as the same tree given as explicit tiles); NanoVDB GridStats tile
  * weights computed by hand; and SHA-256 digests of re-encoded native fixtures
@@ -27,8 +27,8 @@ import {
   vdbResampleGrid,
   treeNodes,
 } from "../../src/tools/internal.js";
-import { vdbReadValueCpu, vdbReadValueVec3 } from "../../src/tools/cpu/read-value.js";
-import { vdbSampleTrilinear } from "../../src/tools/cpu/sample-trilinear.js";
+import { vdbReadValueCpu, vdbReadValueVec3Cpu } from "../../src/tools/cpu/read-value.js";
+import { vdbSampleTrilinearCpu } from "../../src/tools/cpu/sample-trilinear.js";
 import { VDB_FLOAT_LEAF_CODEC, VDB_VEC3F_LEAF_CODEC } from "../../src/tools/nanovdb/leaf-codec.js";
 import { vdbBuildFromLeavesDetailed } from "../../src/tools/nanovdb/serialize.js";
 import type { LeafInput, TileInput } from "../../src/tools/nanovdb/tree.js";
@@ -109,11 +109,11 @@ describe("collapse: vdbBuildFromDense", () => {
     expect(off.image.byteLength - on.image.byteLength).toBe(4097 * 2144 + 33856);
   });
 
-  it("every voxel reads the same value and state (readValue, vdbSampleTrilinear)", () => {
+  it("every voxel reads the same value and state (readValue, vdbSampleTrilinearCpu)", () => {
     expect(expectSameValues(off.image, on.image, [-2, -2, -2], [145, 137, 129], 1)).toBeGreaterThan(2.5e6);
     for (let k = 0; k < 2000; k++) {
       const p: Coord = [((k * 37) % 1460) / 10 - 1, ((k * 53) % 1380) / 10 - 1, ((k * 71) % 1300) / 10 - 1];
-      expect(vdbSampleTrilinear(on.image, p)).toBe(vdbSampleTrilinear(off.image, p));
+      expect(vdbSampleTrilinearCpu(on.image, p)).toBe(vdbSampleTrilinearCpu(off.image, p));
     }
   });
 
@@ -230,8 +230,8 @@ describe("collapse: rules (OpenVDB isConstant at tolerance 0)", () => {
     const on = vdbBuildFromLeavesDetailed(leaves, VDB_VEC3F_LEAF_CODEC, { collapse: true });
     expect(on.nodeCounts.leaf).toBe(1);
     expect(on.tileCounts.lower).toBe(1);
-    expect(vdbReadValueVec3(on.image, [3, 4, 5]).value).toEqual([1, 2, 3]);
-    expect(vdbReadValueVec3(on.image, [8, 1, 1]).value).toEqual([1, 2, 4]); // offset 9 = (0, 1, 1)
+    expect(vdbReadValueVec3Cpu(on.image, [3, 4, 5]).value).toEqual([1, 2, 3]);
+    expect(vdbReadValueVec3Cpu(on.image, [8, 1, 1]).value).toEqual([1, 2, 4]); // offset 9 = (0, 1, 1)
   });
 });
 

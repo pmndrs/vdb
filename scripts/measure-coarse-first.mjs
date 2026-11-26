@@ -11,7 +11,7 @@
  * level 9 (Node zlib) of the `.nvdb` file, standing in for HTTP compression as in
  * the comparison report (docs/dev/research/INDEX). Errors are `vdbResampleError`: mean |diff|
  * over every 7th active source voxel as % of the mean, target read back with
- * `vdbSampleTrilinear`.
+ * `vdbSampleTrilinearCpu`.
  *
  * "Stream offset" = how many gzip bytes of the whole multi-grid file a streaming
  * decoder must receive before the first grid (file header + its metadata + image)

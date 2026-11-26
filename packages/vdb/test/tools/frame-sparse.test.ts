@@ -3,9 +3,9 @@ import {
   vdbBuildFromDenseDetailed,
   indexBBox,
   nodeAverage,
-  vdbReadValueF32,
+  vdbReadValueF32Cpu,
   readWvdb,
-  vdbSampleTrilinear,
+  vdbSampleTrilinearCpu,
   vdbBoxMipAtlasF32,
   vdbBoxPyramid,
   vdbFrameNodeAverageSample,
@@ -56,7 +56,7 @@ describe("wvdbDenseToNvdb: the dense texels as a NanoVDB FLOAT grid", () => {
       const x = i % w;
       const y = Math.floor(i / w) % h;
       const z = Math.floor(i / (w * h));
-      expect(vdbReadValueF32(grid.image, [x, y, z])).toBe(Math.fround(tex[i]! / 255));
+      expect(vdbReadValueF32Cpu(grid.image, [x, y, z])).toBe(Math.fround(tex[i]! / 255));
       if (tex[i]) nonZero++;
     }
     expect(nonZero).toBeGreaterThan(1000);
@@ -136,7 +136,7 @@ describe("wvdbDenseToNvdb: the dense texels as a NanoVDB FLOAT grid", () => {
           expected += wgt * texel(i0[0]! + dx, i0[1]! + dy, i0[2]! + dz);
         }
         const ijk = [0, 1, 2].map((a) => (p[a]! - vec[a]!) * inv[a * 4]!) as V3;
-        const got = vdbSampleTrilinear(grid.image, ijk);
+        const got = vdbSampleTrilinearCpu(grid.image, ijk);
         expect(got).toBeCloseTo(expected, 5);
         if (expected > 0.05) nonZero++;
       }
@@ -278,7 +278,7 @@ describe("vdbFrameSkipEmpty (twin of the shadow march's HDDA query)", () => {
           const s = t + ((ts - t) * (k + 0.5)) / 24;
           if (s >= ts) continue;
           const p: V3 = [o[0] + d[0] * s, o[1] + d[1] * s, o[2] + d[2] * s];
-          expect(vdbSampleTrilinear(img, p)).toBe(0);
+          expect(vdbSampleTrilinearCpu(img, p)).toBe(0);
         }
         skipped += ts - t;
         if (ts >= t1) break;
@@ -302,11 +302,11 @@ describe("vdbFrameSkipEmpty (twin of the shadow march's HDDA query)", () => {
         const p: V3 = [o[0] + d[0] * s, o[1] + d[1] * s, o[2] + d[2] * s];
         // The level-0 tap and the level-3 node-average tap are 0, and (first sample of each ray, brute force)
         // every voxel a level-2 pyramid tap reaches, floor(p) − 6 … floor(p) + 7, is 0.
-        expect(vdbSampleTrilinear(img, p)).toBe(0);
+        expect(vdbSampleTrilinearCpu(img, p)).toBe(0);
         expect(vdbFrameNodeAverageSample(img, p, 8)).toBe(0);
         if (k === 0 && r % 4 === 0) {
           const b: V3 = [Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2])];
-          for (let z = -6; z <= 7; z++) for (let y = -6; y <= 7; y++) for (let x = -6; x <= 7; x++) expect(vdbReadValueF32(img, [b[0] + x, b[1] + y, b[2] + z])).toBe(0);
+          for (let z = -6; z <= 7; z++) for (let y = -6; y <= 7; y++) for (let x = -6; x <= 7; x++) expect(vdbReadValueF32Cpu(img, [b[0] + x, b[1] + y, b[2] + z])).toBe(0);
         }
       }
     }

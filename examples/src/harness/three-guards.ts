@@ -24,7 +24,7 @@ import { Fn, float, instanceIndex, ivec3, storage, uint, vec3 } from "three/tsl"
 import { StorageBufferAttribute } from "three/webgpu";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { VDBGridNode, VDBVolumeMaterial, getDevice, vdbReadValue, vdbSample } from "@pmndrs/vdb/three";
-import { NvdbFile, vdbReadValueF32 } from "@pmndrs/vdb/tools";
+import { NvdbFile, vdbReadValueF32Cpu } from "@pmndrs/vdb/tools";
 
 interface Thrown {
   threw: boolean;
@@ -107,7 +107,7 @@ async function run(result: Result): Promise<Result> {
   await pool.settled();
   const info = pool.info(id);
   const mid = [0, 1, 2].map((a) => Math.floor((info.indexBBox.min[a]! + info.indexBBox.max[a]!) / 2)) as [number, number, number];
-  const expected = vdbReadValueF32(image, mid);
+  const expected = vdbReadValueF32Cpu(image, mid);
 
   const counts: number[] = [];
   const gridsA = new VDBGridNode(rendererA, pool, { types: ["float"], helpers: ["rayClipSupport"] });

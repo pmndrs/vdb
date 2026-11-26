@@ -8,7 +8,7 @@ passes, pure-TypeScript CPU tools and a thin three.js adapter. One package, thre
 | Import | What it is | Needs a GPU / three? |
 |---|---|---|
 | `@pmndrs/vdb` | the engine-free WebGPU core: `VDBGridPool`, the generated `vdb*` WGSL module (`vdbModuleWgsl`), GPU compute tools, the froxel renderer (`vdbCreateFrameRenderer`), volume sources (`vdbSparseSource`, `vdbDenseSource`), level-set and point passes, `VDBSequence` | WebGPU, no engine |
-| `@pmndrs/vdb/tools` | CPU side: `.nvdb` and `.wvdb` read/write, CPU reads (`vdbReadValueCpu`, `vdbSampleTrilinear`), `.vdb` parser, NanoVDB builder, quantizer, resampler | no |
+| `@pmndrs/vdb/tools` | CPU side: `.nvdb` and `.wvdb` read/write, CPU reads (`vdbReadValueCpu`, `vdbSampleTrilinearCpu`), `.vdb` parser, NanoVDB builder, quantizer, resampler | no |
 | `@pmndrs/vdb/three` | the three.js adapter: `VDBGridNode` (a pool in three's node system), `VDBVolumeMaterial`, `VDBFrameVolume` / `VDBFrameRenderer` (the core's froxel renderer on three's device), `VDBLevelSetMaterial`, `VDBPoints`, compute utilities | `three` (optional peer, `>=0.187.0 <0.188.0`) |
 | `@pmndrs/vdb/pnanovdb.wgsl` | the raw WGSL text (use `?raw` in Vite) | no |
 
@@ -52,8 +52,8 @@ Demo 17 is a full raw-WebGPU page; see
   or read the file yourself) and splice it into your own shader.
 - **`NvdbFile`** (`@pmndrs/vdb/tools`) — parses a `.nvdb` file (header + per-grid metadata +
   grid images), handling the NONE/ZIP codecs.
-- **A pure-TypeScript CPU reference** (`@pmndrs/vdb/tools`: `vdbReadValueCpu`, `vdbReadValueF32`,
-  `vdbSampleTrilinear`) — the exact same tree descent as the WGSL
+- **A pure-TypeScript CPU reference** (`@pmndrs/vdb/tools`: `vdbReadValueCpu`, `vdbReadValueF32Cpu`,
+  `vdbSampleTrilinearCpu`) — the exact same tree descent as the WGSL
   module, so you can sanity-check GPU results or read voxels with no GPU
   at all (Node, workers, tests).
 

@@ -8,7 +8,7 @@
  *  - the file's own `file_voxel_count` metadata, written by OpenVDB, for the
  *    parsed active-voxel count (leaf masks plus 512 per lower tile);
  *  - the parsed `.vdb` tree's `readValue` for the NanoVDB image read through
- *    the proven CPU reader (`readValue`, `vdbSampleTrilinear`), at every tile
+ *    the proven CPU reader (`readValue`, `vdbSampleTrilinearCpu`), at every tile
  *    voxel, thousands of random active leaf voxels and random bbox coords.
  *
  * Skipped when the asset is absent (`pnpm fixtures:vdb-samples` does not fetch
@@ -22,7 +22,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { buildFromVdbDetailed, type VDBBuiltGrid } from "../../src/tools/index.js";
 import { vdbReadValueCpu } from "../../src/tools/cpu/read-value.js";
-import { vdbSampleTrilinear } from "../../src/tools/cpu/sample-trilinear.js";
+import { vdbSampleTrilinearCpu } from "../../src/tools/cpu/sample-trilinear.js";
 import { parseVdb } from "../../src/tools/vdb/index.js";
 import type { VdbGrid, VdbLeaf, VdbTile } from "../../src/tools/vdb/types.js";
 
@@ -128,7 +128,7 @@ describe.skipIf(!existsSync(BUNNY))("bunny_cloud.vdb — parse, build, CPU-oracl
     expect(mismatches).toBe(0);
   });
 
-  it("vdbSampleTrilinear matches trilinear interpolation of the parsed tree", () => {
+  it("vdbSampleTrilinearCpu matches trilinear interpolation of the parsed tree", () => {
     const rand = rng(0xb0b);
     const { min, max } = grid.indexBBox!;
     const tap = (x: number, y: number, z: number): number => grid.readValue([x, y, z]).value;
@@ -154,7 +154,7 @@ describe.skipIf(!existsSync(BUNNY))("bunny_cloud.vdb — parse, build, CPU-oracl
         ),
         fz,
       );
-      maxErr = Math.max(maxErr, Math.abs(vdbSampleTrilinear(built.image, p) - want));
+      maxErr = Math.max(maxErr, Math.abs(vdbSampleTrilinearCpu(built.image, p) - want));
     }
     expect(maxErr).toBe(0);
   });

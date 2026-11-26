@@ -80,17 +80,17 @@ console.log(parseNvdbLodName(nvdbLodName('cloud', 48))); // { baseName: 'cloud',
 
 `vdbReadValueCpu` and the sampling functions are the WGSL module's tree descent in TypeScript, so you can check GPU results
 or read voxels with no GPU. They take a grid image and **index-space** coordinates. `vdbReadValueCpu` is the exact f64 decode;
-`vdbReadValueF32` matches the shader's f32 arithmetic and is the oracle for GPU parity. They read Float, Fp4, Fp8, Fp16, FpN and Half
-grids (and `vdbReadValueVec3` / `vdbSampleTrilinearVec3` read Vec3f).
+`vdbReadValueF32Cpu` matches the shader's f32 arithmetic and is the oracle for GPU parity. They read Float, Fp4, Fp8, Fp16, FpN and Half
+grids (and `vdbReadValueVec3Cpu` / `vdbSampleTrilinearVec3Cpu` read Vec3f).
 
 {/* snippet: cpu-reads */}
 ```ts
-import { vdbReadValueCpu, vdbSampleTrilinear } from '@pmndrs/vdb/tools';
+import { vdbReadValueCpu, vdbSampleTrilinearCpu } from '@pmndrs/vdb/tools';
 
 // The same tree descent as the WGSL module, in TypeScript: an oracle for GPU results, no GPU needed.
 // Index space: the integer coordinates are voxels. (Float, Fp4, Fp8, Fp16, FpN and Half grids.)
 console.log(vdbReadValueCpu(image, [10, 20, 30])); // { value, active }
-console.log(vdbSampleTrilinear(image, [10.5, 20.25, 30])); // continuous index-space sample
+console.log(vdbSampleTrilinearCpu(image, [10.5, 20.25, 30])); // continuous index-space sample
 ```
 
 `vdbGridStatsCpu` and `vdbDecodeToAtlasCpu` are the CPU versions of the core's compute tools. Every WGSL entry point

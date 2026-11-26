@@ -26,7 +26,7 @@ const WGSL_PATCHES: VDBWgslPatches = {
 };
 const MUTATE = new URLSearchParams(location.search).get("mutate") ?? "none";
 import type { VDBAtlasFilter, VDBAtlasFormat, VDBDecodeToAtlasOptions } from "@pmndrs/vdb";
-import { NvdbFile, atlasFromRaw, vdbBuildFromDense, vdbDecodeToAtlasCpu, vdbGridStatsCpu, getDim, vdbReadValueF32 } from "../../../packages/vdb/src/tools/internal.js";
+import { NvdbFile, atlasFromRaw, vdbBuildFromDense, vdbDecodeToAtlasCpu, vdbGridStatsCpu, getDim, vdbReadValueF32Cpu } from "../../../packages/vdb/src/tools/internal.js";
 
 interface StatsCheck {
   grid: string;
@@ -272,8 +272,8 @@ async function run(): Promise<ComputeReport> {
     const [lo, hi] = [info.indexBBox.min, info.indexBBox.max];
     for (let n = 0; n < 4000; n++) {
       const ijk: [number, number, number] = [0, 1, 2].map((a) => lo[a]! + ((n * [7919, 104729, 1299709][a]!) % (hi[a]! - lo[a]! + 1))) as [number, number, number];
-      const before = vdbReadValueF32(source, ijk);
-      const after = vdbReadValueF32(transformed, ijk);
+      const before = vdbReadValueF32Cpu(source, ijk);
+      const after = vdbReadValueF32Cpu(transformed, ijk);
       if (getDim(source, ijk) === 1) {
         leafSamples++;
         if (!Object.is(after, Math.fround(before * 2))) leafDoubled = false;

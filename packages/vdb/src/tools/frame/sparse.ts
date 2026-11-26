@@ -24,7 +24,7 @@
  */
 
 import { VDBToolsError } from "../errors.js";
-import { cellBoundTrilinear, hddaCellEnd, hddaInit, hddaStep, indexBBox, leafVoxels, nodeAverage, nodeMax, treeNodes, vdbReadValueF32, type Vec3 } from "../cpu/march.js";
+import { cellBoundTrilinear, hddaCellEnd, hddaInit, hddaStep, indexBBox, leafVoxels, nodeAverage, nodeMax, treeNodes, vdbReadValueF32Cpu, type Vec3 } from "../cpu/march.js";
 import { halfToFloat } from "../vdb/half-float.js";
 import { vdbResampleGrid } from "../nanovdb/resample.js";
 import { GRID_OFF_MAP, MAP_OFF_MATD, MAP_OFF_VECD } from "../nanovdb/bytes.js";
@@ -323,7 +323,7 @@ function level0(image: Uint32Array, p: Vec3): { value: number; scale: number } {
   const b = p.map(Math.floor) as Vec3;
   const w = p.map((v, i) => v - b[i]!);
   const t: number[] = [];
-  for (let k = 0; k < 8; k++) t.push(vdbReadValueF32(image, [b[0] + (k & 1), b[1] + ((k >> 1) & 1), b[2] + ((k >> 2) & 1)]));
+  for (let k = 0; k < 8; k++) t.push(vdbReadValueF32Cpu(image, [b[0] + (k & 1), b[1] + ((k >> 1) & 1), b[2] + ((k >> 2) & 1)]));
   const lerp = (a: number, c: number, s: number) => a + (c - a) * s;
   const x00 = lerp(t[0]!, t[1]!, w[0]!);
   const x10 = lerp(t[2]!, t[3]!, w[0]!);
