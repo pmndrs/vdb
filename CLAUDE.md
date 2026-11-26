@@ -592,5 +592,11 @@ From v1; details in docs/archive/handoffs/.
   declarations (different objects). A file importing both aliases the core's (`VDBFrameRenderer as VDBCoreFrameRenderer`);
   a rename by search-and-replace of `XGpu` → `X` breaks every `./three` file that imports from the core: typecheck finds
   them. `api-surface.test.ts` pins the pairs (`CORE_THREE_SAME_NAME`) and the `Cpu` ↔ unsuffixed rule.
+- K6.11a: a fresh `git archive` copy's first Vite start re-optimises dependencies and reloads pages mid-run: 2 of 81 k6-frames
+  hung (no CPU, the page never set `done`) until interrupted, and ran in 4 s alone. Warm each fresh copy with one
+  `K6_FRAMES_ONLY=smoke-frame-sparse` run; a full k6-frames run takes about 3 min on a quiet machine, so a longer one is a
+  hang. Find your own pids by cwd (`lsof -a -p <pid> -d cwd`) before killing; never `pkill -f playwright`.
+- K6.11a: the k6-core `mlp-weights` mutation shifts the OUTPUT BIAS (the last weight), which every voxel reads. K6.3's weight 7
+  barely moves our trained network (2 / 16384 values over the bar, need > 16): a mutation on a hidden weight depends on the data.
 - K6.11a: `wvdbPrefixLength`, `nvdbResponseLength` and `vdbMakeFpNLeafCodec` are tools internals (D36): tests and scripts import
   them from `src/tools/internal.ts` / `dist/tools/internal.js`; `./three` imports `nvdbResponseLength` from `../tools/nvdb-stream.js`.

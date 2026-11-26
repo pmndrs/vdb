@@ -1243,7 +1243,9 @@ async function probeFrame(device: GPUDevice): Promise<void> {
     });
     result.mipStats = mstats;
     const mlp = sc.mlp!;
-    const weights = MUTATE === "mlp-weights" ? Float32Array.from(mlp.weights, (w, i) => (i === 7 ? w + 0.5 : w)) : mlp.weights;
+    // D36: the mutation shifts the output bias (the last weight): every voxel reads it, whatever the trained values are
+    // (weight 7, K6.3's choice, barely moves our network).
+    const weights = MUTATE === "mlp-weights" ? Float32Array.from(mlp.weights, (w, i) => (i === mlp.weights.length - 1 ? w + 0.5 : w)) : mlp.weights;
     const net: VDBFrameMlp = { ...mlp, weights };
     const h = Math.max(...layout.gridVoxel[lastCascade]!);
     const sample = (level: number, world: VDBFrameVec3) => vdbFrameMlpSampleLevel(layout, shadowStack, lastOrigin, mlpMips, level, world);
