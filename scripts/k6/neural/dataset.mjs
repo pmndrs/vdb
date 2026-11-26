@@ -4,7 +4,7 @@
 // Divergences: DIVERGES.md (K6.N rows).
 // NOTE Makes the training data of the neural indirect light: network inputs and path-traced scattered light
 // at voxels of random media, light directions, densities and albedos.
-// Run: node scripts/k6/neural/dataset.mjs [scenes] [workers] [output] [--seed=1] [--nee=march|ratio|grid]. Defaults: 600 scenes, 8 workers,
+// Run: node scripts/k6/neural/dataset.mjs [scenes] [workers] [output] [--seed=1] [--nee=ratio|march|grid]. Defaults: 600 scenes, 8 workers,
 // artifacts/k6-neural/dataset.bin (not in git).
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -235,8 +235,8 @@ if (isMainThread && isScript) {
   const workerCount = Number(positional[1] ?? 8);
   const outputPath = positional[2] ?? fileURLToPath(new URL('../../../artifacts/k6-neural/dataset.bin', import.meta.url));
   const seed = Number(option('seed', 1));
-  // NOTE Next-event transmittance of the targets (trace.mjs): 'march' (default, K6.N), 'ratio' or his 'grid'
-  const nee = option('nee', 'march');
+  // NOTE Next-event transmittance of the targets (trace.mjs): 'ratio' (default, K6.N), 'march' or his 'grid'
+  const nee = option('nee', 'ratio');
   const started = Date.now();
   const results = new Array(sceneCount);
   let next = 0;
