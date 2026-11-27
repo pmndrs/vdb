@@ -250,7 +250,9 @@ From v1; details in docs/archive/handoffs/.
   + OpenVDB from sha256-pinned tarballs, `USE_ZSTD=OFF`, our probes and generators) into `~/.cache/pmndrs-vdb-native`;
   `pnpm build && pnpm parity:native` uses it (`--native=docker` for the image, `--only=<section>`, `--update` rewrites
   the `native-probes/` sidecars). A worktree-isolated agent cannot run `git` outside its worktree: fetch tarballs with
-  `curl`, not `git clone`. Docker Desktop (7.7 GiB VM) hung building OpenVDB at `BUILD_JOBS=6`: keep the image at 2.
+  `curl`, not `git clone`. Docker Desktop (7.7 GiB VM) hung building OpenVDB at `BUILD_JOBS=6` (it recovered); the default 2 builds. The
+  image's `.vdb` files differ from macOS ones in `file_mem_bytes` metadata, and native FpN `.nvdb` tails are
+  uninitialised bytes: compare sidecars, not those bytes.
 - NanoVDB v14 native defects (K4.17, K7.10): `io::readGrid(file, n)` with n ≥ 1 inside a multi-grid segment reads grid
   0's bytes (codec NONE returns grid 0 again, ZIP / BLOSC throw "UNZIP failed on byte size" / "Internal read error in
   BLOSC"), native files too; by name and `n = -1` work. `nanovdb_validate` fails every FpN grid with more than one leaf
