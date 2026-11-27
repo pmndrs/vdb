@@ -498,3 +498,11 @@ export * from "./reference/index.js";
 export { nvdbResponseLength } from "./nvdb-stream.js";
 export { vdbMakeFpNLeafCodec } from "./nanovdb/index.js";
 export { wvdbPrefixLength } from "./wvdb/read.js";
+// K7.C1: the LZ4 Blosc writer under `writeNvdb({ codec: 'blosc' })` (frames byte-equal to NanoVDB v14's).
+export { NVDB_BLOSC_CHUNK_BYTES, nvdbBloscPayload } from "./nanovdb/write-nvdb.js";
+export { compressBlosc, shuffleBytes } from "./vdb/blosc-write.js";
+export type { BloscCompressOptions } from "./vdb/blosc-write.js";
+export { compressLz4Block, lz4CompressBound } from "./vdb/lz4.js";
+// K7.H1: the stats accumulation A/B switch (GridStats' Welford is the default; 'sums' is the K1-K7.H path).
+export { vdbSetStatsAccumulation } from "./nanovdb/stats.js";
+export type { VDBStatsAccumulation } from "./nanovdb/stats.js";

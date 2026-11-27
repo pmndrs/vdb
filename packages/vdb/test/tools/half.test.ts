@@ -6,12 +6,13 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { VDBGridPool } from "../../src/core/index.js";
+import { VDBGridPool, vdbApplyValueTransform } from "../../src/core/index.js";
 import { halfBitsToNumber } from "../../src/core/half.js";
 import {
   NvdbFile,
   VDB_HALF_LEAF_CODEC,
   vdbBuildFromDense,
+  vdbCollapseGrid,
   vdbBuildFromLeavesDetailed,
   vdbFloatToHalf,
   vdbHalfToFloat,
@@ -23,8 +24,8 @@ import {
   vdbSampleTrilinearCpu,
   writeNvdb,
 } from "../../src/tools/index.js";
-import { defaultValueMax, nodeMax, nodeStats, treeNodes, leafVoxels } from "../../src/tools/cpu/march.js";
-import { rootStats } from "../../src/tools/cpu/compute.js";
+import { defaultValueMax, indexBBox, nodeMax, nodeStats, treeNodes, leafVoxels } from "../../src/tools/cpu/march.js";
+import { rootStats, transformLeafValues } from "../../src/tools/cpu/compute.js";
 import { gridTypeConstants, gridTypeIds } from "../../src/tools/cpu/stride-tables.js";
 import { GRID_TYPE_HALF, HALF_LAYOUT } from "../../src/tools/nanovdb/bytes.js";
 import { halfToFloat as vdbParserHalfToFloat } from "../../src/tools/vdb/half-float.js";
@@ -292,5 +293,110 @@ describe("vdbQuantize(…, 'half')", () => {
     expect([...pool.types]).toEqual(["half"]);
     expect(info.rootMax).toBe(nodeStats(half, 3, treeNodes(half)[0]!.address).max);
     expect(info.background).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// K7.H1: Half sources for the re-encoders and value transforms
+// ---------------------------------------------------------------------------
+
+describe("K7.H1: Half sources re-encode (vdbQuantize, vdbCollapseGrid, transformLeafValues, vdbApplyValueTransform)", () => {
+  const { values, dims } = field(28);
+  const floatImg = vdbBuildFromDense(values, dims, { background: 0, gridName: "ramp" });
+  const half = vdbQuantize(floatImg, "half");
+  // The 8^3 uniform block collapses to a tile: a Half source with an active tile.
+  const halfTiles = vdbQuantize(floatImg, "half", undefined, { collapse: true });
+  const gridType = (img: Uint32Array): number => new DataView(img.buffer, img.byteOffset).getUint32(636, true);
+  const bytes = (img: Uint32Array): Buffer => Buffer.from(img.buffer, img.byteOffset, img.byteLength);
+  const eachVoxel = (fn: (ijk: [number, number, number]) => void): void => {
+    for (let x = -2; x < dims[0] + 2; x++) for (let y = -2; y < dims[1] + 2; y++) for (let z = -2; z < dims[2] + 2; z++) fn([x, y, z]);
+  };
+
+  it("the fixtures hold what the cases need: a Half grid with leaves, and one with an active tile", () => {
+    expect(gridType(half)).toBe(GRID_TYPE_HALF);
+    expect(treeNodes(halfTiles).reduce((s, n) => s + n.activeTiles.length, 0)).toBeGreaterThan(0);
+  });
+
+  it("Half -> Float -> Half is the identity, byte for byte (leaves, tiles, stats, background)", () => {
+    for (const h of [half, halfTiles]) {
+      const f = vdbQuantize(h, "float");
+      expect(gridType(f)).toBe(gridTypeIds.FLOAT);
+      expect(bytes(vdbQuantize(f, "half")).equals(bytes(h))).toBe(true);
+    }
+  });
+
+  it("'float' widens every value exactly (Half values are f32 values) and keeps every active state", () => {
+    const f = vdbQuantize(halfTiles, "float");
+    eachVoxel((ijk) => {
+      const a = vdbReadValueCpu(halfTiles, ijk);
+      const b = vdbReadValueCpu(f, ijk);
+      expect(same(b.value as number, a.value as number), `${ijk}`).toBe(true);
+      expect(b.active).toBe(a.active);
+    });
+  });
+
+  it("Half -> Fp8 / FpN quantize exactly as the widened Float does", () => {
+    const widened = vdbQuantize(half, "float");
+    for (const m of ["fp8", "fpn"] as const) expect(bytes(vdbQuantize(half, m)).equals(bytes(vdbQuantize(widened, m)))).toBe(true);
+  });
+
+  it("vdbCollapseGrid keeps a Half grid Half, collapses a uniform leaf into a tile and reads back the same values", () => {
+    // A Half grid built without collapsing: one uniform active leaf (2.5) beside a varied one.
+    const uniform = { origin: [0, 0, 0] as [number, number, number], values: new Float32Array(512).fill(2.5), valueMask: new Uint32Array(16).fill(0xffffffff) };
+    const varied = { origin: [8, 0, 0] as [number, number, number], values: Float32Array.from({ length: 512 }, (_, n) => n / 7), valueMask: new Uint32Array(16).fill(0xffffffff) };
+    const src = vdbBuildFromLeavesDetailed([uniform, varied], VDB_HALF_LEAF_CODEC, { background: 0, gridName: "h" }).image;
+    expect(treeNodes(src).filter((n) => n.level === 0)).toHaveLength(2);
+    const c = vdbCollapseGrid(src);
+    expect(gridType(c.image)).toBe(GRID_TYPE_HALF);
+    expect(c.nodeCounts.leaf).toBe(1);
+    for (let x = -1; x < 17; x++)
+      for (let y = -1; y < 9; y++)
+        for (let z = -1; z < 9; z++) {
+          const a = vdbReadValueCpu(src, [x, y, z]);
+          const b = vdbReadValueCpu(c.image, [x, y, z]);
+          expect(same(b.value as number, a.value as number), `${x},${y},${z}`).toBe(true);
+          expect(b.active).toBe(a.active);
+        }
+    // The dense-built grid is already collapsed: collapsing it again changes nothing.
+    expect(bytes(vdbCollapseGrid(halfTiles).image).equals(bytes(halfTiles))).toBe(true);
+  });
+
+  it("transformLeafValues on Half: fn(v) to f32, then to the nearest half; tiles, background and the source untouched", () => {
+    const before = Buffer.from(bytes(halfTiles));
+    const fn = (v: number): number => v * 3 + 0.1;
+    const out = transformLeafValues(halfTiles, fn);
+    expect(bytes(halfTiles).equals(before)).toBe(true);
+    const leaves = treeNodes(halfTiles).filter((n) => n.level === 0);
+    const inLeaf = (ijk: [number, number, number]): boolean =>
+      leaves.some((n) => ijk.every((c, a) => c >= n.origin[a]! && c < n.origin[a]! + 8));
+    const box = indexBBox(halfTiles);
+    let changed = 0;
+    eachVoxel((ijk) => {
+      const inBox = ijk.every((c, a) => c >= box.min[a]! && c <= box.max[a]!);
+      const v = vdbReadValueCpu(halfTiles, ijk).value as number;
+      const got = vdbReadValueCpu(out, ijk).value as number;
+      if (inBox && inLeaf(ijk)) {
+        expect(vdbFloatToHalf(got), `${ijk}`).toBe(vdbFloatToHalf(Math.fround(fn(v))));
+        if (got !== v) changed++;
+      } else {
+        expect(same(got, v), `${ijk} (tile or background)`).toBe(true);
+      }
+    });
+    expect(changed).toBeGreaterThan(1000);
+  });
+
+  it("vdbApplyValueTransform takes a Half pool grid (it threw VDB_UNSUPPORTED_GRID_TYPE before K7.H1)", async () => {
+    const device = new FakeDevice();
+    const pool = await VDBGridPool.create(device.asGPU(), { initialBytes: 1 << 16 });
+    const id = pool.add(half);
+    const out = vdbApplyValueTransform(pool, id, half, "double");
+    expect(bytes(out).equals(bytes(transformLeafValues(half, (v) => v * 2)))).toBe(true);
+  });
+
+  it("quantized sources still throw VDB_UNSUPPORTED_GRID_TYPE", () => {
+    const fp8 = vdbQuantize(half, "fp8");
+    for (const run of [() => vdbQuantize(fp8, "half"), () => vdbCollapseGrid(fp8), () => transformLeafValues(fp8, (v) => v)]) {
+      expect(run).toThrow(expect.objectContaining({ code: "VDB_UNSUPPORTED_GRID_TYPE" }));
+    }
   });
 });

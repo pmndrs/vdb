@@ -114,7 +114,7 @@ export interface BuiltTree {
   uppers: UpperNode[];
   lowers: LowerNode[];
   leaves: Leaf[];
-  /** Root table, sorted by NanoVDB key (unsigned 64-bit), children and tiles interleaved. */
+  /** Root table, sorted by signed origin (x, then y, then z; native's order), children and tiles interleaved. */
   rootTiles: RootTile[];
   /** Active tile counts per level (TreeData `mTileCount`). */
   tileCounts: { lower: number; upper: number; root: number };
@@ -493,9 +493,12 @@ function assembleTree(
   }
 
   // -- Deterministic breadth-first ordering + memIndex assignment ----------
+  // Signed origin order (x, then y, then z): the order OpenVDB's root map (std::map<Coord>) and
+  // NanoVDB's build::Grid iterate in, which CreateNanoGrid copies into the root table AND the upper
+  // node array. The root table below uses the same order: v14's `nanovdb_validate` rejects a
+  // breadth-first grid whose root children are not consecutive in table order (K7.C1).
   const byOrigin = (a: { origin: [number, number, number] }, b: { origin: [number, number, number] }) =>
     a.origin[0] - b.origin[0] || a.origin[1] - b.origin[1] || a.origin[2] - b.origin[2];
-
   const uppers = [...upperMap.values()].sort(byOrigin);
   uppers.forEach((u, i) => (u.memIndex = i));
 
@@ -519,22 +522,24 @@ function assembleTree(
   // Tiles first, then children: the order NanoVDB GridStats accumulates in.
   for (const lower of lowers) {
     addTileStats(lower.stats, lower.tiles, lower.origin, 4, 8);
-    for (const leaf of lower.children.values()) lower.stats.merge(leaf.stats);
+    // Children by slot (GridStats' child-mask order): the Welford update depends on the order (K7.H1).
+    for (const s of [...lower.children.keys()].sort((a, b) => a - b)) lower.stats.merge(lower.children.get(s)!.stats);
   }
   for (const upper of uppers) {
     addTileStats(upper.stats, upper.tiles, upper.origin, 5, 128);
-    for (const lower of upper.children.values()) upper.stats.merge(lower.stats);
+    for (const s of [...upper.children.keys()].sort((a, b) => a - b)) upper.stats.merge(upper.children.get(s)!.stats);
   }
 
-  // -- Root table: children and tiles, sorted by NanoVDB key ----------------
-  // Unsigned 64-bit key order (K4.12): negative coordinates sort after the
-  // non-negative ones, not before them as a signed origin sort would put them.
+  // -- Root table: children and tiles, in signed origin order ---------------
+  // K7.C1 reverts K4.12's unsigned-key order: native files (the a532de55 bake and
+  // OpenVDB v14.0.0 `nanovdb_convert`, e.g. the cube: -4096 before 0 on every
+  // axis) list root entries by signed origin, and the upper nodes follow them.
   const rootTiles: RootTile[] = [
     ...uppers.map((u): RootTile => ({ key: keyForOrigin(u.origin), origin: u.origin, child: u })),
     ...[...rootTileMap.values()].map(
       (t): RootTile => ({ key: keyForOrigin(t.origin), origin: t.origin, child: null, value: t.value, active: t.active }),
     ),
-  ].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  ].sort(byOrigin);
 
   const root = newStats();
   for (const entry of rootTiles) {

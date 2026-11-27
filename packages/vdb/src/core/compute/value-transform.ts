@@ -41,7 +41,8 @@ export type VDBValueTransformPreset = keyof typeof VDB_VALUE_TRANSFORM_PRESETS;
  * `sourceImage` is the grid's current image (the pool keeps none); it must be
  * the grid in the pool, which is checked by type, byte size and index bbox.
  *
- * As in v1: Float grids only; tile and background values are not changed;
+ * Float and Half grids (Half since K7.H1: results round to f32, then to the
+ * nearest binary16); tile and background values are not changed;
  * the image's statistics are not recomputed (they keep describing the source
  * values, so `gridStats` bins against the old range and `vdbNodeMax` bounds
  * may be stale). Like `replace`, the pool holds the returned array until
@@ -67,10 +68,10 @@ export function vdbApplyValueTransform(
     );
   }
   const info = pool.info(gridId);
-  if (info.type !== "float") {
+  if (info.type !== "float" && info.type !== "half") {
     throw new VDBError(
       "VDB_UNSUPPORTED_GRID_TYPE",
-      `${where}: grid ${gridId} is ${info.type}; value transforms need a Float grid (quantized leaves would need re-encoding). Transform the Float source, quantize() it, and pool.replace().`,
+      `${where}: grid ${gridId} is ${info.type}; value transforms need a Float or Half grid (quantized leaves would need re-encoding). Transform the Float source, quantize() it, and pool.replace().`,
     );
   }
   if (!(sourceImage instanceof Uint32Array) || sourceImage.byteLength !== info.imageBytes) {

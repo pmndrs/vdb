@@ -198,7 +198,8 @@ has CPU-twin parity; `test/boundaries.test.ts` still holds; the TSL passes are d
 
 **Status 2026-11-24:** K7.H (NanoVDB Half grids) and K7.C (v14 codecs and parser, native v14 fixtures committed) done.
 Next: K7.1–K7.3 (his shadow fixes, post-processing/MRT, multi-scale scattering), K7.5, K7.6. Open: K7.4 (issue #1),
-K7.C1, K7.H1, K7.7.
+K7.7. K7.C1 (`.nvdb` BLOSC writer, frames byte-identical to native) and K7.H1 (Welford stats, Half sources, native
+root order) done 2026-11-28.
 
 Since 0.1 OpenVDB shipped 13.1, 13.2 and 14.0, and mjurczyk/openvdb 0.27–0.29 (research 2026-11-24, TASKS K7). The
 NanoVDB file format and PNanoVDB layout are unchanged, but NanoVDB 13.2 added Half grids, Blosc is on by default in

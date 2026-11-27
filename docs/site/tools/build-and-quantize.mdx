@@ -58,6 +58,10 @@ statistics are binary16, average and standard deviation f32. Load it with `types
 NanoVDB v14 (`createNanoGrid<FloatGrid, nanovdb::Half>`) bit for bit on the fixtures. `nanovdb_convert` has no Half
 option; `vdbFloatToHalf` / `vdbHalfToFloat` / `vdbRoundToHalf` are the conversions it uses.
 
+Half grids are sources too: `vdbQuantize(half, 'fp8')` (or any mode) re-encodes one, `vdbQuantize(half, 'float')` widens it
+to a Float grid exactly (Half → Float → Half gives the same bytes back), and `vdbCollapseGrid` and `transformLeafValues`
+keep it Half. Quantized (Fp*) grids are not sources: quantize from the Float or Half grid.
+
 {/* snippet: quantize */}
 ```ts
 import { vdbCollapseGrid, vdbQuantize } from '@pmndrs/vdb/tools';

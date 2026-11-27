@@ -253,8 +253,22 @@ From v1; details in docs/archive/handoffs/.
   `readImageHeader` or the WGSL readers. Generation transform 8 strips the Half readers from modules without `'half'`.
 - `nanovdb_convert` (even v14) has no Half option: native Half grids come from `createNanoGrid<…, nanovdb::Half>` in
   C++. `pnpm fixtures:bake-half` builds them with OpenVDB v14.0.0 headers (needs the float primitives first).
-- NanoVDB v14 stores root tiles in another order than the a532de55 bake: `treeNodes` order differs between a native
-  v14 grid and ours even when every node is equal. Compare trees by (level, origin), not by index.
+- Root entries and upper nodes are in signed origin order (x, then y, then z: OpenVDB's `std::map<Coord>`), in the
+  a532de55 bake and in v14 alike; K4.12's unsigned key order was wrong (the old "v14 orders root tiles differently" note
+  was that bug). Since K7.C1 our images equal native's byte for byte past GridData: compare whole images, not just nodes.
+- v14's `nanovdb_validate` checks breadth-first order (each root child the next upper node, and so on): a builder change
+  that reorders nodes fails it even though every value reads right. It also fails every FpN grid, native's own included
+  ("Leaf node is not stored breadth-first": it steps leaves by a fixed size); use `nanovdb_print -l` for FpN.
+- Node stats are GridStats' f64 Welford (K7.H1) and depend on the order: leaf voxels by offset, a node's active tiles then
+  its children by slot, the root table in order. A stats change that leaves f32 results equal on the fixtures can still
+  be wrong (f32 rounding hides most f64 differences): test the f64 accumulator (`stats-welford.test.ts` has a C++-literal oracle).
+- Native NanoVDB writes Blosc with `blocksize = 1 << 18`, but Blosc enlarges a forced block size by `typesize` for split
+  codecs: the frames hold 1 MiB blocks of four 256 KiB byte planes, not 256 KiB blocks.
+- The native Blosc/LZ4 checks need the v14 build (no Docker): `generators/blosc_frames.c` links `libnanovdb_blosc.a`;
+  `VDB_NATIVE_BLOSC_FRAMES=<binary>` makes `blosc-write.test.ts` compare with it (add `VDB_NATIVE_BLOSC_WRITE=1` after a
+  corpus change to rewrite `blosc-frames.json`), and `scripts/check-nvdb-blosc-native.mjs` wants `NANOVDB_BIN` and a
+  fresh `pnpm build`. The sandbox's Write tool strips trailing spaces from text you write: a Python edit script whose
+  `old` string ends in a space (several `VDBToolsError("…", ` lines do) won't match; normalise the source first.
 - The fake device's `queue.writeBuffer` (`test/core/fake-gpu.ts`) reads `data.buffer`: pass an `ArrayBufferView`
   (`new Uint8Array(bytes)`), never a bare `ArrayBuffer`, or it writes zeros silently (real WebGPU accepts both).
 - The core sparse source (K6.7, `vdbSparseSource`) serves every volume of a pool through one uniform table indexed

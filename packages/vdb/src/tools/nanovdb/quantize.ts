@@ -1,5 +1,5 @@
 /**
- * quantize.ts — re-encode a FLOAT NanoVDB grid image as Fp4, Fp8, Fp16, FpN or Half.
+ * quantize.ts — re-encode a Float or Half NanoVDB grid image as Fp4, Fp8, Fp16, FpN, Half or Float.
  *
  * Quantization is a leaf-value-representation change only: topology, masks,
  * internal-node tables/stats, GridData and the transform are unchanged. So
@@ -25,9 +25,11 @@
  *   is ignored. Cross-checked against native NanoVDB v14.0.0
  *   (`docker/fixture-bake/bake_half.cpp`, `test/tools/half-native.test.ts`).
  *
- * v1 quantizes FLOAT sources only (throws otherwise) — that is the conversion
- * the toolset exposes (`float -> fp8/fpn`), and it is what the native
- * `nanovdb_convert --fp8/--fpn` pipeline does too.
+ * - `float` (K7.H1) — plain f32 leaves: widens a Half grid exactly (Half ->
+ *   Float -> Half is the identity), or re-lays out a Float grid.
+ *
+ * Sources are Float or Half grids (K7.H1; Half values widen to f32 exactly);
+ * quantized sources throw, since re-quantizing loses precision twice.
  */
 
 import { VDBToolsError } from "../errors.js";
@@ -40,6 +42,9 @@ import {
   GRID_OFF_VOXEL_SIZE,
   GRID_SIZE,
   GRID_TYPE_FLOAT,
+  GRID_TYPE_HALF,
+  HALF_LAYOUT,
+  type GridTypeLayout,
   LEAF_OFF_VALUE_MASK,
   LEAF_TABLE_COUNT,
   LOWER_OFF_CHILD_MASK,
@@ -63,14 +68,15 @@ import {
   vdbMakeFpNLeafCodec,
   type VDBLeafCodec,
 } from "./leaf-codec.js";
+import { vdbHalfToFloat } from "./half.js";
 import { vdbBuildFromLeavesDetailed, type VDBBuiltGrid } from "./serialize.js";
 import type { LeafInput, TileInput } from "./tree.js";
 
 /**
  * Target encoding of {@link vdbQuantize}: fixed 4, 8 or 16-bit codes, FpN (bit-width chosen per leaf by tolerance),
- * or Half (raw IEEE binary16, K7.H).
+ * Half (raw IEEE binary16, K7.H) or Float (f32; widens a Half source exactly, K7.H1).
  */
-export type VDBQuantizeMode = "fp4" | "fp8" | "fp16" | "fpn" | "half";
+export type VDBQuantizeMode = "fp4" | "fp8" | "fp16" | "fpn" | "half" | "float";
 
 /** Options of {@link vdbQuantize}. */
 export interface VDBQuantizeOptions {
@@ -83,9 +89,9 @@ export interface VDBQuantizeOptions {
 }
 
 /**
- * Quantizes a FLOAT grid image (or built grid) to Fp4/Fp8/Fp16/FpN or Half. Returns a new image.
+ * Re-encodes a Float or Half grid image (or built grid) as Fp4/Fp8/Fp16/FpN, Half or Float. Returns a new image.
  *
- * @param input A FLOAT grid image, or a built grid.
+ * @param input A Float or Half grid image, or a built grid.
  * @param mode Target encoding.
  * @param tolerance Absolute error bound for `'fpn'` (leaf bit-width is chosen to meet it); ignored by the other modes.
  * @param options Topology options (leaf collapsing).
@@ -102,7 +108,7 @@ export function vdbQuantize(
 /**
  * As {@link vdbQuantize}, but returns the computed metadata alongside the image.
  *
- * @param input A FLOAT grid image, or a built grid.
+ * @param input A Float or Half grid image, or a built grid.
  * @param mode Target encoding.
  * @param tolerance Absolute error bound for `'fpn'`; ignored by the fixed-width modes.
  * @param options Topology options (leaf collapsing).
@@ -120,6 +126,7 @@ export function vdbQuantizeDetailed(
     : mode === "fp8" ? VDB_FP8_LEAF_CODEC
     : mode === "fp16" ? VDB_FP16_LEAF_CODEC
     : mode === "half" ? VDB_HALF_LEAF_CODEC
+    : mode === "float" ? VDB_FLOAT_LEAF_CODEC
     : mode === "fpn" ? vdbMakeFpNLeafCodec(tolerance)
     : badMode(mode);
   return vdbBuildFromLeavesDetailed(src.leaves, codec, {
@@ -135,18 +142,18 @@ export function vdbQuantizeDetailed(
 }
 
 function badMode(mode: unknown): never {
-  throw new VDBToolsError("VDB_BAD_OPTION", `quantize: mode must be 'fp4', 'fp8', 'fp16', 'fpn' or 'half', got ${JSON.stringify(mode)}`);
+  throw new VDBToolsError("VDB_BAD_OPTION", `quantize: mode must be 'fp4', 'fp8', 'fp16', 'fpn', 'half' or 'float', got ${JSON.stringify(mode)}`);
 }
 
 /**
- * Re-encodes a FLOAT grid image (still FLOAT) with uniform leaves and nodes
- * collapsed into tiles (OpenVDB `prune`, tolerance 0; K4.6). Values read back
- * identically; see `tree.ts` for the rules.
+ * Re-encodes a Float or Half grid image (same type) with uniform leaves and
+ * nodes collapsed into tiles (OpenVDB `prune`, tolerance 0; K4.6; Half since
+ * K7.H1). Values read back identically; see `tree.ts` for the rules.
  */
 export function vdbCollapseGrid(input: Uint32Array | VDBBuiltGrid): VDBBuiltGrid {
   const image = input instanceof Uint32Array ? input : input.image;
   const src = readFloatGrid(image, "vdbCollapseGrid");
-  return vdbBuildFromLeavesDetailed(src.leaves, VDB_FLOAT_LEAF_CODEC, {
+  return vdbBuildFromLeavesDetailed(src.leaves, src.half ? VDB_HALF_LEAF_CODEC : VDB_FLOAT_LEAF_CODEC, {
     voxelSize: src.voxelSize,
     worldOrigin: src.translation,
     background: src.background,
@@ -157,7 +164,20 @@ export function vdbCollapseGrid(input: Uint32Array | VDBBuiltGrid): VDBBuiltGrid
   });
 }
 
+/** How a source grid's values are stored: f32 (Float) or binary16 (Half, K7.H1). */
+interface SourceFormat {
+  L: GridTypeLayout;
+  /** Reads one value (a leaf value, a tile, the background) at a byte offset. */
+  read(view: DataView, off: number): number;
+  /** Bytes per leaf value. */
+  leafStride: number;
+}
+const FLOAT_SOURCE: SourceFormat = { L: FLOAT_LAYOUT, read: (v, o) => v.getFloat32(o, true), leafStride: 4 };
+const HALF_SOURCE: SourceFormat = { L: HALF_LAYOUT, read: (v, o) => vdbHalfToFloat(v.getUint16(o, true)), leafStride: 2 };
+
 interface FloatGridView {
+  /** The source is a Half grid (its values widened to f32, exactly). */
+  half: boolean;
   voxelSize: [number, number, number];
   translation: [number, number, number];
   background: number;
@@ -179,16 +199,20 @@ function maskBit(view: DataView, maskBase: number, n: number): boolean {
   return ((view.getUint32(maskBase + 4 * (n >>> 5), true) >>> (n & 31)) & 1) !== 0;
 }
 
-/** Reads a FLOAT grid image's transform/background and yields its leaves. */
+/**
+ * Reads a Float or Half grid image's transform/background and yields its leaves (Half values widened
+ * to f32, which is exact).
+ */
 function readFloatGrid(image: Uint32Array, caller = "quantize"): FloatGridView {
   const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
   const gridType = view.getUint32(GRID_OFF_GRID_TYPE, true);
-  if (gridType !== GRID_TYPE_FLOAT) {
-    throw new VDBToolsError("VDB_UNSUPPORTED_GRID_TYPE", 
-      `${caller}: source grid type ${gridType} is not FLOAT (${GRID_TYPE_FLOAT}); ` +
-        `v1 re-encodes float grids only (float -> float/fp8/fpn).`,
+  if (gridType !== GRID_TYPE_FLOAT && gridType !== GRID_TYPE_HALF) {
+    throw new VDBToolsError("VDB_UNSUPPORTED_GRID_TYPE",
+      `${caller}: source grid type ${gridType} is not FLOAT (${GRID_TYPE_FLOAT}) or HALF (${GRID_TYPE_HALF}); ` +
+        `only Float and Half grids are re-encoded (quantized leaves would lose precision twice).`,
     );
   }
+  const fmt = gridType === GRID_TYPE_HALF ? HALF_SOURCE : FLOAT_SOURCE;
   // All three: a resampled grid can be anisotropic (K4.4), and the Map must survive quantization.
   const voxelSize: [number, number, number] = [
     view.getFloat64(GRID_OFF_VOXEL_SIZE, true),
@@ -206,12 +230,12 @@ function readFloatGrid(image: Uint32Array, caller = "quantize"): FloatGridView {
 
   const treeOff = GRID_SIZE;
   const rootOff = treeOff + Number(view.getBigUint64(treeOff + TREE_OFF_NODE_OFFSET_ROOT, true));
-  const background = effectiveBackground(view, rootOff);
+  const background = effectiveBackground(view, rootOff, fmt);
 
   const tiles: TileInput[] = [];
-  collectFloatTiles(view, rootOff, tiles);
-  const leaves = traverseFloatLeaves(view, rootOff);
-  return { voxelSize, translation, background, gridName, gridClassId, leaves, tiles };
+  collectFloatTiles(view, rootOff, tiles, fmt);
+  const leaves = traverseFloatLeaves(view, rootOff, fmt);
+  return { half: fmt === HALF_SOURCE, voxelSize, translation, background, gridName, gridClassId, leaves, tiles };
 }
 
 /**
@@ -224,9 +248,9 @@ function readFloatGrid(image: Uint32Array, caller = "quantize"): FloatGridView {
  * found) reproduces the source's readback around the data, falling back to the
  * root `mBackground` when the grid has no inactive internal tile at all.
  */
-function effectiveBackground(view: DataView, rootOff: number): number {
-  const rootBg = view.getFloat32(rootOff + FLOAT_LAYOUT.rootOffBackground, true);
-  const L = FLOAT_LAYOUT;
+function effectiveBackground(view: DataView, rootOff: number, fmt: SourceFormat): number {
+  const L = fmt.L;
+  const rootBg = fmt.read(view, rootOff + L.rootOffBackground);
   const nTiles = view.getUint32(rootOff + ROOT_OFF_TABLE_SIZE, true);
   let upperInactive: number | undefined;
   for (let t = 0; t < nTiles; t++) {
@@ -245,11 +269,11 @@ function effectiveBackground(view: DataView, rootOff: number): number {
             !maskBit(view, lowerOff + LOWER_OFF_CHILD_MASK, m) &&
             !maskBit(view, lowerOff + NODE_OFF_VALUE_MASK, m)
           ) {
-            return view.getFloat32(lslot, true);
+            return fmt.read(view, lslot);
           }
         }
       } else if (upperInactive === undefined && !maskBit(view, upperOff + NODE_OFF_VALUE_MASK, n)) {
-        upperInactive = view.getFloat32(slotOff, true);
+        upperInactive = fmt.read(view, slotOff);
       }
     }
   }
@@ -282,15 +306,15 @@ function nodeOrigin(view: DataView, nodeOff: number, dim: number): [number, numb
  * off. They are re-emitted as tiles, so the quantized grid keeps the source
  * topology (no expansion into constant leaves).
  */
-function collectFloatTiles(view: DataView, rootOff: number, out: TileInput[]): void {
-  const L = FLOAT_LAYOUT;
+function collectFloatTiles(view: DataView, rootOff: number, out: TileInput[], fmt: SourceFormat): void {
+  const L = fmt.L;
   const nTiles = view.getUint32(rootOff + ROOT_OFF_TABLE_SIZE, true);
   for (let t = 0; t < nTiles; t++) {
     const tileOff = rootOff + L.rootSize + t * L.rootTileSize;
     if (readI64(view, tileOff + ROOT_TILE_OFF_CHILD) !== 0) continue;
     if (view.getUint32(tileOff + ROOT_TILE_OFF_STATE, true) === 0) continue;
     const key = view.getBigUint64(tileOff + ROOT_TILE_OFF_KEY, true);
-    out.push({ origin: keyToOrigin(key), dim: 4096, value: view.getFloat32(tileOff + L.rootTileOffValue, true) });
+    out.push({ origin: keyToOrigin(key), dim: 4096, value: fmt.read(view, tileOff + L.rootTileOffValue) });
   }
   for (const child of rootChildren(view, rootOff)) {
     const upperOff = rootOff + child;
@@ -310,7 +334,7 @@ function collectFloatTiles(view: DataView, rootOff: number, out: TileInput[]): v
               lowerOrigin[2] + ((m & 15) << 3),
             ],
             dim: 8,
-            value: view.getFloat32(lowerOff + L.lowerOffTable + m * L.tableStride, true),
+            value: fmt.read(view, lowerOff + L.lowerOffTable + m * L.tableStride),
           });
         }
       } else if (maskBit(view, upperOff + NODE_OFF_VALUE_MASK, n)) {
@@ -321,7 +345,7 @@ function collectFloatTiles(view: DataView, rootOff: number, out: TileInput[]): v
             upperOrigin[2] + ((n & 31) << 7),
           ],
           dim: 128,
-          value: view.getFloat32(slotOff, true),
+          value: fmt.read(view, slotOff),
         });
       }
     }
@@ -339,19 +363,19 @@ function keyToOrigin(key: bigint): [number, number, number] {
 }
 
 /** Walks root -> upper -> lower -> leaf, yielding one {@link LeafInput} per real leaf. */
-function* traverseFloatLeaves(view: DataView, rootOff: number): Iterable<LeafInput> {
+function* traverseFloatLeaves(view: DataView, rootOff: number, fmt: SourceFormat): Iterable<LeafInput> {
   for (const child of rootChildren(view, rootOff)) {
     const upperOff = rootOff + child;
     for (let n = 0; n < UPPER_TABLE_COUNT; n++) {
       if (!maskBit(view, upperOff + UPPER_OFF_CHILD_MASK, n)) continue;
-      const slotOff = upperOff + FLOAT_LAYOUT.upperOffTable + n * FLOAT_LAYOUT.tableStride;
-      yield* traverseLower(view, upperOff + readI64(view, slotOff));
+      const slotOff = upperOff + fmt.L.upperOffTable + n * fmt.L.tableStride;
+      yield* traverseLower(view, upperOff + readI64(view, slotOff), fmt);
     }
   }
 }
 
-function* traverseLower(view: DataView, lowerOff: number): Iterable<LeafInput> {
-  const L = FLOAT_LAYOUT;
+function* traverseLower(view: DataView, lowerOff: number, fmt: SourceFormat): Iterable<LeafInput> {
+  const L = fmt.L;
   const lowerOrigin = nodeOrigin(view, lowerOff, 128);
   for (let n = 0; n < LOWER_TABLE_COUNT; n++) {
     if (!maskBit(view, lowerOff + LOWER_OFF_CHILD_MASK, n)) continue;
@@ -361,17 +385,17 @@ function* traverseLower(view: DataView, lowerOff: number): Iterable<LeafInput> {
       lowerOrigin[1] + (((n >> 4) & 15) << 3),
       lowerOrigin[2] + ((n & 15) << 3),
     ];
-    yield readLeaf(view, lowerOff + readI64(view, slotOff), origin);
+    yield readLeaf(view, lowerOff + readI64(view, slotOff), origin, fmt);
   }
 }
 
-/** Reads one real FLOAT leaf (512 values + value mask) at `leafOff`. */
-function readLeaf(view: DataView, leafOff: number, origin: [number, number, number]): LeafInput {
-  const tableOff = FLOAT_LAYOUT.leafOffTable;
+/** Reads one real Float or Half leaf (512 values + value mask) at `leafOff`. */
+function readLeaf(view: DataView, leafOff: number, origin: [number, number, number], fmt: SourceFormat): LeafInput {
+  const tableOff = fmt.L.leafOffTable;
   const valueMask = new Uint32Array(16);
   for (let w = 0; w < 16; w++) valueMask[w] = view.getUint32(leafOff + LEAF_OFF_VALUE_MASK + w * 4, true);
   const values = new Float32Array(LEAF_TABLE_COUNT);
-  for (let n = 0; n < LEAF_TABLE_COUNT; n++) values[n] = view.getFloat32(leafOff + tableOff + n * 4, true);
+  for (let n = 0; n < LEAF_TABLE_COUNT; n++) values[n] = fmt.read(view, leafOff + tableOff + n * fmt.leafStride);
   return { origin, values, valueMask };
 }
 

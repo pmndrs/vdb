@@ -34,8 +34,11 @@ NanoVDB 13.2+ writes Half grids only from C++, `createNanoGrid<…, nanovdb::Hal
 
 ## Write
 
-`writeNvdb(images, { codec, zipLevel })` writes any number of grid images to one file. `codec` is `'none'` or `'zip'`
-(BLOSC is read, not written).
+`writeNvdb(images, { codec, zipLevel })` writes any number of grid images to one file. `codec` is `'none'`, `'zip'` or
+`'blosc'`. `'blosc'` writes what `nanovdb_convert -b` writes: LZ4 Blosc frames (byte shuffle of 4-byte words, 1 MiB
+blocks of four 256 KiB streams, a new frame every 1 GiB), byte for byte the same as native NanoVDB for the same image, so
+native tools built with Blosc and NVIDIA Warp read it. ZIP (level 9) is smaller (on the sample grids BLOSC is 1.1 to 2.5
+times the ZIP size); BLOSC decodes faster in native readers. All three codecs stream (`readNvdbStream`).
 `build-dense` on [building grids](/tools/build-and-quantize) shows it in use.
 
 ## Stream

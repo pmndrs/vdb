@@ -44,6 +44,7 @@ import {
   GRID_CLASS_LEVEL_SET,
   GRID_CLASS_STAGGERED,
   GRID_FLAGS_STATS_BBOX_BREADTH_FIRST,
+  GRID_TYPE_HALF,
   GRID_NAME_MAX,
   GRID_OFF_BLIND_METADATA_COUNT,
   GRID_OFF_BLIND_METADATA_OFFSET,
@@ -104,7 +105,7 @@ import {
   VERSION_PACKED,
 } from "./bytes.js";
 import { VDB_FLOAT_LEAF_CODEC, type VDBLeafCodec, writeVec3StatsBlock } from "./leaf-codec.js";
-import { StatsAccumulator } from "./stats.js";
+import { STATS_FLOAT_MAX, STATS_HALF_MAX, StatsAccumulator } from "./stats.js";
 import {
   buildTree,
   buildTreeFromLeaves,
@@ -585,8 +586,10 @@ function writeStats(
     return;
   }
   // Min/max have the grid's value type (f32, or binary16 for Half); ave/stddev are f32.
-  codec.writeConstant(w, base + offMin, s.isEmpty ? 0 : s.min);
-  codec.writeConstant(w, base + offMax, s.isEmpty ? 0 : s.max);
+  // Extrema's start value (the type's largest finite) stays when a node holds only +-inf (K7.H1).
+  const finiteMax = codec.layout.gridType === GRID_TYPE_HALF ? STATS_HALF_MAX : STATS_FLOAT_MAX;
+  codec.writeConstant(w, base + offMin, s.storedMin(finiteMax));
+  codec.writeConstant(w, base + offMax, s.storedMax(finiteMax));
   w.setF32(base + offAve, s.average);
   w.setF32(base + offStdDev, s.stdDev);
 }

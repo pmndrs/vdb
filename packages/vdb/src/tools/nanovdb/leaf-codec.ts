@@ -58,7 +58,7 @@ import {
 } from "./bytes.js";
 import type { GridImageWriter } from "./bytes.js";
 import { vdbFloatToHalf, vdbRoundToHalf } from "./half.js";
-import { type StatsAccumulator, Vec3StatsAccumulator } from "./stats.js";
+import { STATS_FLOAT_MAX, STATS_HALF_MAX, type StatsAccumulator, Vec3StatsAccumulator } from "./stats.js";
 import type { TileValue } from "./tree.js";
 
 /** The leaf data a codec needs: origin, all 512 values, mask, active-value stats. */
@@ -176,8 +176,8 @@ export const VDB_FLOAT_LEAF_CODEC: VDBLeafCodec = {
     // Stats block. For an all-inactive leaf the accumulator is empty; write
     // zeros, matching "no active values".
     const s = leaf.stats;
-    w.setF32(leafOff + L.leafOffMin, s.isEmpty ? 0 : s.min);
-    w.setF32(leafOff + L.leafOffMax, s.isEmpty ? 0 : s.max);
+    w.setF32(leafOff + L.leafOffMin, s.storedMin(STATS_FLOAT_MAX));
+    w.setF32(leafOff + L.leafOffMax, s.storedMax(STATS_FLOAT_MAX));
     w.setF32(leafOff + L.leafOffAve, s.average);
     w.setF32(leafOff + L.leafOffStdDev, s.stdDev);
   },
@@ -209,8 +209,8 @@ export const VDB_HALF_LEAF_CODEC: VDBLeafCodec = {
     const values = leaf.values;
     for (let n = 0; n < LEAF_TABLE_COUNT; n++) w.setU16(leafOff + L.leafOffTable + n * 2, vdbFloatToHalf(values[n]!));
     const s = leaf.stats;
-    w.setU16(leafOff + L.leafOffMin, s.isEmpty ? 0 : vdbFloatToHalf(s.min));
-    w.setU16(leafOff + L.leafOffMax, s.isEmpty ? 0 : vdbFloatToHalf(s.max));
+    w.setU16(leafOff + L.leafOffMin, vdbFloatToHalf(s.storedMin(STATS_HALF_MAX)));
+    w.setU16(leafOff + L.leafOffMax, vdbFloatToHalf(s.storedMax(STATS_HALF_MAX)));
     w.setF32(leafOff + L.leafOffAve, s.average);
     w.setF32(leafOff + L.leafOffStdDev, s.stdDev);
   },

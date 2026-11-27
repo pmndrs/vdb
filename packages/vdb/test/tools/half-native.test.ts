@@ -7,8 +7,9 @@
  *   - `fixtures/half/half_edge.sidecar.json`: our writer builds the same grid
  *     (`VDB_HALF_LEAF_CODEC`) from the same f32 inputs and must store the same
  *     bits for every voxel, inactive probe and the background, the same leaf
- *     bbox/flags, the same binary16 min/max at every node, and ave/stddev
- *     within f32 rounding (native accumulates in f64 Welford, we in f64 sums).
+ *     bbox/flags, the same binary16 min/max at every node, and the same
+ *     ave/stddev bits (K7.H1: GridStats' f64 Welford, ported; NaN where an
+ *     input overflowed to +-inf, as native).
  * With the float primitives (`pnpm fixtures:bake`): `vdbQuantize(float, 'half')`
  *   matches the native Half sidecars' probe bits and leaf-value hash.
  * With the native Half grids (`pnpm fixtures:bake-half`): our readers decode
@@ -156,12 +157,12 @@ describe("half_edge: our writer vs native createNanoGrid<build::Grid<float>, Hal
     expect(new DataView(image.buffer).getUint16(root + 28, true)).toBe(sc.native.background);
   });
 
-  it("node stats: binary16 min/max equal, f32 ave/stddev within 1 ulp (NaN where native has NaN), leaf bbox and flags equal", () => {
-    // Where an input overflowed to +-infinity, native's f64 Welford gives NaN and our f64 sums may give
-    // +-infinity (DIVERGES: Half stats with infinite values): both are "not finite".
+  it("node stats: binary16 min/max, f32 ave/stddev (NaN where native has NaN), leaf bbox and flags all equal native's", () => {
+    // K7.H1: GridStats' Welford, ported, gives native's bits; a leaf holding an input that overflowed to
+    // +-infinity gets NaN ave/stddev, as native (the K7.H f64 sums gave +-infinity there: DIVERGES V73).
     const close = (got: number, want: number, what: string) => {
-      if (!Number.isFinite(fromBits(want))) expect(Number.isFinite(fromBits(got)), `${what} ${fromBits(got)} vs ${fromBits(want)}`).toBe(false);
-      else expect(ulps(got, want), `${what} ${fromBits(got)} vs ${fromBits(want)}`).toBeLessThanOrEqual(1);
+      expect(Number.isNaN(fromBits(got)), `${what} NaN-ness ${fromBits(got)} vs ${fromBits(want)}`).toBe(Number.isNaN(fromBits(want)));
+      expect(ulps(got, want), `${what} ${fromBits(got)} vs ${fromBits(want)}`).toBe(0);
     };
     const check = (got: Stats, want: Stats, what: string) => {
       expect(got.min, `${what} min`).toBe(want.min);
@@ -242,11 +243,11 @@ describe.each(PRIMITIVES)("%s: vdbQuantize(float, 'half') vs native createNanoGr
     }
     expect(leafValuesHash(ours!)).toBe(sc.native.leafValuesFnv1a);
     const root = rawStats(ours!, 3, treeNodes(ours!)[0]!.address);
-    // Root min may be +0 or -0 (native keeps the first zero it meets); compare values.
-    expect(vdbHalfToFloat(root.min)).toBe(vdbHalfToFloat(sc.native.root.min));
+    // K7.H1: native's order and GridStats' Welford give native's bits (min's zero sign included).
+    expect(root.min).toBe(sc.native.root.min);
     expect(root.max).toBe(sc.native.root.max);
-    expect(ulps(root.ave, sc.native.root.ave)).toBeLessThanOrEqual(2);
-    expect(ulps(root.stddev, sc.native.root.stddev)).toBeLessThanOrEqual(2);
+    expect(root.ave >>> 0).toBe(sc.native.root.ave >>> 0);
+    expect(root.stddev >>> 0).toBe(sc.native.root.stddev >>> 0);
   });
 
   it.skipIf(!haveHalf)("our readers decode the native Half grid to the sidecar's bits", () => {
@@ -277,7 +278,7 @@ describe.each(PRIMITIVES)("%s: vdbQuantize(float, 'half') vs native createNanoGr
       expect([...o.activeTiles].sort((x, y) => (tileKey(x) < tileKey(y) ? -1 : 1))).toEqual([...n.activeTiles].sort((x, y) => (tileKey(x) < tileKey(y) ? -1 : 1)));
       const sa = rawStats(native, n.level as 0 | 1 | 2, n.address);
       const sb = rawStats(ours!, o.level as 0 | 1 | 2, o.address);
-      expect(vdbHalfToFloat(sb.min), `${n.level} ${n.origin} min`).toBe(vdbHalfToFloat(sa.min));
+      expect(sb.min, `${n.level} ${n.origin} min`).toBe(sa.min);
       expect(sb.max, `${n.level} ${n.origin} max`).toBe(sa.max);
       aveUlps = Math.max(aveUlps, ulps(sb.ave, sa.ave), ulps(sb.stddev, sa.stddev));
       if (n.level === 0) {
@@ -286,6 +287,13 @@ describe.each(PRIMITIVES)("%s: vdbQuantize(float, 'half') vs native createNanoGr
         for (let i = 96; i < 1120; i++) if (ob[o.address + i] !== nb[n.address + i]) expect(`${n.origin} value byte ${i}`).toBe("equal");
       }
     }
-    expect(aveUlps).toBeLessThanOrEqual(4);
+    expect(aveUlps).toBe(0);
+    // K7.C1/K7.H1: the whole image equals native's but for the GridData checksum and version (8..20) and
+    // the root background (effectiveBackground takes the near-field inactive value, by design).
+    const rootBg = a[0]!.address + 28;
+    const differ: number[] = [];
+    for (let i = 0; i < nb.length; i++) if (nb[i] !== ob[i] && !(i >= 8 && i < 20) && !(i >= rootBg && i < rootBg + 2)) differ.push(i);
+    expect(ob.length).toBe(nb.length);
+    expect(differ).toEqual([]);
   });
 });
