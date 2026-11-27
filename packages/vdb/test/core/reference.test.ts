@@ -14,6 +14,7 @@ import {
   vdbReferenceTableLayout,
   vdbReferenceWgsl,
   vdbCreateReferenceRenderer,
+  sparseSourceWgsl,
   type VDBReferenceSource,
 } from "../../src/core/internal.js";
 import { VDB_REFERENCE_MAX_HEMISPHERES, VDB_REFERENCE_MAX_LIGHTS, VDB_REFERENCE_MAX_VOLUMES, vdbRefInvert4, vdbReferenceBlackbodyTable, vdbReferenceMiePhaseTable, type VDBReferenceMajorantGrid } from "../../src/tools/internal.js";
@@ -86,8 +87,47 @@ describe("K6.R reference kernel WGSL", () => {
     }
   });
 
+  /** Issue #2: the sparse source's real `vdbSrc*` text (stochastic when the kernel asks for it). */
+  const sparseStub = {
+    ...stubSource,
+    kind: "sparse",
+    wgsl: (o: { slot: { group: number; firstBinding: number }; profile: "sample" | "march"; stochastic?: boolean }) =>
+      sparseSourceWgsl({
+        slot: o.slot,
+        profile: o.profile,
+        lod: "none",
+        channels: { mask: true, albedo: false, emission: false },
+        fastTrilinear: true,
+        cacheAccessor: true,
+        clamp01: false,
+        skipEmpty: false,
+        maxVolumes: 4,
+        ...(o.stochastic ? { stochastic: true } : {}),
+      }),
+  } as unknown as VDBReferenceSource;
+  const stochastic = vdbReferenceWgsl(sparseStub, { densityFilter: "stochastic" });
+
   it("applies every fail-before patch exactly once", () => {
-    for (const [name, [from]] of Object.entries(VDB_REFERENCE_MUTATIONS)) expect(wgsl.split(from).length - 1, name).toBe(1);
+    for (const [name, [from]] of Object.entries(VDB_REFERENCE_MUTATIONS)) {
+      expect((name === "stochastic-pick" ? stochastic : wgsl).split(from).length - 1, name).toBe(1);
+    }
+  });
+
+  it("issue #2: 'stochastic' reads the density through one stochastic call with 3 draws; 'trilinear' is unchanged", () => {
+    const trilinear = vdbReferenceWgsl(sparseStub);
+    expect(vdbReferenceWgsl(sparseStub, { densityFilter: "trilinear" })).toBe(trilinear);
+    expect(trilinear).not.toContain("vdbSrcDensityStochastic");
+    expect(wgslNameProblems(stochastic)).toEqual([]);
+    expect(stochastic.includes("`")).toBe(false);
+    const kernel = stochastic.slice(stochastic.indexOf("K6.R reference renderer"));
+    expect(kernel.match(/vdbSrcDensityStochastic\(/g)?.length).toBe(1);
+    expect(kernel.match(/vdbSrcDensity\(/g)).toBeNull();
+    expect(kernel.match(/vdbSrcMask\(/g)?.length).toBe(1);
+    const sigma = kernel.slice(kernel.indexOf("fn vdbRefSigma"), kernel.indexOf("fn vdbRefMajorantAt"));
+    expect(sigma.match(/vdbRefRand\(\)/g)?.length).toBe(3);
+    // The rest of the kernel is the trilinear one.
+    const strip = (w: string) => w.slice(w.indexOf("K6.R reference renderer")).replace(/fn vdbRefSigma[\s\S]*?fn vdbRefMajorantAt/, "");
+    expect(strip(stochastic)).toBe(strip(trilinear));
   });
 
   it("lays out VdbRefUniforms as the packer writes it", () => {

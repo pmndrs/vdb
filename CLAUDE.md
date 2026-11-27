@@ -600,3 +600,10 @@ From v1; details in docs/archive/handoffs/.
   barely moves our trained network (2 / 16384 values over the bar, need > 16): a mutation on a hidden weight depends on the data.
 - K6.11a: `wvdbPrefixLength`, `nvdbResponseLength` and `vdbMakeFpNLeafCodec` are tools internals (D36): tests and scripts import
   them from `src/tools/internal.ts` / `dist/tools/internal.js`; `./three` imports `nvdbResponseLength` from `../tools/nvdb-stream.js`.
+- Issue #2: the reference kernel is deterministic per seed: pooling two runs of one `?seed=` counts the same paths twice and
+  understates the error you compute. Give each round its own seed
+  (`scripts/k6/stochastic-ab.mjs`). On this machine paired ratios hold within a session but absolute batch rates drift
+  ±20 % between sessions (vdbSample once out-ran vdbSampleFast): compare filters only inside one ABBA session.
+- Issue #2: the K6.R twin's statistical check cannot see a small change of the medium on smooth grids (the sparse twin's
+  blobs hid a swapped stochastic pick); the twins agree path for path, so gate a voxel-exact change on `equalShare`
+  (0.997 unmutated vs 0.80 mutated).

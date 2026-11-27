@@ -411,6 +411,23 @@ export function vdbSparseDensityCpu(vol: VDBSparseVolumeCpu, uvw: readonly numbe
   return out(pyramidSample(pyr, uvw, l - L0), true);
 }
 
+/**
+ * Issue #2: twin of `vdbSrcDensityStochastic(v, uvw, lod, xi)`: at lod 0, the one voxel of the trilinear cell picked
+ * by `xi` (per axis the upper voxel when `xi[a] < frac`, so with probability equal to its trilinear weight; the tree
+ * value everywhere, as {@link vdbSparseDensityCpu}'s taps), normalised as {@link vdbSparseDensityCpu}. Its mean over
+ * uniform `xi` is the trilinear value (exactly, when `clamp01` is off or the voxels are in [0, 1]). `lod` > 0:
+ * {@link vdbSparseDensityCpu}.
+ */
+export function vdbSparseDensityStochasticCpu(vol: VDBSparseVolumeCpu, uvw: readonly number[], lod: number, xi: readonly number[]): VDBSparseSampleCpu {
+  if (lod > 0) return vdbSparseDensityCpu(vol, uvw, lod);
+  const { image, box } = vol.density;
+  const p = samplePos(box, uvw);
+  const b = p.map(Math.floor) as Vec3;
+  const ijk = [0, 1, 2].map((a) => b[a]! + (f(xi[a]!) < p[a]! - b[a]! ? 1 : 0)) as Vec3;
+  const v = vdbReadValueF32Cpu(image, ijk);
+  return { value: vol.clamp01 ? Math.min(Math.max(v, 0), 1) : v, scale: Math.abs(v), filtered: false };
+}
+
 /** Twin of `vdbSrcMask(v, uvw, lod)` (level 0; 1 without a mask). */
 export function vdbSparseMaskCpu(vol: VDBSparseVolumeCpu, uvw: readonly number[]): VDBSparseSampleCpu {
   if (!vol.mask) return { value: 1, scale: 1, filtered: false };

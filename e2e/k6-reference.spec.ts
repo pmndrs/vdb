@@ -118,3 +118,33 @@ for (const mutate of ["majorant-cell", "phase-table-weight", "falloff"]) {
     expect(r.twins[0]?.passes, detail).toBe(false);
   });
 }
+
+test("issue #2: the stochastic-density kernel = its CPU twin (dense fallback, sparse 3 volumes, features) and deterministic", async ({ page }) => {
+  const errors = collectErrors(page);
+  const r = await run(page, "?case=twin&density=stochastic&determinism=1");
+  const detail = JSON.stringify(r, null, 2);
+  expect(r.error, detail).toBeUndefined();
+  expect(r.uncaptured, detail).toEqual([]);
+  expect(r.determinism?.identical, detail).toBe(true);
+  expect(r.twins.length, detail).toBe(3);
+  for (const t of r.twins) {
+    expect(t.passes, `${t.name}\n${detail}`).toBe(true);
+    expect(t.covered, `${t.name}\n${detail}`).toBeGreaterThan(20);
+    expect(t.majorantViolations, `${t.name}\n${detail}`).toBe(0);
+    expect(t.equalShare, `${t.name}\n${detail}`).toBeGreaterThan(0.5);
+  }
+  // The voxel pick is exact: the sparse twin takes the same decisions path for path (0.997 on SwiftShader).
+  expect(r.twins[1]!.equalShare, detail).toBeGreaterThan(STOCHASTIC_EQUAL);
+  expect(errors, detail).toEqual([]);
+});
+
+/** Issue #2: the share of values equal to the twin the sparse stochastic twin must reach (unmutated 0.997, mutated 0.80). */
+const STOCHASTIC_EQUAL = 0.95;
+
+test("issue #2 fail-before: picking the upper voxel with probability 1 − frac breaks the sparse stochastic twin", async ({ page }) => {
+  const r = await run(page, "?case=twin&source=sparse&density=stochastic&mutate=stochastic-pick");
+  const detail = JSON.stringify(r, null, 2);
+  expect(r.error, detail).toBeUndefined();
+  // The smooth blobs hide the mean shift within the noise; the path-for-path agreement does not.
+  expect(r.twins[0]!.passes && r.twins[0]!.equalShare > STOCHASTIC_EQUAL, detail).toBe(false);
+});

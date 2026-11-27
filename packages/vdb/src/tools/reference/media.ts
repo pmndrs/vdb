@@ -4,7 +4,7 @@
  * pool (twin of `vdbSparseSource` at level 0: `tools/frame/sparse.ts`) and a constant medium (analytic tests).
  */
 
-import { vdbSparseAlbedoCpu, vdbSparseDensityCpu, vdbSparseEmissionCpu, vdbSparseMaskCpu, type VDBSparseVolumeCpu } from "../frame/sparse.js";
+import { vdbSparseAlbedoCpu, vdbSparseDensityCpu, vdbSparseDensityStochasticCpu, vdbSparseEmissionCpu, vdbSparseMaskCpu, type VDBSparseVolumeCpu } from "../frame/sparse.js";
 import { sampleWvdbDenseTexture, type WvdbDenseVolume } from "../wvdb/dense.js";
 import type { VDBRefVec3 } from "./scene.js";
 import type { VDBReferenceMediumCpu } from "./trace.js";
@@ -23,6 +23,7 @@ export function vdbReferenceDenseMediumCpu(volume: WvdbDenseVolume): VDBReferenc
 export function vdbReferenceSparseMediumCpu(vol: VDBSparseVolumeCpu): VDBReferenceMediumCpu {
   return {
     density: (uvw) => vdbSparseDensityCpu(vol, uvw, 0).value * vdbSparseMaskCpu(vol, uvw).value,
+    densityStochastic: (uvw, xi) => vdbSparseDensityStochasticCpu(vol, uvw, 0, xi).value * vdbSparseMaskCpu(vol, uvw).value,
     ...(vol.albedo ? { albedo: (uvw) => vdbSparseAlbedoCpu(vol, uvw).value } : {}),
     ...(vol.emission ? { emission: (uvw) => vdbSparseEmissionCpu(vol, uvw).value } : {}),
   };

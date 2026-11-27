@@ -63,10 +63,19 @@ export const VDB_REFERENCE_MUTATIONS: Readonly<Record<string, readonly [string, 
   "majorant-cell": ["let cellIndex = cell;", "let cellIndex = vec3u(cell.x, cell.y, 0u);"],
   "phase-table-weight": ["return VdbRefPhaseSample(cos(theta), vdbRefTableAt(row, size, u).xyz * s);", "return VdbRefPhaseSample(cos(theta), vdbRefTableAt(row, size, u).yyy * s);"],
   falloff: ["let mode = u32(l.extra.x + 0.5);", "let mode = select(u32(l.extra.x + 0.5), 0u, l.extra.x > 1.5);"],
+  // Issue #2 (stochastic kernel on a sparse source): the upper voxel with probability 1 - frac, not frac.
+  "stochastic-pick": ["select(vec3i(0), vec3i(1), xi < p - b);", "select(vec3i(0), vec3i(1), xi >= p - b);"],
 });
 
 /** The kernel's WGSL after the source's (`vdbSrc*`) and module text. */
-export function vdbReferenceKernelWgsl(o: { maxVolumes: number; maxLights: number; maxHemispheres: number; maxSteps: number; ratioRr: number }): string {
+export function vdbReferenceKernelWgsl(o: { maxVolumes: number; maxLights: number; maxHemispheres: number; maxSteps: number; ratioRr: number; stochastic?: boolean }): string {
+  // Issue #2: the stochastic density draws xi (x, y, z, in that order) from the shared stream before the read.
+  const density = o.stochastic
+    ? `let xi0 = vdbRefRand();
+  let xi1 = vdbRefRand();
+  let xi2 = vdbRefRand();
+  let value = vdbSrcDensityStochastic(v, uvw, 0.0, vec3f(xi0, xi1, xi2)) * vdbSrcMask(v, uvw, 0.0);`
+    : "let value = vdbSrcDensity(v, uvw, 0.0) * vdbSrcMask(v, uvw, 0.0);";
   return /* wgsl */ `
 // ---- K6.R reference renderer (core/reference/wgsl.ts): brute-force volumetric path tracing -------------------
 const VDB_REF_PI: f32 = 3.14159265358979;
@@ -304,7 +313,7 @@ fn vdbRefUvw(i: u32, x: vec3f) -> vec3f {
 fn vdbRefSigma(i: u32, x: vec3f) -> f32 {
   let uvw = vdbRefUvw(i, x);
   let v = vdbRefU.volumes[i].ids.x;
-  let value = vdbSrcDensity(v, uvw, 0.0) * vdbSrcMask(v, uvw, 0.0);
+  ${density}
   let p = vdbRefU.volumes[i].params;
   return select(0.0, value, value > p.z) * p.x;
 }
