@@ -139,7 +139,7 @@ mean |bias| over 16 groups: K6.N ours 10.0, two-sided 18.8, generic 10.0, packed
    packed one). Settles it: the K6.T A/B (transmittance-pass GPU time, 64³ and 128³, Metal plus one non-Apple GPU).
 2. **Make the `.tza` helpers public** (`vdbFrameMlpFromTza` / `ToTza` in `@pmndrs/vdb/tools`) so hosts can load a network by
    URL? Suggestion: yes once a second network exists (an anisotropy or resolution-independent retrain, K6.Nb). Pro: weights as
-   data in the sibling's format, no TS module needed. Con: a public format commitment (the convention in V175 has no
+   data in the sibling's format, no TS module needed. Con: a public format commitment (the convention in V181 has no
    metadata for activations / output). Settles it: a host or the pathtracer asking for it; or denoiser agreeing a metadata
    convention (§6 item 3).
 3. **Depend on denoiser later (option (a))?** Suggestion: no for 0.x. Pro: one shared runtime. Con: five denoiser changes (§6)
