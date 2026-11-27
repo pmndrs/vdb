@@ -114,7 +114,7 @@ export interface BuiltTree {
   uppers: UpperNode[];
   lowers: LowerNode[];
   leaves: Leaf[];
-  /** Root table, sorted by NanoVDB key (unsigned 64-bit), children and tiles interleaved. */
+  /** Root table in signed origin order (as native NanoVDB), children and tiles interleaved. */
   rootTiles: RootTile[];
   /** Active tile counts per level (TreeData `mTileCount`). */
   tileCounts: { lower: number; upper: number; root: number };
@@ -493,6 +493,11 @@ function assembleTree(
   }
 
   // -- Deterministic breadth-first ordering + memIndex assignment ----------
+  // Signed origin order (x, then y, then z), as native NanoVDB stores them: its
+  // builders copy OpenVDB's root map (`std::map<Coord>`), so the root table and
+  // the upper nodes follow `Coord::operator<`. The root table below uses the same
+  // order, so the root -> upper -> lower -> leaf walk visits every level in
+  // storage order, which the `IsBreadthFirst` flag we set promises (K7.7).
   const byOrigin = (a: { origin: [number, number, number] }, b: { origin: [number, number, number] }) =>
     a.origin[0] - b.origin[0] || a.origin[1] - b.origin[1] || a.origin[2] - b.origin[2];
 
@@ -526,15 +531,17 @@ function assembleTree(
     for (const lower of upper.children.values()) upper.stats.merge(lower.stats);
   }
 
-  // -- Root table: children and tiles, sorted by NanoVDB key ----------------
-  // Unsigned 64-bit key order (K4.12): negative coordinates sort after the
-  // non-negative ones, not before them as a signed origin sort would put them.
+  // -- Root table: children and tiles in signed origin order ----------------
+  // Native order (see above). K4.12 sorted by the unsigned u64 key instead, which
+  // NanoVDB never requires (its root lookup is a linear scan) and which put the
+  // root table out of step with the upper nodes for grids straddling 0:
+  // `nanovdb_validate` rejected them ("Upper node is not stored breadth-first").
   const rootTiles: RootTile[] = [
     ...uppers.map((u): RootTile => ({ key: keyForOrigin(u.origin), origin: u.origin, child: u })),
     ...[...rootTileMap.values()].map(
       (t): RootTile => ({ key: keyForOrigin(t.origin), origin: t.origin, child: null, value: t.value, active: t.active }),
     ),
-  ].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  ].sort(byOrigin);
 
   const root = newStats();
   for (const entry of rootTiles) {

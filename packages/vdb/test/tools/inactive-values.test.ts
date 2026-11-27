@@ -275,10 +275,10 @@ describe("K4.9 synthetic inactive tiles", () => {
 });
 
 // ---------------------------------------------------------------------------
-// K4.12: root entries in unsigned key order
+// K4.12 / K7.7: root entries in native (signed origin) order
 // ---------------------------------------------------------------------------
 
-describe("K4.12 root table key order", () => {
+describe("K4.12 / K7.7 root table order", () => {
   const mk = (origin: Coord): SynthLeaf => ({
     origin,
     values: new Float32Array(512).fill(1),
@@ -302,7 +302,10 @@ describe("K4.12 root table key order", () => {
       lowers: [{ origin: o, tiles: [], leaves: [mk(o)] }],
     })),
   };
-  it("sorts by the u64 NanoVDB key, so negative coordinates come after non-negative ones", () => {
+  // K4.12 sorted by the u64 key; native NanoVDB keeps OpenVDB's signed `Coord` order (its root lookup
+  // is a linear scan) and stores the upper nodes in that order, so `nanovdb_validate` rejected our
+  // straddling grids (K7.7). The table and the upper nodes now both follow the signed origin.
+  it("sorts by signed origin (x, y, z) as native NanoVDB, and stores the upper nodes in the same order", () => {
     const grid = parseVdb(writeSyntheticVdb(spec)).grids[0]!;
     const { image } = buildFromVdbDetailed(grid);
     const dv = new DataView(image.buffer, image.byteOffset, image.byteLength);
@@ -312,12 +315,15 @@ describe("K4.12 root table key order", () => {
     expect(n).toBe(origins.length);
     const keys: bigint[] = [];
     for (let i = 0; i < n; i++) keys.push(dv.getBigUint64(rootOff + 64 + i * 32, true));
-    expect(keys).toEqual([...keys].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
     expect(new Set(keys).size).toBe(origins.length);
-    // The signed-origin order would put [-8192,...] first; the key order puts it after [4096,...].
     const key = (o: Coord): bigint => BigInt(o[2] >>> 12) | (BigInt(o[1] >>> 12) << 21n) | (BigInt(o[0] >>> 12) << 42n);
-    expect(keys).toEqual(origins.map(key).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
-    expect(keys[0]).toBe(key([0, 0, 0]));
+    const signed = [...origins].sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+    expect(keys).toEqual(signed.map(key));
+    expect(keys[0]).toBe(key([-8192, -4096, 0]));
+    // Each root entry's child is the next upper node in storage (breadth-first).
+    const children: bigint[] = [];
+    for (let i = 0; i < n; i++) children.push(dv.getBigInt64(rootOff + 64 + i * 32 + 8, true));
+    expect(children).toEqual([...children].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
   });
 });
 

@@ -181,10 +181,13 @@ describe("buildFromVdb — active tiles become NanoVDB tiles", () => {
         value: dv.getFloat32(t + 20, true),
       };
     });
-    // Sorted by unsigned NanoVDB key (K4.12): [0,0,0] < [0,-4096,0] < [-4096,0,0] < [8192,0,0].
-    // Keys are z | y<<21 | x<<42 over the coordinate >>> 12 (as u32).
+    // Signed origin order, as native NanoVDB (K7.7; K4.12 had the unsigned key order):
+    // [-4096,0,0] < [0,-4096,0] < [0,0,0] < [8192,0,0]. Keys are z | y<<21 | x<<42 over the coordinate >>> 12 (as u32).
+    const key = (o: [number, number, number]): bigint => BigInt(o[2] >>> 12) | (BigInt(o[1] >>> 12) << 21n) | (BigInt(o[0] >>> 12) << 42n);
     const byKey = new Map(entries.map((e) => [e.key, e]));
-    expect(entries.map((e) => e.key)).toEqual([...entries.map((e) => e.key)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
+    expect(entries.map((e) => e.key)).toEqual(
+      ([[-4096, 0, 0], [0, -4096, 0], [0, 0, 0], [8192, 0, 0]] as [number, number, number][]).map(key),
+    );
     expect(byKey.size).toBe(4);
     const tiles = entries.filter((e) => e.child === 0n);
     expect(tiles).toContainEqual(expect.objectContaining({ state: 1, value: 0.25 }));
