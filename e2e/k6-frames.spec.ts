@@ -124,6 +124,28 @@ const FRAMES: Frame[] = [
     fields: ["rgba"],
     fixture: "fixtures/wdas/wdas_cloud_quarter_fp8.nvdb",
   })),
+  // K6.11b: ambient-class light (hemisphere, ambient, light probe) so the shadowed-ambient default (D35 (1)) has a
+  // before/after gate beyond the 'outward' environment frame: k3-frame's CC0 smoke with his hemisphere + ambient lights
+  // (CI), and the K6.Q1 report scenes through k6-scene (the probe on the WDAS cloud, the hemisphere on the smoke and the
+  // absorbing bunny; local fixtures). `K6_FRAMES_QUERY=ao=0` renders them unshadowed.
+  k3("smoke-volume-hemi", "?w=320&h=192&froxels=160x96x24&lighting=volume&lights=dir-hemi", ""),
+  k3("smoke-frame-hemi", "?w=320&h=192&froxels=160x96x24&lighting=frame&lights=dir-hemi", ""),
+  ...(
+    [
+      ["wdas-probe", "frame", "fixtures/wdas/wdas_cloud_quarter_fp8.nvdb"],
+      ["wdas-probe", "volume", "fixtures/wdas/wdas_cloud_quarter_fp8.nvdb"],
+      ["smoke-hemi", "frame", "fixtures/vdb-samples/smoke.vdb"],
+      ["bunny-absorbing-hemi", "frame", BUNNY],
+      ["bunny-absorbing-hemi", "volume", BUNNY],
+      ["bunny-absorbing-ambient", "frame", BUNNY],
+    ] as const
+  ).map(([scene, lighting, fixture]) => ({
+    name: `scene-${scene}-${lighting}`,
+    url: `/src/harness/k6-scene.html?scene=${scene}&lighting=${lighting}&w=640&h=360`,
+    global: "__VDB_K6_SCENE__",
+    fields: ["rgba"],
+    fixture,
+  })),
   ...["?case=shadow", "?case=shadow&cascades=4", "?case=shadow&light=spot", "?case=shadow&source=sparse", "?case=shadow&lighting=frame", "?case=emission&source=dense", "?case=emission&source=sparse"].map((q) => ({
     name: `shadows-${slug(q)}`,
     url: `/src/harness/k3-frame-shadows.html${q}`,

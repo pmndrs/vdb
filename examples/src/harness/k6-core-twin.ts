@@ -91,7 +91,7 @@ export type TwinMutation =
   // K6.Q1 shadowed ambient: one pair fewer; no occlusion (V = 1)
   | "ao-pairs"
   | "ao"
-  // K6.Q1a: spectral ambient pairs read as grey (the green channel's totals); the probe term back to irradiance
+  // K6.Q1a: spectral ambient pairs read as grey (the green channel's totals); K6.Q1b: the probe's sky up / down terms dropped
   | "ao-grey"
   | "probe-term"
   | "ao-ring"
@@ -206,8 +206,6 @@ export interface TwinFrame {
   occluder?: ((index: number, world: V3) => number) | null;
   /** K6.Q1 shadowed ambient: the pairs' upper directions (world; [0] the sky) and each march's steps (0: the volume's). */
   ambientOcclusion?: { directions: V3[]; steps: number } | null;
-  /** K6.Q1a `ambientProbe`: the probe along ± the sky as three's irradiance (default) or the hemisphere's mean radiance. */
-  probeMode?: "irradiance" | "radiance";
 }
 
 const sub = (a: readonly number[], b: readonly number[]): V3 => [a[0]! - b[0]!, a[1]! - b[1]!, a[2]! - b[2]!];
@@ -392,7 +390,7 @@ export function volumeFroxelTwin(frame: TwinFrame, r: TwinVolume, cell: V3, muta
     const hemiSky = frame.hemi.reduce<V3>((a, h) => add(a, h.sky), [0, 0, 0]);
     const hemiGround = frame.hemi.reduce<V3>((a, h) => add(a, h.ground), [0, 0, 0]);
     const sky = norm(frame.hemi[0]?.up ?? [0, 1, 0]);
-    if (r.lights & 32) irradiance = add(irradiance, vdbFrameAmbientIrradiance({ ambient: frame.ambient, hemiSky: [0, 0, 0], hemiGround: [0, 0, 0], probe: frame.probe, sky, probeMode: mutate === "probe-term" ? "irradiance" : (frame.probeMode ?? "irradiance") }, v));
+    if (r.lights & 32) irradiance = add(irradiance, vdbFrameAmbientIrradiance({ ambient: frame.ambient, hemiSky: [0, 0, 0], hemiGround: [0, 0, 0], probe: mutate === "probe-term" ? null : frame.probe, sky }, v));
     if (r.lights & 2) irradiance = add(irradiance, vdbFrameAmbientIrradiance({ ambient: [0, 0, 0], hemiSky, hemiGround, sky }, v));
   }
   for (const [index, l] of frame.lights.entries()) {
@@ -524,7 +522,7 @@ export function volumeFroxelSpectralTwin(frame: TwinFrame, r: TwinVolume, cell: 
     const hemiSky = frame.hemi.reduce<V3>((a, h) => add(a, h.sky), [0, 0, 0]);
     const hemiGround = frame.hemi.reduce<V3>((a, h) => add(a, h.ground), [0, 0, 0]);
     const sky = norm(frame.hemi[0]?.up ?? [0, 1, 0]);
-    if (r.lights & 32) irradiance = add(irradiance, vdbFrameAmbientIrradiance({ ambient: frame.ambient, hemiSky: [0, 0, 0], hemiGround: [0, 0, 0], probe: frame.probe, sky, probeMode: mutate === "probe-term" ? "irradiance" : (frame.probeMode ?? "irradiance") }, v));
+    if (r.lights & 32) irradiance = add(irradiance, vdbFrameAmbientIrradiance({ ambient: frame.ambient, hemiSky: [0, 0, 0], hemiGround: [0, 0, 0], probe: mutate === "probe-term" ? null : frame.probe, sky }, v));
     if (r.lights & 2) irradiance = add(irradiance, vdbFrameAmbientIrradiance({ ambient: [0, 0, 0], hemiSky, hemiGround, sky }, v));
   }
   for (const [index, l] of frame.lights.entries()) {

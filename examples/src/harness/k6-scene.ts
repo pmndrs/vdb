@@ -7,10 +7,15 @@
  * `mlp`, `multi-scale` with `?msEdge=zero|clamp`, `?msLevels=`, K6.3a `?msSigma=his|paper`),
  * (K6.8: always the core; `?backend=` is ignored), `?w=&h=` (default 1280 × 720), `?froxels=WxHxD`
  * (default his 512x512x24), `?lod=` (sparse sources: default 'coarse-pyramid', D28), `?shadowRes=`, `?shadowSteps=`.
- * Jitter and temporal reprojection off (deterministic); no MSAA (no meshes).
+ * K6.Q1b: `?shadowResMax=` (the size-adaptive shadow grid), `?shadowRule=both|optical|voxels` (its internal A/B rule),
+ * `?aoRing=turn|fixed` (K6.11b internal A/B of the ring under jitter + temporal). A spectral scene (`def.spectral`) turns
+ * the renderer's `spectral` on.
+ * Jitter and temporal reprojection off (deterministic) unless the K6.Q1b multi-frame mode asks: `?frames=N` draws N frames
+ * (default 4: the warm-up) with `?jitter=1` and / or `?temporal=1`; the image is the last frame, or with `?average=K` the
+ * linear mean of the last K frames (the ensemble mean of the jittered estimator). No MSAA (no meshes).
  *
  * Results: `window.__VDB_K6_SCENE__` = { done, error?, adapter, width, height, rgba (base64 RGBA8, sRGB, his background
- * 0x598eff), settings, backend, warnings, uncaptured }.
+ * 0x598eff), settings, backend, shadowGridResolution, frames, averaged, warnings, uncaptured }.
  */
 import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
@@ -30,6 +35,11 @@ interface Result {
   settings?: Record<string, unknown>;
   backend?: string;
   sourceKind?: "dense" | "sparse";
+  /** K6.Q1b: the 'frame' shadow grid side the renderer used (core `shadowGridResolution`). */
+  shadowGridResolution?: number;
+  /** K6.Q1b multi-frame mode: frames drawn, and how many the image averages (0: the last frame alone). */
+  frames?: number;
+  averaged?: number;
   warnings: string[];
   uncaptured: string[];
 }
@@ -61,19 +71,28 @@ function log(text: string, cls = ""): void {
   root.append(p);
 }
 
-async function readImage(renderer: WebGPURenderer, rt: THREE.RenderTarget): Promise<string> {
+/** The target's linear RGB (half floats; rows padded). */
+async function readLinear(renderer: WebGPURenderer, rt: THREE.RenderTarget): Promise<Float32Array> {
   const raw = (await renderer.readRenderTargetPixelsAsync(rt, 0, 0, W, H)) as unknown as Uint16Array;
   const stride = H > 1 ? (raw.length - W * 4) / (H - 1) : W * 4;
-  const out = new Uint8Array(W * H * 4);
-  const oetf = (x: number) => (x <= 0.0031308 ? x * 12.92 : 1.055 * Math.pow(x, 1 / 2.4) - 0.055);
-  const byte = (v: number) => Math.round(Math.min(1, Math.max(0, oetf(v))) * 255);
+  const out = new Float32Array(W * H * 3);
   for (let y = 0; y < H; y++)
     for (let x = 0; x < W; x++) {
       const i = y * stride + x * 4;
-      const o = (y * W + x) * 4;
-      for (let c = 0; c < 3; c++) out[o + c] = byte(THREE.DataUtils.fromHalfFloat(raw[i + c]!));
-      out[o + 3] = 255;
+      for (let c = 0; c < 3; c++) out[(y * W + x) * 3 + c] = THREE.DataUtils.fromHalfFloat(raw[i + c]!);
     }
+  return out;
+}
+
+/** Linear RGB → base64 RGBA8 (sRGB). */
+function encodeImage(linear: Float32Array): string {
+  const out = new Uint8Array(W * H * 4);
+  const oetf = (x: number) => (x <= 0.0031308 ? x * 12.92 : 1.055 * Math.pow(x, 1 / 2.4) - 0.055);
+  const byte = (v: number) => Math.round(Math.min(1, Math.max(0, oetf(v))) * 255);
+  for (let p = 0; p < W * H; p++) {
+    for (let c = 0; c < 3; c++) out[p * 4 + c] = byte(linear[p * 3 + c]!);
+    out[p * 4 + 3] = 255;
+  }
   let s = "";
   for (let i = 0; i < out.length; i += 0x8000) s += String.fromCharCode(...out.subarray(i, i + 0x8000));
   return btoa(s);
@@ -113,15 +132,17 @@ async function main(): Promise<void> {
   if (params.has("ao")) cs.ambientOcclusion = params.get("ao") === "1";
   if (params.has("aoPairs")) cs.ambientOcclusionPairs = Number(params.get("aoPairs"));
   if (params.has("aoSteps")) cs.ambientOcclusionSteps = Number(params.get("aoSteps"));
-  // K6.Q1a `?ambientProbe=radiance`: the probe's sky up / down terms as the hemisphere's mean radiance (internal setting)
-  if (params.has("ambientProbe")) Object.assign(cs, { ambientProbe: params.get("ambientProbe") === "radiance" ? "radiance" : "irradiance" });
+  // K6.Q1b: the size-adaptive shadow grid and its internal rule; K6.11b: the AO ring's internal A/B (internal fields)
+  if (params.has("shadowResMax")) cs.shadowResolutionMax = Number(params.get("shadowResMax"));
+  if (params.has("shadowRule")) Object.assign(cs, { shadowResolutionRule: params.get("shadowRule") === "voxels" ? "voxels" : params.get("shadowRule") === "optical" ? "optical" : "both" });
+  if (params.has("aoRing")) Object.assign(cs, { ambientOcclusionRing: params.get("aoRing") === "fixed" ? "fixed" : "turn" });
   result.backend = "core";
   Object.assign(frameRenderer.settings, {
     width: FROXELS[0],
     height: FROXELS[1],
     depth: FROXELS[2],
-    jitter: false,
-    temporal: false,
+    jitter: params.get("jitter") === "1",
+    temporal: params.get("temporal") === "1",
     lighting: LIGHTING,
     multipleScattering: MS,
     shadowResolution: Number(params.get("shadowRes") ?? 64),
@@ -129,6 +150,9 @@ async function main(): Promise<void> {
     phaseG: def.phase[0],
     phaseBackG: def.phase[1],
     phaseBackWeight: def.phase[2],
+    // K6.Q1b: a spectral scene (his medium presets: per-channel extinction and g)
+    spectral: !!def.spectral,
+    phaseGExponent: def.spectral?.phaseGExponent ?? 0,
   });
 
   let source: VDBThreeVolumeSource;
@@ -157,7 +181,7 @@ async function main(): Promise<void> {
     frameRenderer,
     bbox,
     baseColor: new THREE.Color().setRGB(def.albedo[0], def.albedo[1], def.albedo[2], THREE.LinearSRGBColorSpace),
-    angstromExponent: 0.0,
+    angstromExponent: def.spectral?.angstromExponent ?? 0.0,
     absorbance: 1.0,
     densityScale: 1.0,
     normalizeDensity: true,
@@ -167,6 +191,7 @@ async function main(): Promise<void> {
     phaseG: def.phase[0],
     phaseBackG: def.phase[1],
     phaseBackWeight: def.phase[2],
+    phaseGExponent: def.spectral?.phaseGExponent ?? 0,
     shadowSteps: Number(params.get("shadowSteps") ?? 32),
     mipmaps: true,
   });
@@ -210,14 +235,27 @@ async function main(): Promise<void> {
     renderer.render(scene, camera);
     renderer.setRenderTarget(null);
   };
-  // First frames: shader builds, the sparse pyramid, the 'frame' grid passes (redrawn only on change).
-  for (let i = 0; i < 4; i++) {
+  // First frames: shader builds, the sparse pyramid, the 'frame' grid passes (redrawn only on change). K6.Q1b: `?frames=N`
+  // (jitter / temporal from the query), `?average=K` averages the last K frames in linear light.
+  const frames = Math.max(1, Number(params.get("frames") ?? 4));
+  const average = Math.min(frames, Math.max(0, Number(params.get("average") ?? 0)));
+  const sum = new Float32Array(W * H * 3);
+  let image: Float32Array | null = null;
+  for (let i = 0; i < frames; i++) {
     draw();
     await device.queue.onSubmittedWorkDone();
+    if (average > 0 && i >= frames - average) {
+      const f = await readLinear(renderer, rt);
+      for (let k = 0; k < sum.length; k++) sum[k] = sum[k]! + f[k]! / average;
+    }
   }
+  image = average > 0 ? sum : await readLinear(renderer, rt);
   result.width = W;
   result.height = H;
-  result.rgba = await readImage(renderer, rt);
+  result.frames = frames;
+  result.averaged = average;
+  result.shadowGridResolution = frameRenderer.core?.shadowGridResolution ?? 0;
+  result.rgba = encodeImage(image);
   log(`${NAME} ${LIGHTING} ms ${String(MS)}: ${W}x${H}`, "ok");
   volume.dispose();
   source.dispose();

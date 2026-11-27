@@ -607,3 +607,18 @@ From v1; details in docs/archive/handoffs/.
 - Issue #2: the K6.R twin's statistical check cannot see a small change of the medium on smooth grids (the sparse twin's
   blobs hid a swapped stochastic pick); the twins agree path for path, so gate a voxel-exact change on `equalShare`
   (0.997 unmutated vs 0.80 mutated).
+- K6.Q1b: the 'frame' cascade fitter snaps voxels to powers of two with voxel ≥ extent / (R − 1), so `shadowResolution`
+  64 / 128 put only 32 / 64 cells across a unit box (65 / 129 put 64 / 128). A grid-resolution A/B must quote the cells
+  across, not R; `shadowResolutionMax` picks the side that lands on the voxel it wants (`vdbFrameAdaptiveGridResolution`).
+- K6.Q1b: `ambientProbe` is deleted (`?probeTerm=` / `?ambientProbe=` are gone). The k6-core `probe-term` mutation now drops
+  the light probe's sky terms from the twins (the `k6-ambient` "light probe term" rows).
+- K6.Q1b spectral references (`k6-scenes.ts` `spectral`): the reference renders each channel as a grey medium (that
+  channel's extinction and phase g) and publishes `transmittanceRgb`; the report composites and unblends with each
+  channel's alpha. A spectral scene costs three references.
+- K6.Q1b k6-scene multi-frame mode: `?frames=N&jitter=1&temporal=1` reads the last frame; `&average=K` the linear mean of
+  the last K (the jittered estimator's ensemble mean). `--msRows=<regex>` trims the report's MS mode rows.
+- K6.Q1b: the 'neural' MLP's features reach h·2^k with h the shadow grid voxel, so any grid-resolution change moves the
+  'neural' MS term (smoke −2 → −10 % vs the reference at R 128). Judge a grid change on 'frame' ms-off rows (single
+  scattering) and quote the 'neural' rows separately.
+- K6.Q1b: an ambient / probe error that 'volume' lighting shares (WDAS + probe +28 % in both) is the isotropic visibility
+  (V128), not the grid: the `*-only` / `*-only-iso` report groups separate the phase weight from the pair quadrature.

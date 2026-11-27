@@ -534,17 +534,6 @@ fn vdbFrameShIrradiance(normal: vec3f) -> vec3f {
   result += vdbFrameLights.probe[8].xyz * 0.429043 * (x * x - y * y);
   return result;
 }
-// K6.Q1a: the probe's light from the hemisphere around a unit direction (the sky up / down terms). sky.w 0: three's
-// irradiance there (his); 1 (ambientProbe 'radiance'): pi x the probe's mean radiance over the hemisphere, the isotropic
-// in-scattering's own weight (Funk-Hecke: band 0 x 1, band 1 x 1/2, band 2 x 0)
-fn vdbFrameSkyProbe(normal: vec3f) -> vec3f {
-  if (vdbFrameLights.sky.w < 0.5) {
-    return vdbFrameShIrradiance(normal);
-  }
-  var result = vdbFrameLights.probe[0].xyz * 0.886227;
-  result += (vdbFrameLights.probe[1].xyz * normal.y + vdbFrameLights.probe[2].xyz * normal.z + vdbFrameLights.probe[3].xyz * normal.x) * 0.767495;
-  return result;
-}
 `,
     },
   ],

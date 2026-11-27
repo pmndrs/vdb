@@ -42,6 +42,12 @@ export interface K6Scene {
   lights: K6Light[];
   /** Camera direction from the box centre (normalised here) and distance in box diagonals; vertical fov 60°. */
   camera: { dir: K6Vec3; dist: number };
+  /**
+   * K6.Q1b: a spectral medium (the renderer's `spectral`): each channel's extinction × (λ / 550)^−`angstromExponent`
+   * and its phase g × (λ / 550)^−`phaseGExponent` (both lobes, clamped to ±0.99); the albedo is per channel already.
+   * The reference renders each channel as a grey medium with that channel's extinction and phase.
+   */
+  spectral?: { angstromExponent: number; phaseGExponent: number };
 }
 
 const SUN: K6Light = { kind: "sun", toLight: [100, 200, 100], color: [1, 1, 1], intensity: 1 };
@@ -58,6 +64,15 @@ const PHASE: K6Vec3 = [0.8, -0.3, 0.2];
 const VIEW = { dir: [0.9, 0.35, 1.1] as K6Vec3, dist: 0.8 };
 
 const scene = (name: string, title: string, s: Omit<K6Scene, "name" | "title" | "phase" | "camera"> & Partial<Pick<K6Scene, "phase" | "camera">>): K6Scene => ({ name, title, phase: PHASE, camera: VIEW, ...s });
+// K6.Q1b: his 'dark-smoke' preset (Dubovik et al. 2002, savanna; tools/frame/medium.ts): albedo, Ångström 1.8, HG g 0.577
+// with phaseGExponent 0.513. Extinction 20 on his bunny: thick enough to colour the shadows, thin enough for a quick
+// multiple-scattering reference (three channel renders).
+const DARK_SMOKE = { albedo: [0.84, 0.86, 0.88] as K6Vec3, phase: [0.577, 0, 0] as K6Vec3, spectral: { angstromExponent: 1.8, phaseGExponent: 0.513 } };
+const ISO: K6Vec3 = [0, 0, 0];
+// K6.Q1b (V128 evidence): distant light alone, with the scene's phase and with an isotropic one. For a uniform ambient
+// the isotropic single-scattering reference IS the solid-angle mean of transmittance the shadowed ambient estimates, so
+// (phase vs isotropic reference) is the phase-weighting term and (renderer vs isotropic reference) the pair quadrature.
+const AMBIENT_ONLY: K6Light = { kind: "ambient", color: [1, 1, 1], intensity: 1 };
 
 /** The scene set: each with his sun, and with / without ambient light; the WDAS cloud, the smoke, an absorbing and a thin bunny, a point light. */
 export const K6_SCENES: Record<string, K6Scene> = Object.fromEntries(
@@ -73,6 +88,24 @@ export const K6_SCENES: Record<string, K6Scene> = Object.fromEntries(
     scene("smoke-hemi", "openvdb.org smoke, sun + hemisphere light (K6.Q1)", { asset: "smoke", extinction: 40, albedo: [1, 1, 1], lights: [SUN, HEMI] }),
     scene("wdas-probe", "WDAS cloud, sun + light probe (K6.Q1)", { asset: "wdas", extinction: 40, albedo: [1, 1, 1], lights: [SUN, PROBE] }),
     scene("bunny-absorbing-hemi", "absorbing bunny, sun + hemisphere light (K6.Q1)", { asset: "bunny", extinction: 100, albedo: [0.5, 0.5, 0.5], lights: [SUN, HEMI] }),
+    // K6.Q1b: a spectral medium (his 'dark-smoke' preset), sun and sun + hemisphere (the per-channel shadowed ambient)
+    scene("bunny-spectral", "his bunny, spectral 'dark-smoke' medium (extinction 20), sun", { asset: "bunny", extinction: 20, ...DARK_SMOKE, lights: [SUN] }),
+    scene("bunny-spectral-hemi", "spectral 'dark-smoke' bunny, sun + hemisphere light", { asset: "bunny", extinction: 20, ...DARK_SMOKE, lights: [SUN, HEMI] }),
+    // K6.Q1b (V128): distant light only, the scene phase and isotropic
+    ...(
+      [
+        ["wdas", "wdas", 40, [1, 1, 1], AMBIENT_ONLY],
+        ["smoke", "smoke", 40, [1, 1, 1], AMBIENT_ONLY],
+        ["bunny-absorbing", "bunny", 100, [0.5, 0.5, 0.5], AMBIENT_ONLY],
+        ["wdas", "wdas", 40, [1, 1, 1], PROBE],
+      ] as const
+    ).flatMap(([key, asset, extinction, albedo, light]) => {
+      const what = light === PROBE ? "probe" : "ambient";
+      return [
+        scene(`${key}-${what}-only`, `${key}, ${what} light only (V128)`, { asset, extinction, albedo: [...albedo] as K6Vec3, lights: [light] }),
+        scene(`${key}-${what}-only-iso`, `${key}, ${what} light only, isotropic phase (V128)`, { asset, extinction, albedo: [...albedo] as K6Vec3, lights: [light], phase: ISO }),
+      ];
+    }),
     scene("bunny-point", "his bunny (extinction 20), a point light above-left (E = 1 at the centre in both mappings)", {
       asset: "bunny",
       extinction: 20,

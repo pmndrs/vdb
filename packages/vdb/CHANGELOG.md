@@ -56,6 +56,9 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
     reference). `ambientOcclusion: false` gives 0.1's unshadowed light exactly; scenes without such lights do not change.
   - `froxelMix` is deleted: overlapping volumes in a froxel always combine order-independently (the former
     `'mixture'`); his draw-order `'over'` blend is gone (D35).
+  - The internal A/B setting `ambientProbe` (`VDBFrameInternalSettings`, `'irradiance'` | `'radiance'`) is deleted with
+    no deprecation (K6.Q1b): the light probe's sky up / down terms are three's irradiance along ± the sky, as the
+    default always was ('radiance' moved the K6.R reference by at most 2 points). A cast that set it does nothing now.
   - `vdbVolumeUniforms`, `vdbVolumeNodes` and their types (`VDBVolumeNodes`, `VDBVolumeNodesOptions`, `VDBVolumeUniforms`,
     `VDBVolumeUniformParameters`, `VDBThreeSourceFactory`) are deleted with the sources' TSL half, with no deprecation
     cycle (D35): `vdbDenseTextures` / `vdbSparseSource` are handles with no GPU object. Gone from them: the dense
@@ -93,6 +96,12 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
     `VDBFrameUpdate`, `VDBFrameRedrawStats`, `VDBFrameTimestamps`; `VDBFrameVolume`, `VDBFrameRendererOptions`.
   - `multipleScattering: 'neural'` (the default, our trained network) and `'mlp'` run the EXPERIMENTAL generic small MLP;
     its data shape (`VDBFrameMlp`) may change before 1.0.
+  - `settings.shadowResolutionMax` (K6.Q1b; default 0, off): a size-adaptive 'frame' shadow grid. Above
+    `shadowResolution`, the grid grows (in steps of 16, up to the max and the device's limits) until a cell spans at most
+    16 of a caster's voxels and 2 optical depths at its mean density; a small thin medium keeps `shadowResolution`. On
+    the K6.R reference it takes the WDAS cloud (side 80) and the absorbing bunny (96) from the 64³ grid's
+    single-scattering error (+22 %, −28 %) to 'volume' lighting's (+1 %, −12 %), at 2× and 3.4× the grid memory.
+    `VDBFrameRenderer.shadowGridResolution` reports the side the last update used.
 
 - NanoVDB **Half** grids (`GridType::Half` = 9, raw IEEE binary16 values; implemented in NanoVDB 13.2, OpenVDB PR 2335), end
   to end (K7.H). Core: grid type `'half'` (`VDBGridTypeName`, `VDB_GRID_TYPE_IDS.half`, in `VDB_ALL_SCALAR_TYPES`); the pool

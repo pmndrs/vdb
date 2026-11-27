@@ -945,8 +945,8 @@ fn vdbFrameSpectralLightFroxel(sums: VdbFrameSums, f: VdbFrameFroxel) -> VdbFram
   let skyUp = select(vdbFrameSpectralShadowTotal(sky.x, octaves, albedo), sky.x, ambientOcclusion) * 0.5;
   let skyDown = select(vdbFrameSpectralShadowTotal(sky.y, octaves, albedo), sky.y, ambientOcclusion) * 0.5;
   var irradiance = vdbFrameLights.ambient.xyz * select(vec3f(1.0), skyUp + skyDown, ambientOcclusion);
-  irradiance += vdbFrameSkyProbe(skyDirection) * skyUp;
-  irradiance += vdbFrameSkyProbe(-skyDirection) * skyDown;
+  irradiance += vdbFrameShIrradiance(skyDirection) * skyUp;
+  irradiance += vdbFrameShIrradiance(-skyDirection) * skyDown;
   irradiance += vdbFrameLights.hemiSkySum.xyz * skyUp;
   irradiance += vdbFrameLights.hemiGroundSum.xyz * skyDown;
   let shadowLights = u32(vdbFrame.gridLayout.w);
@@ -1242,8 +1242,8 @@ fn vdbFrameLightFroxel(sums: VdbFrameSums, f: VdbFrameFroxel) -> vec4f {
   let skyDown = s0.y * 0.5;
   // K6.Q1: ambient x the mean of the hemispherical visibilities (off: unshadowed, his)
   var irradiance = vdbFrameLights.ambient.xyz * select(1.0, skyUp + skyDown, vdbFrameLights.counts.z > 0u);
-  irradiance += vdbFrameSkyProbe(sky) * skyUp;
-  irradiance += vdbFrameSkyProbe(-sky) * skyDown;
+  irradiance += vdbFrameShIrradiance(sky) * skyUp;
+  irradiance += vdbFrameShIrradiance(-sky) * skyDown;
   irradiance += vdbFrameLights.hemiSkySum.xyz * skyUp;
   irradiance += vdbFrameLights.hemiGroundSum.xyz * skyDown;
   let shadowLights = u32(vdbFrame.gridLayout.w);

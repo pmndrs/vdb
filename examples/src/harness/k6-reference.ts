@@ -21,7 +21,9 @@
  *   `?majorants=0`, `?env=<UltraHDR url>` (his scene.environment as an equirect map), and the convergence stop `?target=&check=&minBatches=` with caps `?batches=&budget=`; several volumes
  *   also publish the overlap mask).
  * - `scene` (K6.R1): one scene of the report's own set (`k6-scenes.ts`: WDAS, smoke, absorbing / thin bunny, a point
- *   light; `?scene=&lighting=`), the same options.
+ *   light; `?scene=&lighting=`), the same options. K6.Q1b: a spectral scene renders each channel as a grey medium (that
+ *   channel's extinction and phase g), to convergence each, and publishes each channel's transmittance
+ *   (`transmittanceRgb`) beside the green one in `mean`.
  *
  * Results: `window.__VDB_K6_REFERENCE__` (e2e/k6-reference.spec.ts).
  */
@@ -57,6 +59,8 @@ import {
   vdbReferenceSigma,
   vdbReferenceSparseMediumCpu,
   vdbReferenceStatistics,
+  vdbFrameExtinctionSpectrum,
+  vdbFrameSpectrumWavelengths,
   wvdbDenseVolume,
   type VDBRefVec3,
   type VDBReferenceAccum,
@@ -764,14 +768,48 @@ function overlapMask(scene: VDBReferenceScene, media: VDBReferenceMediumCpu[], W
   return out;
 }
 
-/** Render `scene` to convergence and publish the result for the report script. */
-async function publishReference(device: GPUDevice, job: GpuJob, scene: VDBReferenceScene, extra: Record<string, unknown>, mask?: Uint8Array): Promise<void> {
+/**
+ * Render `scene` to convergence and publish the result for the report script. K6.Q1b: with `channels` (a spectral
+ * scene), each of the three scenes is rendered to convergence and gives its own channel's radiance and transmittance.
+ */
+async function publishReference(device: GPUDevice, job: GpuJob, scene: VDBReferenceScene, extra: Record<string, unknown>, mask?: Uint8Array, channels?: VDBReferenceScene[]): Promise<void> {
   // Box filter: the report compares with the frame box-downsampled to this size (pixel areas, not centres).
   const settings: Settings = { spp: Number(params.get("spp") ?? 1), maxBounces: Number(params.get("maxBounces") ?? 512), seed: Number(params.get("seed") ?? 1), rrStart: 4, pixelFilter: params.get("filter") === "center" ? "center" : "box" };
-  const ref = await makeRenderer(device, job);
-  ref.setScene(scene, settings);
-  const run = await accumulate(device, ref, job);
-  const { mean, stderr } = vdbReferenceStatistics(run.accum);
+  const runs: Awaited<ReturnType<typeof accumulate>>[] = [];
+  for (const s of channels ?? [scene]) {
+    const ref = await makeRenderer(device, job);
+    ref.setScene(s, settings);
+    runs.push(await accumulate(device, ref, job));
+    ref.dispose();
+  }
+  const stats = runs.map((r) => vdbReferenceStatistics(r.accum));
+  let { mean, stderr } = stats[0]!;
+  let transmittanceRgb: Float32Array | null = null;
+  if (channels) {
+    // channel c of render c; the green render's transmittance in `mean` (the masks), every channel's in transmittanceRgb
+    const n = job.width * job.height;
+    mean = new Float64Array(n * 4);
+    stderr = new Float64Array(n * 4);
+    transmittanceRgb = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      for (let c = 0; c < 3; c++) {
+        mean[i * 4 + c] = stats[c]!.mean[i * 4 + c]!;
+        stderr[i * 4 + c] = stats[c]!.stderr[i * 4 + c]!;
+        transmittanceRgb[i * 3 + c] = stats[c]!.mean[i * 4 + 3]!;
+      }
+      mean[i * 4 + 3] = stats[1]!.mean[i * 4 + 3]!;
+      stderr[i * 4 + 3] = stats[1]!.stderr[i * 4 + 3]!;
+    }
+  }
+  const noise = channels ? referenceNoise(mean, stderr) : runs[0]!.noise;
+  const run = {
+    accum: { batches: runs.reduce((s, r) => s + r.accum.batches, 0) },
+    seconds: runs.reduce((s, r) => s + r.seconds, 0),
+    noise,
+    converged: runs.every((r) => r.converged),
+    stop: runs.map((r) => r.stop).join(","),
+    checks: runs.reduce((s, r) => s + r.checks, 0),
+  };
   result.report = {
     ...extra,
     density: DENSITY,
@@ -792,9 +830,9 @@ async function publishReference(device: GPUDevice, job: GpuJob, scene: VDBRefere
     mean: toBase64(Float32Array.from(mean)),
     stderr: toBase64(Float32Array.from(stderr)),
     ...(mask ? { overlap: toBase64(mask) } : {}),
+    ...(transmittanceRgb ? { transmittanceRgb: toBase64(transmittanceRgb), channels: runs.map((r) => ({ batches: r.accum.batches, seconds: r.seconds, noise: r.noise, stop: r.stop })) } : {}),
   };
   log(`reference ${String(extra.scenario ?? extra.scene)}: ${job.width}x${job.height}, ${run.accum.batches} batches × ${settings.spp} spp in ${run.seconds.toFixed(1)} s, noise ${(run.noise.mean * 100).toFixed(2)} % (${run.stop})`, "ok");
-  ref.dispose();
 }
 
 async function report(device: GPUDevice): Promise<void> {
@@ -921,7 +959,19 @@ async function sceneReport(device: GPUDevice): Promise<void> {
     lights: mapped.lights,
     environment: mapped.environment,
   };
-  await publishReference(device, job, scene, { scene: name, lighting, phase: def.phase, stats: asset.stats, bbox: asset.bbox });
+  // K6.Q1b: a spectral medium as three grey renders: channel c's extinction × (λ_c / 550)^−α and both lobes' g × (λ_c /
+  // 550)^−phaseGExponent clamped to ±0.99 (the renderer's vdbFrameExtinctionSpectrum and phase spectrum)
+  let channels: VDBReferenceScene[] | undefined;
+  if (def.spectral) {
+    const spectrum = vdbFrameExtinctionSpectrum([1, 1, 1], def.spectral.angstromExponent);
+    const gScale = vdbFrameSpectrumWavelengths.map((l) => Math.pow(l / vdbFrameSpectrumWavelengths[1], -def.spectral!.phaseGExponent));
+    const clampG = (g: number) => Math.min(0.99, Math.max(-0.99, g));
+    channels = [0, 1, 2].map((c) => ({
+      ...scene,
+      volumes: scene.volumes.map((v) => ({ ...v, sigma: v.sigma * spectrum[c]!, phase: { g: clampG(def.phase[0] * gScale[c]!), backG: clampG(def.phase[1] * gScale[c]!), backWeight: def.phase[2] } })),
+    }));
+  }
+  await publishReference(device, job, scene, { scene: name, lighting, phase: def.phase, stats: asset.stats, bbox: asset.bbox, ...(def.spectral ? { spectral: def.spectral } : {}) }, undefined, channels);
   job.source.dispose();
   pool?.dispose();
 }

@@ -54,6 +54,16 @@ export interface VDBFrameSettings {
    * device holds: the transmittance stack must tile in `maxTextureDimension3D` and fit `maxBufferSize` (K6.8, K6.10a).
    */
   shadowResolution: number;
+  /**
+   * K6.Q1b: `'frame'` lighting: a size-adaptive shadow grid, up to this many voxels per side (default 0: off, the grid
+   * is `shadowResolution`). Above `shadowResolution`, the grid grows until a cell spans at most 16 of a caster's voxels
+   * and 2 optical depths at its mean density (a large sparse cloud, a dense medium; a small thin one keeps
+   * `shadowResolution`). Memory grows
+   * with the cube of the side (about 48 B per voxel grey: R 128 ≈ 96 MiB, 64 ≈ 12 MiB) and the transmittance pass with
+   * about its fourth power, but it is redrawn only when the lights or the casters change (every frame with `jitter`).
+   * A host can read the side in use from `shadowGridResolution`.
+   */
+  shadowResolutionMax: number;
   /** `'frame'` lighting: shadow grid cascades, 1–4 (default 1). */
   shadowCascades: number;
   /** `'frame'` lighting: half size of the finest cascades around the camera (default 512). */
@@ -170,12 +180,17 @@ export interface VDBFrameInternalSettings extends VDBFrameSettings {
    */
   multiScaleSigma: "his" | "paper";
   /**
-   * K6.Q1a: how 'frame' lighting (and 'volume' lighting with `ambientOcclusion`) reads the light probe along ± the sky
-   * direction, the probe's share of the sky up / down terms. `'irradiance'` (default; his): three's cosine-weighted
-   * irradiance there. `'radiance'`: π × the probe's mean radiance over that hemisphere (band 0 × 1, band 1 × ½, band 2 ×
-   * 0), the weight isotropic in-scattering gives each hemisphere. An A/B setting (K6.Q1a handoff).
+   * K6.Q1b: the cell rule of the size-adaptive shadow grid (`shadowResolutionMax`): `'both'` (default: the finer of the
+   * two), `'optical'` (2 optical depths per cell at the mean density) or `'voxels'` (16 source voxels per cell). An A/B
+   * setting.
    */
-  ambientProbe: "irradiance" | "radiance";
+  shadowResolutionRule: "both" | "optical" | "voxels";
+  /**
+   * K6.11b: the shadowed ambient's direction ring with `jitter` and `temporal` on: `'turn'` (default, K6.Q1a: turned by
+   * the frame's jitter × its azimuth step, averaged by the temporal blend) or `'fixed'` (the static ring). An A/B
+   * setting for the owner's question (K6-Q1b handoff).
+   */
+  ambientOcclusionRing: "turn" | "fixed";
 }
 
 /** His v0.26 defaults (`FrameRenderer.js` L191–246, as `VDBFrameRenderer.settings`), plus `occlusion: true` and the K6.Q1 ambient occlusion (on since D35). */
@@ -199,6 +214,7 @@ export function vdbFrameDefaultInternalSettings(): VDBFrameInternalSettings {
     temporalBlend: 0.2,
     lighting: "frame",
     shadowResolution: 64,
+    shadowResolutionMax: 0,
     shadowCascades: 1,
     shadowDistance: 512,
     phase: "henyey-greenstein",
@@ -226,7 +242,8 @@ export function vdbFrameDefaultInternalSettings(): VDBFrameInternalSettings {
     multiScaleLevels: 6,
     multiScaleEdge: "zero",
     multiScaleSigma: "his",
-    ambientProbe: "irradiance",
+    shadowResolutionRule: "both",
+    ambientOcclusionRing: "turn",
     occlusion: true,
     ambientOcclusion: true,
     ambientOcclusionPairs: 4,

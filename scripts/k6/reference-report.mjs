@@ -29,6 +29,11 @@
 //   composite's error Σ|A − R| / Σ|R − background| there (lower is better) and its RMSE. Overlap (K6.R1, V79): pixels
 //   where two volumes each reach optical depth 0.1: bias and median error there. The reference's own noise is listed:
 //   errors below it are not resolved.
+//
+// K6.Q1b: spectral scene groups (the reference renders each channel; its composite and the radiance it inverts use each
+// channel's own coverage); V128 groups (distant light only, the scene phase and an isotropic phase: single scattering
+// only); multi-frame rows (`frames=&jitter=1&temporal=1` or `&average=`: the jittered estimator, k6-scene); the
+// size-adaptive shadow grid A/B through `--query=shadowResMax=…` or `shadowRes=…` on the scene groups.
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -95,7 +100,9 @@ const coreMsRows = (make, base, captures = {}) =>
     ["core ms multi-scale (edge clamp, his)", "multi-scale", "&msEdge=clamp"],
     // K6.3a: the paper's wider levels (σ ≈ 2^k voxels: level k reads mip k + 1), edge zero (V75 item 5)
     ["core ms multi-scale (σ = 2^k, paper)", "multi-scale", "&msEdge=zero&msSigma=paper"],
-  ].map(([label, ms, extra]) => make(label, `${base}&ms=${ms}${extra}`, { lighting: "frame", ...(captures[ms] && !extra ? { capture: captures[ms] } : {}) }));
+  ].filter(([label]) => !MS_ROWS || MS_ROWS.test(label)).map(([label, ms, extra]) => make(label, `${base}&ms=${ms}${extra}`, { lighting: "frame", ...(captures[ms] && !extra ? { capture: captures[ms] } : {}) }));
+// K6.Q1b: `--msRows=<regex>` keeps only the 'frame' MS mode rows whose label matches (shorter sweeps)
+const MS_ROWS = arg("msRows", "") ? new RegExp(String(arg("msRows", "")), "i") : null;
 const k3 = (label, query, extra = {}) => ({ label, page: "k3-frame", query, ...extra });
 const k6 = (label, query, extra = {}) => ({ label, page: "k6-scene", query, ...extra });
 // The renderer rows of a scene group: both lightings, every multiple-scattering mode.
@@ -263,7 +270,61 @@ const GROUP_DEFS = {
       ["smoke-hemi", "smoke, sun + hemisphere light", "smoke"],
       ["wdas-probe", "WDAS cloud, sun + light probe", "wdas"],
       ["bunny-absorbing-hemi", "absorbing bunny, sun + hemisphere light", "bunny"],
-    ].map(([scene, title, asset, falloff]) => [scene, { kind: "scene", title, scene, asset, falloff: !!falloff, rows: sceneRows(scene) }]),
+      // K6.Q1b: a spectral medium (his 'dark-smoke' preset on the bunny); the reference renders each channel
+      ["bunny-spectral", "spectral 'dark-smoke' bunny (extinction 20), sun", "bunny"],
+      ["bunny-spectral-hemi", "spectral 'dark-smoke' bunny, sun + hemisphere light (per-channel shadowed ambient)", "bunny"],
+    ].map(([scene, title, asset, falloff]) => [scene, { kind: "scene", title, scene, asset, falloff: !!falloff, spectral: scene.includes("spectral"), rows: sceneRows(scene) }]),
+  ),
+  // K6.Q1b (V128 evidence): distant light alone, single scattering only. In the isotropic groups the reference is the
+  // solid-angle mean of transmittance the shadowed ambient estimates; the scene-phase group adds the phase weighting.
+  ...Object.fromEntries(
+    ["wdas-ambient-only", "smoke-ambient-only", "bunny-absorbing-ambient-only", "wdas-probe-only"].flatMap((base) =>
+      ["", "-iso"].map((suffix) => {
+        const scene = `${base}${suffix}`;
+        return [
+          scene,
+          {
+            kind: "scene",
+            title: `V128: ${scene} (single scattering${suffix ? ", isotropic phase" : ", dual-lobe 0.8 / −0.3 / 0.2"})`,
+            scene,
+            asset: base.startsWith("wdas") ? "wdas" : base.startsWith("smoke") ? "smoke" : "bunny",
+            singleOnly: true,
+            rows: [
+              k6("volume core ms off, AO on", `scene=${scene}&lighting=volume&ms=0&ao=1`, { lighting: "volume", vsSingle: true }),
+              k6("volume core ms off, AO off", `scene=${scene}&lighting=volume&ms=0&ao=0`, { lighting: "volume", vsSingle: true }),
+              k6("frame core ms off, AO on", `scene=${scene}&lighting=frame&ms=0&ao=1`, { lighting: "frame", vsSingle: true }),
+              k6("frame core ms off, AO on, shadowRes 128", `scene=${scene}&lighting=frame&ms=0&ao=1&shadowRes=128`, { lighting: "frame", vsSingle: true }),
+            ],
+          },
+        ];
+      }),
+    ),
+  ),
+  // K6.Q1b / K6.11b: the jittered estimator (multi-frame mode) on hemisphere scenes: one static frame, 32 frames of
+  // jitter + temporal (the AO ring turning, then fixed), and the mean of 32 jittered frames without temporal
+  ...Object.fromEntries(
+    [
+      ["smoke-hemi", "smoke"],
+      ["bunny-absorbing-hemi", "bunny"],
+    ].map(([scene, asset]) => [
+      `${scene}-jitter`,
+      {
+        kind: "scene",
+        title: `K6.11b: ${scene}, 'frame' neural, static vs jittered (multi-frame mode)`,
+        scene,
+        asset,
+        rows: [
+          ["static (1 frame of 4)", ""],
+          ["jitter + temporal, 32 frames, ring turning", "&frames=32&jitter=1&temporal=1&aoRing=turn"],
+          ["jitter + temporal, 32 frames, ring fixed", "&frames=32&jitter=1&temporal=1&aoRing=fixed"],
+          ["jitter, mean of 32 frames, ring fixed (no temporal)", "&frames=32&jitter=1&average=32&aoRing=fixed"],
+          ["static, AO off", "&ao=0"],
+        ].flatMap(([label, q]) => [
+          k6(`frame neural ms off, ${label}`, `scene=${scene}&lighting=frame&ms=0${q}`, { lighting: "frame", vsSingle: true }),
+          k6(`frame neural, ${label}`, `scene=${scene}&lighting=frame&ms=neural${q}`, { lighting: "frame" }),
+        ]),
+      },
+    ]),
   ),
 };
 const GROUPS = String(arg("groups", Object.keys(GROUP_DEFS).join(","))).split(",");
@@ -276,12 +337,14 @@ const BG_SRGB = [0x59 / 255, 0x8e / 255, 0xff / 255];
 const BG = BG_SRGB.map(eotf);
 const lum = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
 
-/** His srgbBlending composite (tools vdbFrameSrgbBlend, clamp on): linear out. */
+/** His srgbBlending composite (tools vdbFrameSrgbBlend, clamp on): linear out. K6.Q1b: `alpha` may be per channel. */
 function srgbBlend(bg, radiance, alpha) {
   return [0, 1, 2].map((c) => {
+    const a = Array.isArray(alpha) ? alpha[c] : alpha;
+    if (!(a > 1e-6)) return bg[c];
     const b = clamp01(oetf(bg[c]));
-    const v = clamp01(oetf(radiance[c] / alpha));
-    return eotf(b + (v - b) * alpha);
+    const v = clamp01(oetf(radiance[c] / a));
+    return eotf(b + (v - b) * a);
   });
 }
 
@@ -313,23 +376,32 @@ function referenceImage(r) {
   const n = r.width * r.height;
   const rgb = new Float64Array(n * 3);
   const alpha = new Float64Array(n);
+  // K6.Q1b: a spectral reference has each channel's transmittance (its composite and unblend use them)
+  const tRgb = r.transmittanceRgb ? new Float32Array(Buffer.from(r.transmittanceRgb, "base64").buffer.slice(0)) : null;
+  const alphaRgb = tRgb ? new Float64Array(n * 3) : null;
   for (let i = 0; i < n; i++) {
     const L = [mean[i * 4], mean[i * 4 + 1], mean[i * 4 + 2]];
     const a = clamp01(1 - mean[i * 4 + 3]);
     alpha[i] = a;
-    rgb.set(a > 1e-6 ? srgbBlend(BG, L, a) : BG, i * 3);
+    if (alphaRgb) {
+      const ac = [0, 1, 2].map((c) => clamp01(1 - tRgb[i * 3 + c]));
+      alphaRgb.set(ac, i * 3);
+      rgb.set(srgbBlend(BG, L, ac), i * 3);
+    } else rgb.set(a > 1e-6 ? srgbBlend(BG, L, a) : BG, i * 3);
   }
   const overlap = r.overlap ? new Uint8Array(Buffer.from(r.overlap, "base64")) : null;
   const twoOrMore = overlap ? overlap.map((b) => (b & (b - 1) ? 1 : 0)) : null;
-  return { width: r.width, height: r.height, rgb, alpha, noise: r.noise?.mean ?? 0, noiseP90: r.noise?.p90 ?? 0, volumePixels: r.noise?.pixels ?? 0, silhouette: silhouetteMask(alpha, r.width, r.height), overlap: twoOrMore };
+  return { width: r.width, height: r.height, rgb, alpha, alphaRgb, noise: r.noise?.mean ?? 0, noiseP90: r.noise?.p90 ?? 0, volumePixels: r.noise?.pixels ?? 0, silhouette: silhouetteMask(alpha, r.width, r.height), overlap: twoOrMore };
 }
 
-/** His sRGB blend inverted: the radiance L (linear, ≤ α per channel) whose composite over the background at α is pixel i. */
+/** His sRGB blend inverted: the radiance L (linear, ≤ α per channel) whose composite over the background at α is pixel i. K6.Q1b: α per channel. */
 function unblend(rgb, i, alpha) {
   return [0, 1, 2].map((c) => {
+    const a = Array.isArray(alpha) ? alpha[c] : alpha;
+    if (!(a > 1e-6)) return 0;
     const b = clamp01(oetf(BG[c]));
-    const v = clamp01((clamp01(oetf(Math.max(rgb[i * 3 + c], 0))) - b * (1 - alpha)) / alpha);
-    return alpha * eotf(v);
+    const v = clamp01((clamp01(oetf(Math.max(rgb[i * 3 + c], 0))) - b * (1 - a)) / a);
+    return a * eotf(v);
   });
 }
 
@@ -360,6 +432,9 @@ function regionStats(a, ref, inMask) {
   let contrast = 0;
   let yA = 0;
   let yR = 0;
+  // K6.Q1b: per-channel radiance sums (the chromatic bias of spectral media)
+  const cA = [0, 0, 0];
+  const cR = [0, 0, 0];
   const rels = [];
   for (let i = 0; i < ref.width * ref.height; i++) {
     if (!inMask(i)) continue;
@@ -372,8 +447,15 @@ function regionStats(a, ref, inMask) {
     if (!(ref.alpha[i] > 0.02)) continue;
     // Luminance of the volume's radiance L: his sRGB blend inverted at the reference's coverage (K6.R1; the linear
     // "composite minus (1 − α)·background" of K6.R goes negative for volumes darker than the background).
-    const ya = lum(...unblend(a.rgb, i, ref.alpha[i]));
-    const yr = lum(...unblend(ref.rgb, i, ref.alpha[i]));
+    const at = ref.alphaRgb ? [ref.alphaRgb[i * 3], ref.alphaRgb[i * 3 + 1], ref.alphaRgb[i * 3 + 2]] : ref.alpha[i];
+    const la = unblend(a.rgb, i, at);
+    const lr = unblend(ref.rgb, i, at);
+    for (let c = 0; c < 3; c++) {
+      cA[c] += la[c];
+      cR[c] += lr[c];
+    }
+    const ya = lum(...la);
+    const yr = lum(...lr);
     yA += ya;
     yR += yr;
     if (yr > 1e-3) rels.push(Math.abs(ya - yr) / yr);
@@ -388,6 +470,7 @@ function regionStats(a, ref, inMask) {
     medianRelLum: rels.length ? rels[Math.floor(rels.length / 2)] : 0,
     meanRelLum: rels.length ? rels.reduce((s, v) => s + v, 0) / rels.length : 0,
     lumBias: yR > 0 ? yA / yR - 1 : null,
+    rgbBias: cR.map((r, c) => (r > 0 ? cA[c] / r - 1 : null)),
   };
 }
 
@@ -421,6 +504,7 @@ function compare(a, ref) {
     meanRelLum: vol.meanRelLum,
     medianRelLum: vol.medianRelLum,
     lumBias: vol.lumBias,
+    rgbBias: vol.rgbBias,
     silhouette: { pixels: sil.pixels, relError: sil.relError, rmseLinear: sil.rmseLinear, lumBias: sil.lumBias },
     overlap: ovl && { pixels: ovl.pixels, lumBias: ovl.lumBias, medianRelLum: ovl.medianRelLum, rmseLinear: ovl.rmseLinear },
   };
@@ -501,8 +585,8 @@ try {
       process.stdout.write(`  ${t.label} … `);
       const r = await runPage(browser, t.page, `${t.query}${EXTRA_QUERY}&w=${gw * scale}&h=${gh * scale}`, STATE[t.page]);
       const img = fromRgba8(new Uint8Array(Buffer.from(r.rgba, "base64")), r.width, r.height, scale);
-      frames.push({ ...t, img, settings: r.settings, adapter: r.adapter, backend: r.backend });
-      console.log(`${r.width}x${r.height} ${r.backend ?? ""} (${r.adapter})`);
+      frames.push({ ...t, img, settings: r.settings, adapter: r.adapter, backend: r.backend, shadowGridResolution: r.shadowGridResolution });
+      console.log(`${r.width}x${r.height} ${r.backend ?? ""}${r.shadowGridResolution ? ` grid ${r.shadowGridResolution}` : ""} (${r.adapter})`);
     }
     // References: per lighting mapping when the scene has point lights, else one; multiple and single scattering.
     const lightings = g.kind === "scene" && g.falloff ? ["volume", "frame"] : [g.lighting ?? "frame"];
@@ -525,7 +609,7 @@ try {
         const r = cached?.query === refQuery ? { ...cached.result, reused: true } : await runPage(browser, "k6-reference", refQuery, "__VDB_K6_REFERENCE__");
         if (!r.reused) writeFileSync(cacheFile, JSON.stringify({ query: refQuery, result: { report: r.report, adapter: r.adapter } }));
         const img = referenceImage(r.report);
-        entry[kind] = { img, report: { ...r.report, mean: undefined, stderr: undefined, overlap: undefined }, adapter: r.adapter };
+        entry[kind] = { img, report: { ...r.report, mean: undefined, stderr: undefined, overlap: undefined, transmittanceRgb: undefined }, adapter: r.adapter };
         console.log(`${r.reused ? "(reused) " : ""}${r.report.batches} batches in ${r.report.seconds.toFixed(0)} s, noise ${(img.noise * 100).toFixed(2)} % (p90 ${(img.noiseP90 * 100).toFixed(1)} %, ${r.report.stop}) (${r.adapter})`);
         writeFileSync(path.join(dir, `reference-${lighting}-${kind}.png`), encodePng(toRgba8(img)));
       }
@@ -546,7 +630,7 @@ try {
         rows.push({ label: t.label, kind: "slot", vsFull: null, vsSingle: null });
         continue;
       }
-      add(t.label, t.img, "core", t.lighting, { vsSingleExpected: !!t.vsSingle });
+      add(t.label, t.img, "core", t.lighting, { vsSingleExpected: !!t.vsSingle, ...(t.shadowGridResolution ? { shadowGridResolution: t.shadowGridResolution } : {}) });
       if (t.capture && existsSync(path.join(CAPTURES, `${t.capture}.png`))) {
         const png = decodePng(readFileSync(path.join(CAPTURES, `${t.capture}.png`)));
         add(`his ${t.capture}`, fromRgba8(png.data, png.width, png.height, Math.round(png.width / gw)), "his", t.lighting, { vsSingleExpected: !!t.vsSingle });
@@ -571,7 +655,7 @@ try {
         continue;
       }
       const v = r.vsFull ?? r.vsSingle;
-      console.log(`  ${r.label.padEnd(56)} vs ${r.vsFull ? "MS" : "SS"}: bias ${pct(v.lumBias)}  median ${pct(v.medianRelLum)}  SSIM ${f(v.ssimRect, 3)}  sil. err ${pct(v.silhouette.relError)} | vs SS: bias ${pct(r.vsSingle.lumBias)}  sil. err ${pct(r.vsSingle.silhouette.relError)}`);
+      console.log(`  ${r.label.padEnd(56)}${r.shadowGridResolution ? ` [grid ${r.shadowGridResolution}]` : ""} vs ${r.vsFull ? "MS" : "SS"}: bias ${pct(v.lumBias)}  median ${pct(v.medianRelLum)}  SSIM ${f(v.ssimRect, 3)}  sil. err ${pct(v.silhouette.relError)} | vs SS: bias ${pct(r.vsSingle.lumBias)}  sil. err ${pct(r.vsSingle.silhouette.relError)}${g.spectral ? ` | rgb bias ${(r.vsFull ?? r.vsSingle).rgbBias.map((x) => pct(x)).join(" / ")}` : ""}`);
     }
   }
 } finally {
@@ -594,7 +678,7 @@ function markdown(g) {
     const a = r.vsFull;
     const s = r.vsSingle;
     const ovl = s.overlap ? ` ${a?.overlap ? pct(a.overlap.lumBias) : "—"} / ${pct(s.overlap.lumBias)} |` : "";
-    md.push(`| ${r.label} | ${a ? pct(a.lumBias) : "—"} | ${a ? pct(a.medianRelLum) : "—"} | ${a ? f(a.ssimRect, 3) : "—"} | ${a ? f(a.psnr) : "—"} | ${a ? pct(a.silhouette.relError) : "—"} | ${pct(s.lumBias)} | ${pct(s.medianRelLum)} | ${pct(s.silhouette.relError)} |${ovl}`);
+    md.push(`| ${r.label}${r.shadowGridResolution ? ` (grid ${r.shadowGridResolution})` : ""} | ${a ? pct(a.lumBias) : "—"} | ${a ? pct(a.medianRelLum) : "—"} | ${a ? f(a.ssimRect, 3) : "—"} | ${a ? f(a.psnr) : "—"} | ${a ? pct(a.silhouette.relError) : "—"} | ${pct(s.lumBias)} | ${pct(s.medianRelLum)} | ${pct(s.silhouette.relError)} |${ovl}`);
   }
   md.push("");
   return md;
