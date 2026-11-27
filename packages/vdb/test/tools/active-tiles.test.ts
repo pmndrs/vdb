@@ -181,11 +181,13 @@ describe("buildFromVdb — active tiles become NanoVDB tiles", () => {
         value: dv.getFloat32(t + 20, true),
       };
     });
-    // Sorted by unsigned NanoVDB key (K4.12): [0,0,0] < [0,-4096,0] < [-4096,0,0] < [8192,0,0].
-    // Keys are z | y<<21 | x<<42 over the coordinate >>> 12 (as u32).
-    const byKey = new Map(entries.map((e) => [e.key, e]));
-    expect(entries.map((e) => e.key)).toEqual([...entries.map((e) => e.key)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
-    expect(byKey.size).toBe(4);
+    // Sorted by signed origin, x then y then z (K7.C1, as native NanoVDB: the root map's Coord order):
+    // [-4096,0,0] < [0,-4096,0] < [0,0,0] < [8192,0,0]. Keys are z | y<<21 | x<<42 over coordinate >>> 12 (u32).
+    const origin = (key: bigint): [number, number, number] =>
+      [42n, 21n, 0n].map((s) => Number((key >> s) & 0x1fffffn) << 12) as [number, number, number];
+    const origins = entries.map((e) => origin(e.key));
+    expect(origins).toEqual([...origins].sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]));
+    expect(new Set(entries.map((e) => e.key)).size).toBe(4);
     const tiles = entries.filter((e) => e.child === 0n);
     expect(tiles).toContainEqual(expect.objectContaining({ state: 1, value: 0.25 }));
     expect(tiles).toContainEqual(expect.objectContaining({ state: 0, value: 9 })); // inactive root tile

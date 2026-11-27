@@ -14,7 +14,7 @@
  * so GPU parity compares with a tolerance and reports the bit-exact count.
  */
 import { VDBToolsError } from "../errors.js";
-import { vdbHalfToFloat } from "../nanovdb/half.js";
+import { vdbFloatToHalf, vdbHalfToFloat } from "../nanovdb/half.js";
 import { indexBBox, isActive, vdbReadValueF32Cpu, treeNodes, type Vec3 } from "./march.js";
 import { defineNumber, gridTypeConstantsFor, gridTypeConstantsForId, gridTypeIds } from "./stride-tables.js";
 
@@ -245,8 +245,9 @@ function trilinearF32(gridWords: Uint32Array, xyz: Vec3): number {
 // Value transform
 
 /**
- * Returns a copy of a Float grid image with `fn` applied to every leaf voxel
- * value inside the index bbox (active or inactive), rounded to f32. Tile,
+ * Returns a copy of a Float or Half grid image with `fn` applied to every leaf
+ * voxel value inside the index bbox (active or inactive), rounded to f32 (and,
+ * in a Half grid, then to the nearest binary16 as `vdbFloatToHalf` does; K7.H1). Tile,
  * background and out-of-bbox leaf values are left alone, exactly as v1's GPU
  * `valueTransform` did (it visited the dense bbox and rewrote level-0
  * addresses only).
@@ -256,20 +257,22 @@ function trilinearF32(gridWords: Uint32Array, xyz: Vec3): number {
  * (`gridStats`' range, `vdbNodeMax` skipping) see stale bounds; rebuild the
  * grid (e.g. `vdbBuildFromDense`) when they matter.
  *
- * Float (GridType 1) only: quantized leaves would need re-encoding.
+ * Float and Half only: quantized (Fp*) leaves would need re-encoding.
  */
 export function transformLeafValues(gridWords: Uint32Array, fn: (value: number) => number): Uint32Array {
   if (typeof fn !== "function") throw new VDBToolsError("VDB_BAD_OPTION", "transformLeafValues: fn must be a function (value: number) => number");
   const gridType = gridWords[GRID_OFF_GRID_TYPE >>> 2];
-  if (gridType !== gridTypeIds.FLOAT) {
-    throw new VDBToolsError("VDB_UNSUPPORTED_GRID_TYPE", 
-      `transformLeafValues: grid type ${gridType} is not Float (${gridTypeIds.FLOAT}); quantized leaves would need re-encoding. ` +
+  const half = gridType === gridTypeIds.HALF;
+  if (gridType !== gridTypeIds.FLOAT && !half) {
+    throw new VDBToolsError("VDB_UNSUPPORTED_GRID_TYPE",
+      `transformLeafValues: grid type ${gridType} is not Float (${gridTypeIds.FLOAT}) or Half (${gridTypeIds.HALF}); quantized leaves would need re-encoding. ` +
         "Transform the Float source and quantize() afterwards.",
     );
   }
   const out = gridWords.slice();
   const outF32 = new Float32Array(out.buffer, out.byteOffset, out.length);
-  const table = gridTypeConstantsFor("FLOAT").leaf_off_table;
+  const outU16 = new Uint16Array(out.buffer, out.byteOffset, out.length * 2);
+  const table = gridTypeConstantsFor(half ? "HALF" : "FLOAT").leaf_off_table;
   const { min, max } = indexBBox(gridWords);
   for (const node of treeNodes(gridWords)) {
     if (node.level !== 0) continue;
@@ -279,8 +282,13 @@ export function transformLeafValues(gridWords: Uint32Array, fn: (value: number) 
       const y = oy + ((n >> 3) & 7);
       const z = oz + (n & 7);
       if (x < min[0] || y < min[1] || z < min[2] || x > max[0] || y > max[1] || z > max[2]) continue;
-      const word = (node.address + table + 4 * n) >>> 2;
-      outF32[word] = f(fn(outF32[word]!));
+      if (half) {
+        const at = (node.address + table + 2 * n) >>> 1;
+        outU16[at] = vdbFloatToHalf(f(fn(vdbHalfToFloat(outU16[at]!))));
+      } else {
+        const word = (node.address + table + 4 * n) >>> 2;
+        outF32[word] = f(fn(outF32[word]!));
+      }
     }
   }
   return out;

@@ -33,7 +33,7 @@ dependency.
 | `NvdbFile`, `readValue`, `vdbSampleTrilinearCpu` | Float, Fp4, Fp8, Fp16, FpN, Half. Half grids written by NanoVDB v14 (`createNanoGrid<…, nanovdb::Half>`) are read bit for bit, and `vdbQuantize(…, 'half')` writes the same values and min/max. Fp4 and Fp16 are decoded per `PNanoVDB.h`; there are no native Fp4/Fp16 fixtures, so they are tested against `quantize` output (CPU round-trip, bit-exact GPU parity on SwiftShader). |
 | Vec3f | Built by `buildFromVdb`, read on the CPU by `vdbReadValueVec3Cpu` and `vdbSampleTrilinearVec3Cpu`. Not in the pool. |
 | `.vdb` | File version 225 and older (OpenVDB v14 writes 225). 5-4-3 float, half (read as float), vec3 and point-data grids; Blosc (LZ4, BloscLZ, zlib) and zlib. |
-| `.nvdb` | NanoVDB 32.x (OpenVDB 10 to 14; another major throws `VDBUnsupportedError`). Codecs NONE, ZIP and BLOSC (NanoVDB's LZ4 and Warp's BloscLZ) are read; `writeNvdb` writes NONE and ZIP. |
+| `.nvdb` | NanoVDB 32.x (OpenVDB 10 to 14; another major throws `VDBUnsupportedError`). Codecs NONE, ZIP and BLOSC (NanoVDB's LZ4 and Warp's BloscLZ) are read; `writeNvdb` writes NONE, ZIP and BLOSC (LZ4 frames byte-identical to native NanoVDB v14's). |
 | Size | Child offsets are read as 32-bit words, so a grid over 4 GiB is not supported. |
 
 ## WGSL size budgets

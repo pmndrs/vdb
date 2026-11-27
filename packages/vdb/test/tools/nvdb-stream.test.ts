@@ -105,7 +105,7 @@ describe("writeNvdb: native segment layout and Codec.ZIP (K4.18)", () => {
   });
 
   it("rejects an unknown codec and a bad zipLevel", () => {
-    expect(() => writeNvdb([B], { codec: "blosc" as never })).toThrow(/unknown codec/);
+    expect(() => writeNvdb([B], { codec: "lz4" as never })).toThrow(/unknown codec "lz4" \(expected "none", "zip" or "blosc"\)/);
     expect(() => writeNvdb([B], { codec: "zip", zipLevel: 10 })).toThrow(/zipLevel/);
   });
 

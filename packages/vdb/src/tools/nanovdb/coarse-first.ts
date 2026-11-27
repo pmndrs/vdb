@@ -48,9 +48,10 @@ export interface VDBBakeCoarseFirstOptions {
   /**
    * Per-grid codec. Default `'zip'` (K4.18): the preview is ~12 KiB inside the
    * file whatever the host does; `'none'` relies on HTTP compression (a raw
-   * preview is ~300 KiB, the 270 KB upper node).
+   * preview is ~300 KiB, the 270 KB upper node); `'blosc'` (K7.C1) writes
+   * NanoVDB's LZ4 Blosc frames (larger than ZIP, faster to decode natively).
    */
-  codec?: "none" | "zip";
+  codec?: "none" | "zip" | "blosc";
   /** zlib level for `codec: 'zip'`. Default 9. */
   zipLevel?: number;
   /** Which float grid of a `VdbFile` to bake. Default: the first float grid. */

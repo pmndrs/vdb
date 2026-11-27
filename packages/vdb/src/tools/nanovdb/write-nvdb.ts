@@ -8,8 +8,14 @@
  * With one grid this is FileHeader, FileMetaData, name, image. Grid data is
  * the image (codec NONE) or, for codec ZIP (K4.18), `io::Internal::write`'s
  * framing: a u64 LE compressed byte count, then the zlib (RFC 1950) stream
- * of the image, as zlib's `compress()` writes it. `FileMetaData.fileSize` is
- * the on-disk size of that grid's data (8 + compressed bytes for ZIP).
+ * of the image, as zlib's `compress()` writes it. For codec BLOSC (K7.C1) it
+ * is one or more chunks of at most 1 GiB of the image, each a u64 LE frame
+ * size and one LZ4 Blosc1 frame (clevel 9, byte shuffle, typesize 4, 2^18
+ * requested block size: 1 MiB blocks of four 256 KiB splits), as
+ * `io::Internal::write` writes them; the frames equal native's byte for byte
+ * (`tools/vdb/blosc-write.ts`, `tools/vdb/lz4.ts`). `FileMetaData.fileSize` is
+ * the on-disk size of that grid's data (8 + compressed bytes for ZIP, the sum
+ * of 8 + frame bytes over the chunks for BLOSC).
  *
  * FileHeader magic is `NanoVDB2` (current file format). Each grid's
  * FileMetaData is derived by reading the grid image itself (GridData / TreeData
@@ -23,6 +29,7 @@
 
 import { VDBToolsError } from "../errors.js";
 import { zlibSync } from "fflate";
+import { compressBlosc } from "../vdb/blosc-write.js";
 import {
   GRID_OFF_GRID_CLASS,
   GRID_OFF_GRID_NAME,
@@ -75,15 +82,21 @@ const MD_OFF_VERSION = 172;
 
 const CODEC_NONE = 0;
 const CODEC_ZIP = 1;
+const CODEC_BLOSC = 2;
+/** `io::Internal`'s `MAX_SIZE`: a BLOSC grid is written in chunks of at most 1 GiB. */
+export const NVDB_BLOSC_CHUNK_BYTES = 1 << 30;
 
 /** Options of {@link writeNvdb}. */
 export interface WriteNvdbOptions {
   /**
    * Per-grid codec. `'none'` (default) stores the images; `'zip'` stores each
    * as NanoVDB's `Codec::ZIP` (zlib), which native tools read when built with
-   * zlib and `NvdbFile` / `NvdbStreamReader` decode.
+   * zlib and `NvdbFile` / `NvdbStreamReader` decode. `'blosc'` (K7.C1) stores
+   * each as `Codec::BLOSC`: LZ4 Blosc frames, byte-identical to what NanoVDB's
+   * `io::writeGrid(…, Codec::BLOSC)` writes for the same image; native tools
+   * built with Blosc, Warp and our readers read them.
    */
-  codec?: "none" | "zip";
+  codec?: "none" | "zip" | "blosc";
   /** zlib level for `codec: 'zip'`, 0–9. Default 9 (zlib's own default, used by `compress()`, is 6). */
   zipLevel?: number;
 }
@@ -179,9 +192,41 @@ function extractMeta(image: Uint32Array, i: number): ImageMeta {
   };
 }
 
-/** A grid's on-disk data: the image (NONE) or `u64 size + zlib stream` (ZIP). */
+/**
+ * A grid's BLOSC data as `io::Internal::write` writes it: chunks of at most `chunkBytes` (1 GiB),
+ * each a u64 LE frame size and one LZ4 Blosc1 frame (`nanovdb_blosc_compress_ctx(9, 1, 4, chunk,
+ * …, chunk + 16, "lz4", 1 << 18, 1)`). `chunkBytes` is a parameter for tests only: native readers
+ * require 1 GiB chunks.
+ */
+export function nvdbBloscPayload(bytes: Uint8Array, chunkBytes = NVDB_BLOSC_CHUNK_BYTES): Uint8Array {
+  if (!Number.isInteger(chunkBytes) || chunkBytes < 1 || chunkBytes > NVDB_BLOSC_CHUNK_BYTES) {
+    throw new VDBToolsError("VDB_BAD_OPTION", `nvdbBloscPayload: chunkBytes must be an integer in [1, 2^30], got ${chunkBytes}`);
+  }
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (let off = 0; off < bytes.length; off += chunkBytes) {
+    const chunk = bytes.subarray(off, Math.min(bytes.length, off + chunkBytes));
+    const frame = compressBlosc(chunk, { clevel: 9, shuffle: true, typesize: 4, blocksize: 1 << 18, destSize: chunk.length + 16 });
+    // With destSize = chunk + 16 Blosc always fits (a memcpy'd frame at worst); native throws here too.
+    if (!frame) throw new VDBToolsError("VDB_BAD_IMAGE", "writeNvdb: Blosc could not store a chunk");
+    const head = new Uint8Array(8);
+    new DataView(head.buffer).setBigUint64(0, BigInt(frame.length), true);
+    parts.push(head, frame);
+    total += 8 + frame.length;
+  }
+  const out = new Uint8Array(total);
+  let p = 0;
+  for (const part of parts) {
+    out.set(part, p);
+    p += part.length;
+  }
+  return out;
+}
+
+/** A grid's on-disk data: the image (NONE), `u64 size + zlib stream` (ZIP) or Blosc chunks (BLOSC). */
 function gridPayload(m: ImageMeta, codec: number, level: number): Uint8Array {
   if (codec === CODEC_NONE) return m.imageBytes;
+  if (codec === CODEC_BLOSC) return nvdbBloscPayload(m.imageBytes);
   const compressed = zlibSync(m.imageBytes, { level: level as 9 });
   const out = new Uint8Array(8 + compressed.byteLength);
   new DataView(out.buffer).setBigUint64(0, BigInt(compressed.byteLength), true);
@@ -191,7 +236,7 @@ function gridPayload(m: ImageMeta, codec: number, level: number): Uint8Array {
 
 /**
  * Serializes `images` (each a complete NanoVDB grid image) into a `.nvdb`
- * file (`NanoVDB2` header, one segment, codec NONE or ZIP) as an
+ * file (`NanoVDB2` header, one segment, codec NONE, ZIP or BLOSC) as an
  * `ArrayBuffer`. Grids keep their order, so a coarse preview written first
  * arrives first in a stream.
  *
@@ -206,10 +251,10 @@ export function writeNvdb(images: Uint32Array[], opts: WriteNvdbOptions = {}): A
     throw new VDBToolsError("VDB_BAD_OPTION", `writeNvdb: too many grids (${images.length}); FileHeader.gridCount is a u16`);
   }
   const codecName = opts.codec ?? "none";
-  if (codecName !== "none" && codecName !== "zip") {
-    throw new VDBToolsError("VDB_BAD_OPTION", `writeNvdb: unknown codec "${String(codecName)}" (expected "none" or "zip")`);
+  if (codecName !== "none" && codecName !== "zip" && codecName !== "blosc") {
+    throw new VDBToolsError("VDB_BAD_OPTION", `writeNvdb: unknown codec "${String(codecName)}" (expected "none", "zip" or "blosc")`);
   }
-  const codec = codecName === "zip" ? CODEC_ZIP : CODEC_NONE;
+  const codec = codecName === "zip" ? CODEC_ZIP : codecName === "blosc" ? CODEC_BLOSC : CODEC_NONE;
   const level = opts.zipLevel ?? 9;
   if (!Number.isInteger(level) || level < 0 || level > 9) {
     throw new VDBToolsError("VDB_BAD_OPTION", `writeNvdb: zipLevel must be an integer 0-9, got ${level}`);

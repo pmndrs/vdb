@@ -67,6 +67,15 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 
 ### Added
 
+- `@pmndrs/vdb/tools` (K7.C1): `writeNvdb(images, { codec: 'blosc' })` writes NanoVDB's `Codec::BLOSC`: LZ4 Blosc
+  frames (byte shuffle, 1 MiB blocks of four 256 KiB streams, a frame per 1 GiB), byte-identical to native NanoVDB v14 for
+  the same image, so native tools and NVIDIA Warp read them. A pure-TypeScript LZ4 block compressor (a port of LZ4 1.9.4,
+  BSD-2-Clause) backs it; no new dependency. `vdbBakeCoarseFirst({ codec: 'blosc' })` too.
+- `@pmndrs/vdb/tools` (K7.H1): Half grids are sources: `vdbQuantize(half, mode)` for every mode, a new `'float'` mode
+  (widens a Half grid exactly; Half → Float → Half is the identity), `vdbCollapseGrid(half)` (stays Half),
+  `transformLeafValues(half, fn)` (results rounded to the nearest binary16) and core `vdbApplyValueTransform` on a Half
+  pool grid. They threw `VDB_UNSUPPORTED_GRID_TYPE` before.
+
 - `@pmndrs/vdb/tools`: `parseVdb(buffer, { select })` lists a `.vdb`'s grids without decoding them and decodes only
   the ones you pick. `VdbFile.descriptors` (`VdbGridDescriptor`: name, grid type, on-disk value type, class, compression
   flags, transform, index bounding box and an `unsupported` reason) covers every grid; with `select`, a grid the parser
@@ -113,6 +122,13 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
   NanoVDB Float grid from it.
 
 ### Changed
+
+- Tools (K7.C1 / K7.H1): built and re-encoded grids now equal native NanoVDB byte for byte (GridData checksum and version
+  aside) on every native fixture: the root table and upper nodes are in native's signed-origin order again (0.1's unsigned
+  key order put grids with negative coordinates out of breadth-first order, which NanoVDB v14's `nanovdb_validate`
+  rejects), and node average/standard deviation use NanoVDB GridStats' f64 Welford update (they differed by up to 4 f32 ulp;
+  a node holding ±∞ now gets NaN, as native). A node whose values are all +∞ stores the type's largest finite value as
+  its minimum, as native. Image bytes of such grids change; values do not.
 
 - Tools: an `.nvdb` from another NanoVDB major version (not 32.x) throws `VDBUnsupportedError` (`VDB_UNSUPPORTED`)
   instead of `NvdbFormatError`. A `.vdb` newer than file version 225 still throws `VDBUnsupportedError`, now saying

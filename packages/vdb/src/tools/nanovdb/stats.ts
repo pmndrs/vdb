@@ -6,21 +6,49 @@
  * are the exact aggregate of its children's plus its own active tiles, each
  * tile counted with GridStats' weight (see {@link StatsAccumulator.addTile}).
  *
- * The accumulator keeps N, sum and sum-of-squares in f64 so that ave/stddev are
- * computed at full precision before being narrowed to the f32 stored in the
- * grid. These stats feed the material's adaptive stepping (invariant D), so they
- * are computed for real, not stubbed.
+ * Two accumulations (K7.H1, DIVERGES V73), chosen by
+ * {@link vdbSetStatsAccumulation} when an accumulator is made:
+ * - `'welford'` (default since K7.H1): GridStats' own f64 update, ported
+ *   operation for operation (`Stats<T, 0>::add(val)`, `add(val, n)`,
+ *   `add(other)`). Fed in GridStats' order (leaf voxels by offset, an internal
+ *   node's active tiles then its children by slot, the root table in order) it
+ *   reproduces native ave/stddev bit for bit, ±∞ leaves included (NaN there).
+ * - `'sums'` (K1–K7.H): f64 count, sum and sum of squares; ave/stddev within a
+ *   few f32 ulp of native, ±∞ where Welford gives NaN.
+ * Either way ave/stddev are narrowed to f32 only when stored.
  */
 
 const INT_MIN = -0x80000000;
 const INT_MAX = 0x7fffffff;
 
+/** How {@link StatsAccumulator} accumulates ave/stddev (K7.H1 A/B; see the file header). */
+export type VDBStatsAccumulation = "welford" | "sums";
+
+let accumulation: VDBStatsAccumulation = "welford";
+
+/**
+ * Sets how accumulators made from now on compute ave/stddev, and returns the previous setting.
+ * Internal (tests and A/B scripts); builds made under one setting are consistent.
+ */
+export function vdbSetStatsAccumulation(mode: VDBStatsAccumulation): VDBStatsAccumulation {
+  if (mode !== "welford" && mode !== "sums") throw new RangeError(`stats accumulation must be 'welford' or 'sums', got ${String(mode)}`);
+  const previous = accumulation;
+  accumulation = mode;
+  return previous;
+}
+
 /** Running active-value statistics plus the tight index-space bbox of the
  *  active voxels they cover. */
 export class StatsAccumulator {
+  /** Samples (with tiles: GridStats weight, see {@link addTile}). */
   count = 0;
+  readonly mode: VDBStatsAccumulation = accumulation;
+  // 'sums'
   private sum = 0;
   private sumSq = 0;
+  // 'welford': GridStats' mAvg, mAux.
+  private avg = 0;
+  private aux = 0;
   min = Number.POSITIVE_INFINITY;
   max = Number.NEGATIVE_INFINITY;
   // Tight bbox of active voxels (inclusive). Empty when count === 0.
@@ -30,8 +58,15 @@ export class StatsAccumulator {
   /** Adds one active voxel at index coord (x,y,z) with the given value. */
   addVoxel(value: number, x: number, y: number, z: number): void {
     this.count += 1;
-    this.sum += value;
-    this.sumSq += value * value;
+    if (this.mode === "welford") {
+      // Stats<T, 0>::add(val)
+      const delta = value - this.avg;
+      this.avg += delta / this.count;
+      this.aux += delta * (value - this.avg);
+    } else {
+      this.sum += value;
+      this.sumSq += value * value;
+    }
     if (value < this.min) this.min = value;
     if (value > this.max) this.max = value;
     if (x < this.bboxMin[0]) this.bboxMin[0] = x;
@@ -54,9 +89,17 @@ export class StatsAccumulator {
     bboxMin: readonly [number, number, number],
     bboxMax: readonly [number, number, number],
   ): void {
+    if (this.mode === "welford") {
+      // Stats<T, 0>::add(val, n), left to right as C++ evaluates it.
+      const denom = 1.0 / (this.count + weight);
+      const delta = value - this.avg;
+      this.avg += denom * delta * weight;
+      this.aux += denom * delta * delta * this.count * weight;
+    } else {
+      this.sum += value * weight;
+      this.sumSq += value * value * weight;
+    }
     this.count += weight;
-    this.sum += value * weight;
-    this.sumSq += value * value * weight;
     if (value < this.min) this.min = value;
     if (value > this.max) this.max = value;
     for (let a = 0; a < 3; a++) {
@@ -65,12 +108,21 @@ export class StatsAccumulator {
     }
   }
 
-  /** Merges a child accumulator's totals into this one. */
+  /** Merges a child accumulator's totals into this one (both must use the same accumulation). */
   merge(child: StatsAccumulator): void {
     if (child.count === 0) return;
+    if (child.mode !== this.mode) throw new RangeError("StatsAccumulator.merge: the accumulators use different accumulations");
+    if (this.mode === "welford") {
+      // Stats<T, 0>::add(const Stats& other): mAux += other.mAux + (…).
+      const denom = 1.0 / (this.count + child.count);
+      const delta = child.avg - this.avg;
+      this.avg += denom * delta * child.count;
+      this.aux += child.aux + denom * delta * delta * this.count * child.count;
+    } else {
+      this.sum += child.sum;
+      this.sumSq += child.sumSq;
+    }
     this.count += child.count;
-    this.sum += child.sum;
-    this.sumSq += child.sumSq;
     if (child.min < this.min) this.min = child.min;
     if (child.max > this.max) this.max = child.max;
     for (let a = 0; a < 3; a++) {
@@ -80,11 +132,13 @@ export class StatsAccumulator {
   }
 
   get average(): number {
+    if (this.mode === "welford") return this.avg;
     return this.count > 0 ? this.sum / this.count : 0;
   }
 
   /** Population standard deviation (GridStats convention). */
   get stdDev(): number {
+    if (this.mode === "welford") return this.count < 2 ? 0 : Math.sqrt(this.aux / this.count);
     if (this.count === 0) return 0;
     const mean = this.sum / this.count;
     const variance = this.sumSq / this.count - mean * mean;
@@ -94,7 +148,28 @@ export class StatsAccumulator {
   get isEmpty(): boolean {
     return this.count === 0;
   }
+
+  /**
+   * `min` as GridStats' `Extrema` stores it: Extrema starts at the value type's largest finite value
+   * (`finiteMax`: FLT_MAX for Float, 65504 for Half), so a node whose values are all +∞ keeps that
+   * start value as its minimum (K7.H1). 0 when empty.
+   */
+  storedMin(finiteMax: number): number {
+    if (this.isEmpty) return 0;
+    return this.min === Number.POSITIVE_INFINITY ? finiteMax : this.min;
+  }
+
+  /** `max` as GridStats stores it: −`finiteMax` when every value is −∞ (see {@link storedMin}). 0 when empty. */
+  storedMax(finiteMax: number): number {
+    if (this.isEmpty) return 0;
+    return this.max === Number.NEGATIVE_INFINITY ? -finiteMax : this.max;
+  }
 }
+
+/** FLT_MAX, `std::numeric_limits<float>::max()`: GridStats' starting minimum for f32 values. */
+export const STATS_FLOAT_MAX = 3.4028234663852886e38;
+/** 65504, the largest finite binary16: GridStats' starting minimum for Half values (raw 0x7BFF). */
+export const STATS_HALF_MAX = 65504;
 
 const fround = Math.fround;
 

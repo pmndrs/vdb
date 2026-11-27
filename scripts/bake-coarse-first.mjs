@@ -5,7 +5,7 @@
  * reader needs before the preview can be drawn, with codec NONE and ZIP, with
  * and without HTTP-style gzip on top.
  *
- *   pnpm build && node scripts/bake-coarse-first.mjs [in.vdb] [--out out.nvdb] [--codec zip|none] [--resolution 48]
+ *   pnpm build && node scripts/bake-coarse-first.mjs [in.vdb] [--out out.nvdb] [--codec zip|none|blosc] [--resolution 48]
  *
  * Default input: fixtures/vdb-samples/smoke.vdb (`pnpm fixtures:vdb-samples`).
  * A `.nvdb` input bakes its grid 0 as an image (the full grid kept as encoded,
@@ -76,7 +76,7 @@ if (input.endsWith(".nvdb")) {
 }
 
 const results = {};
-for (const codec of ["none", "zip"]) {
+for (const codec of ["none", "zip", "blosc"]) {
   const t = performance.now();
   const bytes = T.vdbBakeCoarseFirst(grid, { previewResolution: resolution, codec });
   const bakeS = (performance.now() - t) / 1000;
