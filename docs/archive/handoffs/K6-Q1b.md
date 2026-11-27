@@ -174,7 +174,7 @@ copied in) with the default and with `K6_FRAMES_QUERY=ao=0`: every one of the 8 
 | `e2e/k6-frames.spec.ts` vs main (before: `git archive 24895d1` + this spec, port 5347; after: this tree, 5344) | **106 / 106 identical** (max 0/255) |
 | `e2e/k6-ambient.spec.ts` | 19 passed (the 5 light-probe rows: 0 over, ≤ 0.74 ulp; `probe-term` 585 / 4608 over) |
 | `e2e/k6-adaptive-grid.spec.ts` (new, CC0 smoke) | 1 passed: off and max = base byte-identical (64); the default rule keeps the thin smoke at 64 (identical); at extinction 400 the side grows to 193 (SwiftShader's 256 MiB `maxBufferSize` clamp; Metal would take 256), capped 96 with max 96, frame moved ≤ 45/255 |
-| `e2e/k6-core.spec.ts` subset (gather / 'frame' / spectral probes, grey compile) | see the commit message |
+| `e2e/k6-core.spec.ts` subset (`-g` K6.1 gathers, every K6.2 'frame' probe, K6.3 two-sided frame / gather, K6.4 spectral gather and frame, the grey "every pipeline variant compiles"), frozen copy | **18 passed**, mutations fail. Not run: the spectral compile probe (separate 5-min run; the spectral gathers lost the same removed function as the grey ones) |
 | frame size snapshot | rewritten on purpose (`K6_WRITE_SIZES=1`): gathers −292 B min |
 
 ## DIVERGES
