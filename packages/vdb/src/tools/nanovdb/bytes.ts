@@ -6,7 +6,7 @@
  *
  * ## Provenance of the numbers
  *
- * Every constant below is the ABI-32.9.1 value extracted into
+ * Every constant below is the ABI-32 value extracted into
  * `packages/vdb/vendor/stride-tables.json` (itself generated from the
  * vendored `PNanoVDB.h`). They are duplicated here as named literals rather than
  * read from that JSON at runtime on purpose: `@pmndrs/vdb/tools` is the pure-TS,
@@ -29,6 +29,7 @@ export const MAGIC_GRID = 0x314244566f6e614en; // "NanoVDB1"
 /** File-header magic `NanoVDB2` (u64) for the segment `.nvdb` container. */
 export const MAGIC_FILE = 0x324244566f6e614en; // "NanoVDB2"
 
+/** Written into every grid and file header: 32.9.1, not the reference header's 32.11.0 (K7.5, DIVERGES V163). */
 export const MAJOR_VERSION = 32;
 export const MINOR_VERSION = 9;
 export const PATCH_VERSION = 1;
@@ -193,7 +194,7 @@ export const LEAF_FLAG_HAS_BBOX = 2;
 // Per-grid-type layout (FLOAT). Fp8/FpN add sibling blocks in the next wave.
 // ---------------------------------------------------------------------------
 
-/** Per-grid-type node sizes, stat offsets and table geometry (ABI 32.9.1). */
+/** Per-grid-type node sizes, stat offsets and table geometry (ABI 32; same in 32.9.1 and 32.11.0). */
 export interface GridTypeLayout {
   readonly gridType: number;
   readonly rootSize: number;

@@ -11,7 +11,7 @@
  *   - fixtures/downloads/openvdb-sparse/nanovdb/nanovdb/NanoVDB.h
  *     (magic numbers, Version packing, GridType/GridClass enums, GridData)
  *   - vendor/stride-tables.json (extracted PNanoVDB.h defines: GridData,
- *     TreeData and RootData offsets, ABI 32.9.1)
+ *     TreeData and RootData offsets, ABI 32.11.0; unchanged since 32.9.1)
  *
  * ## `.nvdb` "segment" format (FileHeader magic `NanoVDB0`/`NanoVDB2`)
  *
@@ -270,7 +270,7 @@ function formatVersion(v: ParsedVersion): string {
   return `${v.major}.${v.minor}.${v.patch}`;
 }
 
-/** ABI major version this loader targets (vendor/stride-tables.json `$meta.abi` = "32.9.1"). */
+/** ABI major version this loader targets (vendor/stride-tables.json `$meta.abi` = "32.11.0"). */
 const NANOVDB_MAJOR_VERSION = 32;
 
 /**

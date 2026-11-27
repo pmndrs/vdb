@@ -589,6 +589,9 @@ describe("bytes.ts constants match vendor/stride-tables.json", () => {
     expect(L.leafOffMin).toBe(f.leaf_off_min);
     expect(L.leafOffStdDev).toBe(f.leaf_off_stddev);
 
+    // The written major is the reference header's; the minor/patch stamp stays 32.9.1 since K7.5
+    // re-pinned the header to v14.0.0 (32.11.0): DIVERGES V163, follow-up K7.5a.
+    expect(B.MAJOR_VERSION).toBe(d.PNANOVDB_MAJOR_VERSION_NUMBER);
     expect(B.VERSION_PACKED).toBe((32 << 21) | (9 << 10) | 1);
     expect(B.MAGIC_GRID).toBe(BigInt(d.PNANOVDB_MAGIC_GRID as string));
     expect(B.MAGIC_FILE).toBe(BigInt(d.PNANOVDB_MAGIC_FILE as string));

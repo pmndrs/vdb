@@ -1,5 +1,5 @@
 // GENERATED FILE — do not edit by hand.
-// Source: packages/vdb/vendor/stride-tables.json (NanoVDB ABI 32.9.1)
+// Source: packages/vdb/vendor/stride-tables.json (NanoVDB ABI 32.11.0)
 // Regenerate: node scripts/gen-wgsl-constants.mjs
 // Guarded by: packages/vdb/test/core/wgsl-constants.test.ts
 
@@ -7,8 +7,8 @@
 const PNANOVDB_FALSE: u32 = 0u;
 const PNANOVDB_TRUE: u32 = 1u;
 const PNANOVDB_MAJOR_VERSION_NUMBER: u32 = 32u;
-const PNANOVDB_MINOR_VERSION_NUMBER: u32 = 9u;
-const PNANOVDB_PATCH_VERSION_NUMBER: u32 = 1u;
+const PNANOVDB_MINOR_VERSION_NUMBER: u32 = 11u;
+const PNANOVDB_PATCH_VERSION_NUMBER: u32 = 0u;
 const PNANOVDB_GRID_TYPE_UNKNOWN: u32 = 0u;
 const PNANOVDB_GRID_TYPE_FLOAT: u32 = 1u;
 const PNANOVDB_GRID_TYPE_DOUBLE: u32 = 2u;

@@ -31,8 +31,9 @@ describe("vendored PNanoVDB.h + extracted stride tables", () => {
     // Provenance must match the actual vendored bytes and the pinned ABI.
     const sha256 = createHash("sha256").update(header).digest("hex");
     expect(committedMeta.sha256).toBe(sha256);
-    expect(committedMeta.abi).toBe("32.9.1");
-    expect(committedMeta.commit).toBe("a532de5526ef791280b6483a872336a811a68542");
+    expect(committedMeta.abi).toBe("32.11.0");
+    expect(committedMeta.commit).toBe("ecae2bda85744412b0cd47e1b8e1e4e76beb7b88");
+    expect(committedMeta.tag).toBe("v14.0.0");
   });
 
   it("spot-checks values against upstream's documented layout", async () => {

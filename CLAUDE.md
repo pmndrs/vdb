@@ -607,3 +607,14 @@ From v1; details in docs/archive/handoffs/.
 - Issue #2: the K6.R twin's statistical check cannot see a small change of the medium on smooth grids (the sparse twin's
   blobs hid a swapped stochastic pick); the twins agree path for path, so gate a voxel-exact change on `equalShare`
   (0.997 unmutated vs 0.80 mutated).
+- K7.5: the reference `PNanoVDB.h` (32.11.0, v14.0.0) and the version our writers stamp (`tools/nanovdb/bytes.ts`, 32.9.1)
+  are separate on purpose (V163, K7.5a). Re-pinning the header regenerates `stride-tables.json` and its two generated
+  mirrors (`node scripts/extract-stride-tables.mjs`, `node scripts/gen-wgsl-constants.mjs`); moving the stamp moves every
+  written byte, and the K4.6 byte-identity hashes in `test/tools/collapse.test.ts` with it.
+- The worktree's git-ignored `fixtures/` can be filled with symlinks to the main checkout's directories (`ln -s`), not only
+  `cp -n`: git ignores them and the fixture tests read through them. Without them ~240 tests skip silently.
+- `.github/upstream-pins.json` (K7.6) records what we REVIEWED, not what upstream has: bump a pin only after the review its
+  `review` line asks for. `node scripts/upstream-watch.mjs --dry-run` reads only (no token needed) and shows what moved.
+  A scheduled workflow runs from the default branch, so merging `upstream-watch.yml` to main turns it on.
+- THIRD_PARTY.md and `packages/vdb/THIRD_PARTY_NOTICES.md` are checked by `test/third-party.test.ts`: deleting or adding a
+  file with a "Portions derived from mjurczyk/openvdb (MIT)" header means editing both lists in the same commit.

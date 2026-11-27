@@ -19,7 +19,8 @@ const OUT_TS = path.join(ROOT, "packages/vdb/src/tools/cpu/stride-tables.generat
 const UPSTREAM = {
   repo: "https://github.com/AcademySoftwareFoundation/openvdb",
   path: "nanovdb/nanovdb/PNanoVDB.h",
-  commit: "a532de5526ef791280b6483a872336a811a68542",
+  commit: "ecae2bda85744412b0cd47e1b8e1e4e76beb7b88",
+  tag: "v14.0.0",
 };
 
 const headerText = await readFile(HEADER, "utf8");

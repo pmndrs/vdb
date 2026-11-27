@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { exists } from "./lib/download.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const OPENVDB_COMMIT = "a532de5526ef791280b6483a872336a811a68542"; // = vendored PNanoVDB.h pin
+const OPENVDB_COMMIT = "a532de5526ef791280b6483a872336a811a68542"; // the fixture bake's pin (the vendored PNanoVDB.h moved to v14.0.0 in K7.5; native v14 fixtures: K7.7)
 const OUT = process.env.BAKE_OUTPUT_DIR
   ? path.resolve(ROOT, process.env.BAKE_OUTPUT_DIR)
   : path.join(ROOT, "fixtures");
