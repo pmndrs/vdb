@@ -37,6 +37,7 @@ under `dist/`):
 
 - `src/core/compute/multi-scale.ts` (commit `4e2d46f`)
 - `src/core/compute/pyramid.ts`
+- `src/core/source/dense-fill.ts`
 - `src/core/source/dense.ts`
 - `src/core/wgsl/level-set.ts`
 - `src/three/frame/blackbody.ts`
@@ -89,6 +90,7 @@ under `dist/`):
 - `src/tools/wvdb/format.ts`
 - `src/tools/wvdb/index.ts`
 - `src/tools/wvdb/level-set.ts`
+- `src/tools/wvdb/partial.ts`
 - `src/tools/wvdb/read.ts`
 - `src/tools/wvdb/write.ts`
 

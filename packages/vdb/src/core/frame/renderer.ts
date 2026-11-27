@@ -655,7 +655,7 @@ class FrameRenderer implements VDBFrameRenderer {
           record: i,
           group: groups.findIndex((g) => g.source === slot.source),
           matrixWorld: p.matrixWorld,
-          key: [this.#sourceId(slot.source), slot.v, slot.version, this.#densityScaleOf(p, slot), p.densityCutoff, p.extinction, p.absorbance, p.emissiveIntensity, ...p.temperatureRange, ...p.offset3D, WRAP_CODE[p.wrap3D] ?? 0, p.mipmaps ? 1 : 0, emissionLight.steps ?? 24, codes[i], groups.find((g) => g.source === slot.source)!.hook ?? "", ...Array.from({ length: 16 }, (_, k) => p.matrixWorld[k]!)].join(","),
+          key: [this.#sourceId(slot.source), slot.v, slot.version, slot.revision ?? -1, this.#densityScaleOf(p, slot), p.densityCutoff, p.extinction, p.absorbance, p.emissiveIntensity, ...p.temperatureRange, ...p.offset3D, WRAP_CODE[p.wrap3D] ?? 0, p.mipmaps ? 1 : 0, emissionLight.steps ?? 24, codes[i], groups.find((g) => g.source === slot.source)!.hook ?? "", ...Array.from({ length: 16 }, (_, k) => p.matrixWorld[k]!)].join(","),
         });
       });
     }
@@ -870,7 +870,8 @@ class FrameRenderer implements VDBFrameRenderer {
       const p = r.volume.params;
       const slot = r.volume.slot;
       for (let i = 0; i < 16; i++) values.push(p.matrixWorld[i]!);
-      values.push(this.#sourceId(slot.source), slot.v, slot.version, ...p.baseColor, this.#densityScaleOf(p, slot), p.densityCutoff, p.extinction, p.absorbance, p.mipmaps ? 1 : 0, WRAP_CODE[p.wrap3D] ?? 0, ...p.offset3D);
+      // K4.22: `revision` too (a same-size dense replace keeps `version`: a sequence frame, a streamed page)
+      values.push(this.#sourceId(slot.source), slot.v, slot.version, slot.revision ?? -1, ...p.baseColor, this.#densityScaleOf(p, slot), p.densityCutoff, p.extinction, p.absorbance, p.mipmaps ? 1 : 0, WRAP_CODE[p.wrap3D] ?? 0, ...p.offset3D);
       // K6.4: the spectral grid holds each channel's extinction
       if (spectral) values.push(...p.extinctionScale, p.angstromExponent);
     });

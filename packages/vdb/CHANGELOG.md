@@ -67,6 +67,16 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 
 ### Added
 
+- K4.22, partial `.wvdb` LODs while streaming: `@pmndrs/vdb/tools` `wvdbDensePartialVolume(reader.file, event, options)`
+  turns any `WvdbStreamReader({ partialLods: true })` event into a dense volume. With `fill: 'upsample'` (default) the
+  bricks stored but not decoded yet show the coarser LOD, upsampled as mjurczyk's loader does; `'background'` leaves
+  them empty. The core's `vdbDenseSource` (and so `VDBFrameRenderer`'s dense volumes) fills them on the GPU in one
+  compute pass on `replace`, and builds the mip atlas from the result; level 1 of a pending brick is the coarser LOD itself
+  (`fillMips: 'coarse'`, default; `'box'` is his). `wvdbDenseResolve(volume)` is the CPU twin (same bytes) for hosts
+  without the core; `vdbDenseSource(device, volume, { fill: 'cpu' })` uses it. New types `WvdbDenseFill`,
+  `WvdbDensePartialFill`, `WvdbDensePartialOptions`; `WvdbDenseTexture.fill`, `WvdbVolumeLevel.decoded` (one bit per
+  decoded brick), `VDBDenseSource.fills` and `.revision`, and `VDBVolumeSourceInfo.revision` (optional). Gallery demo 16
+  has a `.wvdb` mode (`?format=wvdb&partial=upsample|upsample-box|background|off`).
 - `@pmndrs/vdb/tools`: `parseVdb(buffer, { select })` lists a `.vdb`'s grids without decoding them and decodes only
   the ones you pick. `VdbFile.descriptors` (`VdbGridDescriptor`: name, grid type, on-disk value type, class, compression
   flags, transform, index bounding box and an `unsupported` reason) covers every grid; with `select`, a grid the parser
@@ -135,6 +145,10 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 
 ### Fixed
 
+- Core frame renderer: a same-size dense `replace` (a sequence frame, or a streamed page) kept the shadow grid and the
+  emission probes of the previous content, since their redraw keys read only the source's `version` (bumped for new
+  textures). Volume sources now have an optional content `revision` (the dense source bumps it on every `replace`), and
+  the keys read it too (K4.22).
 - Three (K6.8b): changing a `VDBFrameEmissionLight`'s `resolution` mid-run left plain lit materials (`MeshLambertMaterial`,
   `MeshStandardMaterial`) bound to the retired, destroyed probe stack ("Destroyed texture … used in a submit", and a wrong
   frame after); the same class as K6.10 finding 8. Receivers now bind placeholders while the core has no probes and

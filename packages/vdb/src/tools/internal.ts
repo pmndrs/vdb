@@ -98,6 +98,13 @@ export {
   wvdbToByte,
   wvdbDensityScale,
   sampleWvdbDenseTexture,
+  // K4.22: partial LODs (the CPU twin of the dense source's GPU fill)
+  WVDB_UPSAMPLE_WEIGHT_ONE,
+  wvdbUpsampleAxis,
+  wvdbUpsampleTexels,
+  wvdbPendingBricks,
+  wvdbDenseResolveTexture,
+  wvdbMipAtlasLayout,
 } from "./wvdb/index.js";
 export type {
   WvdbBrickInput,

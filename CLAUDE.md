@@ -607,3 +607,15 @@ From v1; details in docs/archive/handoffs/.
 - Issue #2: the K6.R twin's statistical check cannot see a small change of the medium on smooth grids (the sparse twin's
   blobs hid a swapped stochastic pick); the twins agree path for path, so gate a voxel-exact change on `equalShare`
   (0.997 unmutated vs 0.80 mutated).
+- K4.22: a same-size dense `replace` (a sequence frame, a streamed page) writes into the same textures and keeps the
+  source's `version`; the frame renderer's shadow grid and emission probes key on `revision` too
+  (`VDBVolumeSourceInfo.revision`). A source that changes content in place must bump `revision`, or the lighting
+  keeps the old content (before K4.22 the final frame of a page-streamed `.wvdb` depended on the pages shown before).
+- `wvdbDensePartialVolume` copies the event's live levels: call it before the next `push`. A test that needs one
+  snapshot per chunk pushes one byte at a time (`wvdb-partial.test.ts`, `k4-dense-fill`): a 1 KiB push can finish a
+  LOD's last page AND the next LOD's mask, so take the push's last event (or its last complete one for `off`).
+- A partial LOD's mip atlas decides how it looks at a distance: the froxel renderer reads mip ≥ 1 for coarse froxels,
+  and his box mips of an upsampled LOD are a blur of the coarser LOD (demo 16: 9 dB below simply showing that LOD).
+  `fillMips: 'coarse'` (default) puts the coarser LOD itself at level 1 of the pending bricks.
+- The dense source bakes `stats.max` into its WGSL (`vdbSrcMaxIn`): a `replace` whose max differs builds new frame
+  kernels (K4.22a). Count builds per page in streaming tests (demo 16 `?test=1` records `builds` per frame).

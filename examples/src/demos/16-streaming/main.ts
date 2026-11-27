@@ -17,6 +17,14 @@
  * pyramid and the volume moves its box, with no new shader. The frame renderer integrates in world space, so a
  * preview needs no `voxelRatio` density scale, unlike `VDBVolumeMaterial`.
  *
+ * K4.22, `?format=wvdb`: smoke.vdb baked as a `.wvdb` in the page (3 LODs, small pages) streams through
+ * `WvdbStreamReader({ partialLods: true })` into one dense source (`vdbDenseTextures`, the core's `vdbDenseSource`),
+ * page by page: `?partial=upsample` (default) shows each LOD as its pages land, the bricks not in yet upsampled from the
+ * coarser LOD on the GPU (`wvdbDensePartialVolume`, the source's fill kernel; mip level 1 of those bricks is the coarser
+ * LOD); `upsample-box` builds every mip from the upsample (his renderer); `background` shows them empty; `off` keeps
+ * the last complete LOD until the next one is whole. `?test=1` records every page's frame and its PSNR against
+ * the final frame (`window.__DEMO16__.wvdb`).
+ *
  * Query (plus the shell's `presentation`, `panel`, `still`, `gallery`): `?asset=wdas|smoke`, `?speed=<KiB/s>`
  * (0: unthrottled), `?quality=low|medium|high`, `?temporal=0|1`, `?mode=direct` (no stream: the full grid added
  * directly, the reference the e2e compares the streamed result with), `?test=1` (with `presentation=readback`: still, unthrottled
@@ -30,14 +38,79 @@ import { fixtureUrl } from "../assets.js";
 import * as THREE from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VDBGridPool, type VDBGridTypeName } from "@pmndrs/vdb";
-import { NvdbFile, parseVdb, vdbBakeCoarseFirst, type NvdbGridMetadata } from "@pmndrs/vdb/tools";
-import { VDBFrameRenderer, VDBFrameVolume, VDBGridNode, getDevice, vdbSparseSource, vdbStreamCoarseFirst, type VDBCoarseFirstEvent, type VDBThreeSparseSource } from "@pmndrs/vdb/three";
+import {
+  NvdbFile,
+  WvdbStreamReader,
+  parseVdb,
+  readWvdb,
+  vdbBakeCoarseFirst,
+  vdbToWvdb,
+  wvdbDensePartialVolume,
+  wvdbDenseVolume,
+  type NvdbGridMetadata,
+  type WvdbDenseVolume,
+  type WvdbVolumeLevel,
+} from "@pmndrs/vdb/tools";
+import {
+  VDBFrameRenderer,
+  VDBFrameVolume,
+  VDBGridNode,
+  getDevice,
+  vdbDenseTextures,
+  vdbSparseSource,
+  vdbStreamCoarseFirst,
+  type VDBCoarseFirstEvent,
+  type VDBThreeDenseSource,
+  type VDBThreeSparseSource,
+} from "@pmndrs/vdb/three";
 import { createDeviceRenderer } from "../device-renderer.js";
 import { KiB, MiB, PRESENTATION as SHELL_PRESENTATION, Presenter, QUALITY, autoOrbit, initialQuality, mountShowcase, params, probe, type Quality, type Snapshot } from "../showcase-shell.js";
 import { loadHdrSky, proceduralSky } from "../gallery-sky.js";
 
 type AssetId = "wdas" | "smoke";
 type Mode = "stream" | "direct";
+/** K4.22: the coarse-first `.nvdb` into a sparse source, or a `.wvdb` LOD stream into a dense one. */
+type Format = "nvdb" | "wvdb";
+/** K4.22: what a `.wvdb` LOD shows while its pages stream in. */
+type PartialMode = "upsample" | "upsample-box" | "background" | "off";
+
+/** K4.22 `?test=1`: one frame per `.wvdb` stream event (a page or a completed LOD). */
+interface WvdbFrameRecord {
+  lod: number;
+  /** The event completed its LOD. */
+  complete: boolean;
+  /** Bricks of the LOD decoded and stored (density grid). */
+  decoded: number;
+  stored: number;
+  /** File bytes received at the event. */
+  bytes: number;
+  /** The LOD shown (the previous complete one with `partial=off` during a partial LOD). */
+  shownLod: number;
+  /** The shown volume had pending bricks filled from the coarser LOD. */
+  filled: boolean;
+  /** Against the final frame: mean squared error and PSNR (dB) over RGB, the whole frame and the volume's pixels. */
+  mse: number;
+  psnr: number;
+  regionMse: number;
+  regionPsnr: number;
+  /** Shader modules and pipelines built for this frame. */
+  builds: number;
+  /** Frames drawn until two in a row were identical (11: never within 10). */
+  drawn: number;
+}
+
+interface WvdbRun {
+  partial: PartialMode;
+  frames: WvdbFrameRecord[];
+  /** Pixels where the final frame differs from the frame without a volume (the PSNR region). */
+  region: number;
+  /** FNV-1a of the final frame's bytes (equal for every `partial` mode and the direct render). */
+  finalHash: string;
+  /** LOD sizes of the density grid. */
+  lods: number[][];
+  /** The dense source's fills (K4.22): on the GPU and on the CPU. */
+  fills: { gpu: number; cpu: number } | null;
+}
 
 interface PhaseRecord {
   phase: "preview" | "full";
@@ -77,6 +150,11 @@ interface Demo16State {
   uncaptured: string[];
   /** `?mode=direct`: the reference frame. */
   reference?: Snapshot | null;
+  /** K4.22: `?format=wvdb`. */
+  format: Format;
+  wvdb?: WvdbRun;
+  /** K4.22 `?mode=direct&format=wvdb`: FNV-1a of the reference frame's bytes. */
+  referenceHash?: string;
 }
 
 declare global {
@@ -89,6 +167,15 @@ declare global {
 const TEST = params.get("test") === "1";
 const PRESENTATION = SHELL_PRESENTATION;
 const MODE: Mode = params.get("mode") === "direct" ? "direct" : "stream";
+const PARTIAL_MODES: readonly PartialMode[] = ["upsample", "upsample-box", "background", "off"];
+const PARTIAL_LABEL: Record<PartialMode, string> = {
+  upsample: "partial LODs: upsample",
+  "upsample-box": "partial LODs: upsample, his mips",
+  background: "partial LODs: empty",
+  off: "whole LODs only",
+};
+/** K4.22 bake of smoke.vdb as `.wvdb`: finest LOD 96 voxels on the long side, small pages so a LOD lands in several. */
+const WVDB_BAKE = { resolution: 96, pageBricks: 24, lods: 3 } as const;
 const STILL_MODE = TEST || params.get("still") === "1";
 const SPEEDS = [256, 1024, 2048, 4096, 10240] as const;
 const speedLabel = (k: number) => (k === 0 ? "unthrottled" : k < 1024 ? `${k} KiB/s` : `${k / 1024} MiB/s`);
@@ -105,7 +192,19 @@ const shell = mountShowcase({ strip: "row",
   blurb:
     "A coarse-first .nvdb streams into the froxel renderer: a 48-voxel preview draws from the first ~14 KiB, and the full-resolution grid swaps in place when its last byte lands.",
 });
-const state: Demo16State = { ready: false, presentation: PRESENTATION, mode: MODE, available: [], missing: [], transferred: 0, phases: [], done: false, frames: 0, uncaptured: [] };
+const state: Demo16State = {
+  ready: false,
+  presentation: PRESENTATION,
+  mode: MODE,
+  available: [],
+  missing: [],
+  transferred: 0,
+  phases: [],
+  done: false,
+  frames: 0,
+  uncaptured: [],
+  format: params.get("format") === "wvdb" ? "wvdb" : "nvdb",
+};
 window.__DEMO16__ = state;
 shell.onFail((message) => {
   state.error = message;
@@ -252,6 +351,8 @@ async function run(): Promise<void> {
     }
     return bytes;
   };
+  let wvdbBake: Uint8Array | null = null;
+  const bakeWvdbOnce = async (make: () => Promise<Uint8Array>): Promise<Uint8Array> => (wvdbBake ??= await make());
   const blobResponse = async (bytes: Uint8Array): Promise<Response> => fetch(URL.createObjectURL(new Blob([bytes as BlobPart], { type: "application/octet-stream" })));
   const ASSETS: Partial<Record<AssetId, AssetDef>> = {};
   if (bakedOk || fp8Ok) {
@@ -301,6 +402,8 @@ async function run(): Promise<void> {
     speed: params.has("speed") ? Math.max(0, Number(params.get("speed"))) : TEST ? 0 : 2048,
     quality: TEST ? ("low" as Quality) : initialQuality(),
     temporal: params.has("temporal") ? params.get("temporal") === "1" : PRESENTATION === "direct",
+    format: state.format,
+    partial: (PARTIAL_MODES as readonly string[]).includes(params.get("partial") ?? "") ? (params.get("partial") as PartialMode) : ("upsample" as PartialMode),
   };
 
   // --- renderer and stage -----------------------------------------------------------------------------------
@@ -399,10 +502,11 @@ async function run(): Promise<void> {
 
   // --- one run: a pool, the stream, one node + source + volume made at the first grid --------------------------
   interface Shown {
-    grids: VDBGridNode;
-    source: VDBThreeSparseSource;
     volume: VDBFrameVolume;
-    id: number;
+    /** The sparse path's node, source and pool id (`.nvdb`). */
+    sparse?: { grids: VDBGridNode; source: VDBThreeSparseSource; id: number };
+    /** The dense path's source (`.wvdb`, K4.22). */
+    dense?: VDBThreeDenseSource;
   }
   let pool: VDBGridPool | null = null;
   let shown: Shown | null = null;
@@ -418,12 +522,14 @@ async function run(): Promise<void> {
   };
 
   let frameMs = 0;
-  const present = async (): Promise<void> => {
+  /** Draws a frame; with the readback presentation, returns its sRGB bytes. */
+  const present = async (): Promise<Uint8ClampedArray<ArrayBuffer> | null> => {
     const t0 = performance.now();
-    await presenter.present(scene, camera);
+    const bytes = await presenter.present(scene, camera);
     const ms = performance.now() - t0;
     frameMs = frameMs === 0 ? ms : frameMs * 0.9 + ms * 0.1;
     state.frames++;
+    return bytes;
   };
 
   /**
@@ -436,13 +542,26 @@ async function run(): Promise<void> {
     const volume = new VDBFrameVolume(source, { frameRenderer, extinction: 100, angstromExponent: 0, normalizeDensity: true });
     applySettings(volume);
     holder.add(volume);
-    shown = { grids, source, volume, id };
+    shown = { volume, sparse: { grids, source, id } };
+  }
+  /** K4.22: show a `.wvdb` LOD (whole or partial): one dense source for the stream, each LOD or page swapped in. */
+  function showDense(v: WvdbDenseVolume): void {
+    if (shown?.dense) {
+      shown.dense.replace(v);
+      return;
+    }
+    const dense = vdbDenseTextures(v);
+    const volume = new VDBFrameVolume(dense, { frameRenderer, extinction: 100, angstromExponent: 0, normalizeDensity: true });
+    applySettings(volume);
+    holder.add(volume);
+    shown = { volume, dense };
   }
   function disposeShown(s: Shown): void {
     holder.remove(s.volume);
     s.volume.dispose();
-    s.source.dispose();
-    s.grids.dispose();
+    s.sparse?.source.dispose();
+    s.sparse?.grids.dispose();
+    s.dense?.dispose();
   }
 
   const tl: Timeline = { samples: [], total: 0, expectedSeconds: 1, markers: [] };
@@ -472,6 +591,12 @@ async function run(): Promise<void> {
     state.transferred = 0;
     tl.samples = [];
     tl.markers = [];
+    delete state.wvdb;
+    state.format = controls.format;
+    if (controls.format === "wvdb") {
+      await startWvdbRun(gen, signal);
+      return;
+    }
     const asset = ASSETS[controls.asset]!;
     if (state.asset !== controls.asset) home(controls.asset === "smoke" ? 1.5 : 1);
     state.asset = controls.asset;
@@ -546,11 +671,11 @@ async function run(): Promise<void> {
           // The first grid: the node (every type of the family), the following source and the volume.
           place(e.grid.metadata.worldBBox);
           showGrid(p, e.id, e.grid.image, e.types);
-        } else if (shown) {
+        } else if (shown?.sparse) {
           // A swap: the source re-reads the boxes at the next frame by itself. Rebind after a growth (none here: the
           // full size is reserved), and read the new density mean back first so the first frame is normalized by it.
-          shown.grids.update();
-          await shown.source.refreshStats();
+          shown.sparse.grids.update();
+          await shown.sparse.source.refreshStats();
         }
         await present(); // the first frame (compiles at the first grid)
         await present(); // a settled frame
@@ -598,6 +723,182 @@ async function run(): Promise<void> {
     }
   }
 
+  // --- K4.22: a .wvdb LOD stream into a dense source, page by page -------------------------------------------
+
+  /** FNV-1a of bytes (a frame's identity across runs). */
+  const fnv = (bytes: ArrayLike<number>): string => {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < bytes.length; i++) h = Math.imul(h ^ bytes[i]!, 0x01000193);
+    return (h >>> 0).toString(16).padStart(8, "0");
+  };
+  /** Mean squared error over RGB of two sRGB frames, over every pixel or those in `mask`. */
+  const mseOf = (a: ArrayLike<number>, b: ArrayLike<number>, mask: Uint8Array | null): number => {
+    let sum = 0;
+    let n = 0;
+    for (let p = 0; p * 4 < a.length; p++) {
+      if (mask && !mask[p]) continue;
+      for (let c = 0; c < 3; c++) {
+        const d = a[p * 4 + c]! - b[p * 4 + c]!;
+        sum += d * d;
+      }
+      n += 3;
+    }
+    return n > 0 ? sum / n : 0;
+  };
+  const psnrOf = (mse: number) => (mse > 0 ? 10 * Math.log10((255 * 255) / mse) : 100);
+  /**
+   * Draws until two frames in a row are byte-identical (the frame renderer's lighting state catches up over a few
+   * frames), at most `max`; returns the last frame and how many were drawn. Direct presentation: two frames.
+   */
+  const settle = async (max = 10): Promise<{ pixels: Uint8ClampedArray | null; frames: number }> => {
+    let pixels = await present();
+    let hash = pixels ? fnv(pixels) : "";
+    for (let n = 2; n <= max; n++) {
+      const next = await present();
+      if (!next) return { pixels: null, frames: n };
+      const h = fnv(next);
+      pixels = next;
+      if (h === hash) return { pixels, frames: n };
+      hash = h;
+    }
+    return { pixels, frames: max + 1 };
+  };
+
+  async function startWvdbRun(gen: number, signal: AbortSignal): Promise<void> {
+    if (!smokeOk) throw new Error("format=wvdb streams smoke.vdb baked as .wvdb: pnpm fixtures:vdb-samples");
+    if (state.asset !== "smoke") home(1.5);
+    state.asset = "smoke";
+    const partial = controls.partial;
+    setPhase("loading", "baking smoke.vdb as .wvdb in the page…");
+    const bytes = await bakeWvdbOnce(async () => {
+      const vdb = parseVdb(await (await fetch(SMOKE_VDB)).arrayBuffer());
+      await sleep(30);
+      return vdbToWvdb(vdb, { ...WVDB_BAKE, fileName: "smoke.vdb" }).bytes;
+    });
+    if (gen !== generation) return;
+    total = bytes.length;
+    state.totalBytes = total;
+    tl.total = total;
+    tl.expectedSeconds = controls.speed > 0 ? total / (controls.speed * 1024) : 1;
+    const header = readWvdb(bytes, { maxLod: 0 }).header;
+    const g0 = header.grids[0]!;
+    const lods = (g0.lods as { dimensions?: number[] }[]).map((l) => [...(l.dimensions ?? [])]);
+    const box = (v: WvdbDenseVolume) => ({ min: v.bbox![0], max: v.bbox![1] }) as unknown as NvdbGridMetadata["worldBBox"];
+
+    if (MODE === "direct") {
+      const v = wvdbDenseVolume(readWvdb(bytes), { mipmaps: true });
+      place(box(v));
+      let pixels: Uint8ClampedArray | null = null;
+      await serial(async () => {
+        showDense(v);
+        pixels = (await settle()).pixels;
+      });
+      state.reference = presenter.capture();
+      if (pixels) state.referenceHash = fnv(pixels);
+      state.transferred = total;
+      setPhase("full", `FULL RESOLUTION · LOD ${lods.length - 1}, ${lods.at(-1)!.join("×")} (direct, no stream)`);
+      showCounter();
+      state.done = true;
+      state.ready = true;
+      return;
+    }
+
+    const run: WvdbRun = { partial, frames: [], region: 0, finalHash: "", lods, fills: null };
+    state.wvdb = run;
+    let held: Promise<void> | null = null;
+    const speed = controls.speed * 1024;
+    t0 = performance.now();
+    const throttled = throttle(await blobResponse(bytes), {
+      chunk: TEST ? 1024 : speed > 0 ? Math.max(1024, Math.round(speed / 60)) : 65536,
+      bytesPerSec: speed,
+      gate: async () => {
+        if (held) await held;
+      },
+      onBytes: (sent) => {
+        if (gen !== generation) return;
+        state.transferred = sent;
+        tl.samples.push({ t: (performance.now() - t0) / 1000, bytes: sent });
+        showCounter();
+      },
+      signal,
+    });
+    setPhase("loading", "streaming… waiting for LOD 0");
+    showCounter();
+    // `?test=1`: the frame with no volume, so the PSNR region is the volume's pixels.
+    const empty = TEST ? (await serial(() => settle())).pixels : null;
+    const pixels: Uint8ClampedArray[] = [];
+    const reader = new WvdbStreamReader({ partialLods: true });
+    const body = throttled.body!.getReader();
+    let shownLod = -1;
+    for (;;) {
+      const { done, value } = await body.read();
+      if (done || signal.aborted || gen !== generation) break;
+      const events = reader.push(value);
+      if (events.length === 0) continue;
+      // Events share the reader's live levels (Traps): build the volume now, before the next push.
+      const e = events.at(-1)!;
+      const level = e.levels[0] as WvdbVolumeLevel;
+      let stored = level.brickIndices.length;
+      if (level.mask) {
+        stored = 0;
+        for (let b = 0; b < level.brickTotal; b++) if (level.mask[b >>> 5]! & (1 << (b & 31))) stored++;
+      }
+      // `off`: only whole LODs (the last one this push completed, if any); else the push's last event, partial or not.
+      const showEvent = partial === "off" ? events.filter((x) => x.complete).at(-1) : e;
+      const show = showEvent
+        ? wvdbDensePartialVolume(reader.file!, showEvent, { mipmaps: true, fill: partial === "background" ? "background" : "upsample", fillMips: partial === "upsample-box" ? "box" : "coarse" })
+        : null;
+      const record = { lod: e.lod, complete: e.complete, decoded: level.bricksDecoded, stored, bytes: reader.bytesReceived };
+      const arrived = (performance.now() - t0) / 1000;
+      if (e.complete) tl.markers.push({ t: arrived, bytes: reader.bytesReceived, kind: e.lod === lods.length - 1 ? "full" : "preview" });
+      held = serial(async () => {
+        if (gen !== generation) return;
+        const buildsBefore = builds;
+        if (show) {
+          if (!shown) place(box(show));
+          showDense(show);
+          shownLod = showEvent!.lod;
+        }
+        // Nothing whole yet (`off` before LOD 0): the frame without a volume, so every mode has a frame per event.
+        const { pixels: settled, frames: drawn } = await settle();
+        const page = e.complete ? "complete" : `${record.decoded}/${record.stored} bricks`;
+        const kind = e.complete && e.lod === lods.length - 1 ? "full" : "preview";
+        setPhase(kind, `LOD ${e.lod} (${lods[e.lod]!.join("×")}) · ${page}${!e.complete ? ` · ${PARTIAL_LABEL[partial]}` : ""} · in at ${KiB(record.bytes)}`);
+        if (TEST && settled) {
+          pixels.push(new Uint8ClampedArray(settled));
+          run.frames.push({ ...record, shownLod, filled: !!show?.density.fill, mse: 0, psnr: 0, regionMse: 0, regionPsnr: 0, builds: builds - buildsBefore, drawn });
+        }
+      });
+      held.catch((err: unknown) => shell.fail(err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err)));
+    }
+    await held;
+    if (signal.aborted || gen !== generation) return;
+    reader.end();
+    const core = shown ? (frameRenderer.coreVolumeOf(shown.volume)?.slot.source as { fills?: { gpu: number; cpu: number } } | undefined) : undefined;
+    run.fills = core?.fills ? { ...core.fills } : null;
+    shell.flash("full", "every LOD in");
+    if (TEST && pixels.length > 0) {
+      const final = pixels.at(-1)!;
+      let mask: Uint8Array | null = null;
+      if (empty) {
+        mask = new Uint8Array(final.length / 4);
+        for (let p = 0; p < mask.length; p++) {
+          for (let c = 0; c < 3; c++) if (Math.abs(final[p * 4 + c]! - empty[p * 4 + c]!) > 2) mask[p] = 1;
+          run.region += mask[p]!;
+        }
+      }
+      run.frames.forEach((f, i) => {
+        f.mse = mseOf(pixels[i]!, final, null);
+        f.psnr = psnrOf(f.mse);
+        f.regionMse = mseOf(pixels[i]!, final, mask);
+        f.regionPsnr = psnrOf(f.regionMse);
+      });
+      run.finalHash = fnv(final);
+    }
+    state.done = true;
+    state.ready = true;
+  }
+
   // --- controls ---------------------------------------------------------------------------------------------
   const restart = () => {
     startRun().catch((err: unknown) => shell.fail(err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err)));
@@ -610,6 +911,14 @@ async function run(): Promise<void> {
   shell.select("speed", "link", speeds.map((k) => ({ value: String(k), label: speedLabel(k) })), String(controls.speed), (v) => {
     controls.speed = Number(v);
     restart();
+  });
+  shell.select<Format>("format", "format", [{ value: "nvdb", label: ".nvdb coarse-first" }, { value: "wvdb", label: ".wvdb LODs (dense)" }], controls.format, (v) => {
+    controls.format = v;
+    restart();
+  });
+  shell.select<PartialMode>("partial", "while a LOD streams", PARTIAL_MODES.map((m) => ({ value: m, label: PARTIAL_LABEL[m] })), controls.partial, (v) => {
+    controls.partial = v;
+    if (controls.format === "wvdb") restart();
   });
   shell.select<Quality>("quality", "quality", (["low", "medium", "high"] as const).map((q) => ({ value: q, label: QUALITY[q].label })), controls.quality, (v) => {
     controls.quality = v;
@@ -641,11 +950,11 @@ async function run(): Promise<void> {
       });
     if (now - lastStats > 400) {
       lastStats = now;
-      const info = pool && shown ? pool.info(shown.id) : null;
+      const info = pool && shown?.sparse ? pool.info(shown.sparse.id) : null;
       shell.stats(
         `${state.adapter} · ${presenter.width}×${presenter.height} px · ${frameMs.toFixed(1)} ms/frame (provisional, D25)\n` +
         (info ? `pool grid ${info.type}, ${MiB(info.imageBytes)} (capacity ${MiB(info.capacity)}) · ` : "") +
-        `${ASSETS[controls.asset]!.label}`,
+        (controls.format === "wvdb" ? "smoke.vdb as .wvdb (dense source)" : `${ASSETS[controls.asset]!.label}`),
       );
     }
   };

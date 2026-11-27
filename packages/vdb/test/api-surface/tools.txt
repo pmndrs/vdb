@@ -83,8 +83,11 @@ type WvdbBits
 type WvdbBox
 type WvdbChunkInfo
 type WvdbChunkRef
+type WvdbDenseFill
 type WvdbDenseLevel
 type WvdbDenseOptions
+type WvdbDensePartialFill
+type WvdbDensePartialOptions
 type WvdbDenseTexture
 type WvdbDenseToNvdbOptions
 type WvdbDenseVolume
@@ -166,6 +169,8 @@ value vdbToWvdb
 value vdbTransform
 value writeNvdb
 value writeWvdb
+value wvdbDensePartialVolume
+value wvdbDenseResolve
 value wvdbDenseToNvdb
 value wvdbDenseVolume
 value wvdbLodByteRange
