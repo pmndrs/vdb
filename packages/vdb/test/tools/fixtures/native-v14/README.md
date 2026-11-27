@@ -16,6 +16,12 @@ are procedural shapes made by the programs in `generators/` (ours, MIT); total a
 
 ## Regenerating
 
+K7.7 automated this: `sh scripts/native/build-native-v14.sh` builds the tools and both C++ generators into
+`~/.cache/pmndrs-vdb-native` (the `docker/fixture-bake` image builds the same), and
+`pnpm build && pnpm parity:native --only=generators` reruns them and checks that every file here is reproduced
+(the `.nvdb` and JSON files byte for byte, the `.vdb` files outside their UUID). The Warp file still needs the
+Python step below. The manual recipe:
+
 Native tools, built from the `v14.0.0` tag of AcademySoftwareFoundation/openvdb (macOS, Apple clang 21; any
 platform works). OpenVDB needs oneTBB (built from source, v2022.1.0) and zlib; Blosc is vendored since v14.
 

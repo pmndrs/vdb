@@ -246,7 +246,25 @@ From v1; details in docs/archive/handoffs/.
 - OpenVDB never ZIPs a fog volume or level set (`Archive::setGridCompression` clears `COMPRESS_ZIP`): a "zip" `.vdb` of one is uncompressed. Native fixtures that must exercise zlib mark the grid class Unknown.
 - NVIDIA Warp's `.nvdb` (`Volume.save_to_nvdb`): `NanoVDB0` header, FileMetaData `indexBBox`/`voxelCount` zero (we fill them from the image), `fileSize` without the 8-byte codec prefix (so a stream's `bytesTotal` is 8 bytes short per grid), BloscLZ frames with typesize 8.
 - `tools/vdb/blosc.ts` throws `VdbFormatError` (`VDB_BAD_VDB`) even for `.nvdb` frames; `.nvdb` callers go through `decodeBloscChunk` (`nvdb-file.ts`), which rethrows as `NvdbFormatError` / `VDBUnsupportedError`.
-- Native OpenVDB/NanoVDB v14 builds without Docker in minutes on macOS: oneTBB from source, then OpenVDB's CMake with `USE_ZSTD=OFF` (Blosc is vendored, Boost gone); NanoVDB is header-only plus one C file for Blosc. Recipe: `packages/vdb/test/tools/fixtures/native-v14/README.md`.
+- Native OpenVDB/NanoVDB v14 builds without Docker in minutes on macOS: `sh scripts/native/build-native-v14.sh` (oneTBB
+  + OpenVDB from sha256-pinned tarballs, `USE_ZSTD=OFF`, our probes and generators) into `~/.cache/pmndrs-vdb-native`;
+  `pnpm build && pnpm parity:native` uses it (`--native=docker` for the image, `--only=<section>`, `--update` rewrites
+  the `native-probes/` sidecars). A worktree-isolated agent cannot run `git` outside its worktree: fetch tarballs with
+  `curl`, not `git clone`. Docker Desktop (7.7 GiB VM) hung building OpenVDB at `BUILD_JOBS=6` (it recovered); the default 2 builds. The
+  image's `.vdb` files differ from macOS ones in `file_mem_bytes` metadata, and native FpN `.nvdb` tails are
+  uninitialised bytes: compare sidecars, not those bytes.
+- NanoVDB v14 native defects (K4.17, K7.13): `io::readGrid(file, n)` with n ≥ 1 inside a multi-grid segment reads grid
+  0's bytes (codec NONE returns grid 0 again, ZIP / BLOSC throw "UNZIP failed on byte size" / "Internal read error in
+  BLOSC"), native files too; by name and `n = -1` work. `nanovdb_validate` fails every FpN grid with more than one leaf
+  ("Leaf node is not stored breadth-first"; it steps variable-size leaves by the header size), native ones too.
+  `nanovdb_convert` v14 rejects a `HalfGrid` ("Unrecognized OpenVDB grid type").
+- `io::hasGrid` matches the FileMetaData `nameKey` (= `io::stringHash(name)`); `readGrid` by name also takes 0. Our writer
+  wrote 0 until K7.7.
+- `NvdbFile` and `treeNodes` read scalar grids only: a native Vec3f `.nvdb` (explosion `v`) is taken apart by hand
+  (`run-native-parity.mjs` `walkNodes`, `native-probes.test.ts` `vec3Nodes`).
+- `vdbReadValueCpu` decodes Fp4/8/16/N in f64 (`code * quantum + minimum` unrounded); native decodes in f32, fused or not
+  by its build flags (cmake's `nanovdb_convert` fuses on arm64, our `-ffp-contract=off` probes do not). Compare
+  `Math.fround(value)` or `vdbReadValueF32Cpu` (the WGSL twin) with native, never the raw f64.
 - Half grids (K7.H, `GridType::Half` = 9): values, tile values, the background AND min/max stats are binary16 at
   2-byte-aligned addresses (root background/min/max at 28/30/32, leaf min/max 80/82, values from 96 at 2 bytes);
   ave/stddev stay f32 (root 36/40, leaf 84/88). Never read them as f32: use `nodeStats` / `vdbReadValueF32Cpu` /

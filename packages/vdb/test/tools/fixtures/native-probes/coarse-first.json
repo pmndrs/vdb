@@ -1,0 +1,952 @@
+{
+  "nanovdb": "32.11.0",
+  "source": "coarse-first-source.mjs (coarseFirstFile)",
+  "files": {
+    "none": {
+      "bytes": 1997123,
+      "sha256": "96044e3420dcf08c8c0198f4ab2167c66518901bd20890b33f265a0f68008570",
+      "probe": {
+        "nanovdb": "32.11.0",
+        "meta": [
+          {
+            "name": "density.lod8",
+            "nameKey": "3947954822438356607",
+            "stringHash": "3947954822438356607",
+            "hasGrid": true,
+            "type": "FloatN",
+            "class": "FOG",
+            "codec": "NONE",
+            "gridSize": 305696,
+            "fileSize": 305696,
+            "voxelCount": 236,
+            "indexBBox": {
+              "min": [
+                0,
+                0,
+                0
+              ],
+              "max": [
+                7,
+                5,
+                7
+              ]
+            },
+            "nodeCount": [
+              1,
+              1,
+              1,
+              1
+            ],
+            "tileCount": [
+              0,
+              0,
+              0
+            ],
+            "version": "32.9.1"
+          },
+          {
+            "name": "density.lod16",
+            "nameKey": "6258556071436169684",
+            "stringHash": "6258556071436169684",
+            "hasGrid": true,
+            "type": "FloatN",
+            "class": "FOG",
+            "codec": "NONE",
+            "gridSize": 309952,
+            "fileSize": 309952,
+            "voxelCount": 1956,
+            "indexBBox": {
+              "min": [
+                0,
+                0,
+                0
+              ],
+              "max": [
+                15,
+                12,
+                15
+              ]
+            },
+            "nodeCount": [
+              8,
+              1,
+              1,
+              1
+            ],
+            "tileCount": [
+              0,
+              0,
+              0
+            ],
+            "version": "32.9.1"
+          },
+          {
+            "name": "density",
+            "nameKey": "9184452543000",
+            "stringHash": "9184452543000",
+            "hasGrid": true,
+            "type": "float",
+            "class": "FOG",
+            "codec": "NONE",
+            "gridSize": 1380896,
+            "fileSize": 1380896,
+            "voxelCount": 16504,
+            "indexBBox": {
+              "min": [
+                -5,
+                10,
+                -17
+              ],
+              "max": [
+                28,
+                37,
+                16
+              ]
+            },
+            "nodeCount": [
+              76,
+              4,
+              4,
+              1
+            ],
+            "tileCount": [
+              0,
+              0,
+              0
+            ],
+            "version": "32.9.1"
+          }
+        ],
+        "grid0": "density.lod8",
+        "byIndex": [
+          "density.lod8",
+          "density.lod8",
+          "density.lod8"
+        ],
+        "byName": [
+          {
+            "name": "density.lod8",
+            "type": "FloatN",
+            "gridIndex": 0,
+            "gridCount": 1,
+            "indexBBox": {
+              "min": [
+                0,
+                0,
+                0
+              ],
+              "max": [
+                7,
+                5,
+                7
+              ]
+            },
+            "activeVoxelCount": 236,
+            "probes": [
+              {
+                "ijk": [
+                  11,
+                  23,
+                  0
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  12,
+                  24,
+                  0
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  0,
+                  10,
+                  -10
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  -8,
+                  4,
+                  -20
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  31,
+                  43,
+                  19
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  5,
+                  30,
+                  -2
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  2,
+                  2,
+                  2
+                ],
+                "value": 0.616939604,
+                "active": true
+              },
+              {
+                "ijk": [
+                  1,
+                  6,
+                  -5
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  3,
+                  7,
+                  -1
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  100,
+                  0,
+                  0
+                ],
+                "value": 0,
+                "active": false
+              }
+            ]
+          },
+          {
+            "name": "density.lod16",
+            "type": "FloatN",
+            "gridIndex": 0,
+            "gridCount": 1,
+            "indexBBox": {
+              "min": [
+                0,
+                0,
+                0
+              ],
+              "max": [
+                15,
+                12,
+                15
+              ]
+            },
+            "activeVoxelCount": 1956,
+            "probes": [
+              {
+                "ijk": [
+                  11,
+                  23,
+                  0
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  12,
+                  24,
+                  0
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  0,
+                  10,
+                  -10
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  -8,
+                  4,
+                  -20
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  31,
+                  43,
+                  19
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  5,
+                  30,
+                  -2
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  2,
+                  2,
+                  2
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  1,
+                  6,
+                  -5
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  3,
+                  7,
+                  -1
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  100,
+                  0,
+                  0
+                ],
+                "value": 0,
+                "active": false
+              }
+            ]
+          },
+          {
+            "name": "density",
+            "type": "float",
+            "gridIndex": 0,
+            "gridCount": 1,
+            "indexBBox": {
+              "min": [
+                -5,
+                10,
+                -17
+              ],
+              "max": [
+                28,
+                37,
+                16
+              ]
+            },
+            "activeVoxelCount": 16504,
+            "probes": [
+              {
+                "ijk": [
+                  11,
+                  23,
+                  0
+                ],
+                "value": 0.897226453,
+                "active": true
+              },
+              {
+                "ijk": [
+                  12,
+                  24,
+                  0
+                ],
+                "value": 0.797534585,
+                "active": true
+              },
+              {
+                "ijk": [
+                  0,
+                  10,
+                  -10
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  -8,
+                  4,
+                  -20
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  31,
+                  43,
+                  19
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  5,
+                  30,
+                  -2
+                ],
+                "value": 0.494074404,
+                "active": true
+              },
+              {
+                "ijk": [
+                  2,
+                  2,
+                  2
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  1,
+                  6,
+                  -5
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  3,
+                  7,
+                  -1
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  100,
+                  0,
+                  0
+                ],
+                "value": 0,
+                "active": false
+              }
+            ]
+          }
+        ],
+        "all": [
+          "density.lod8",
+          "density.lod16",
+          "density"
+        ]
+      },
+      "validate": {
+        "density.lod8": "passed",
+        "density.lod16": "failed: Leaf node is not stored breadth-first",
+        "density": "passed"
+      },
+      "nanovdbConvertVdbGridOrder": [
+        "density.lod8",
+        "density.lod16",
+        "density"
+      ]
+    },
+    "zip": {
+      "bytes": 44984,
+      "sha256": "f1df86c2d5ca6f836bfb244b90deaf08326d933c9ab29801e295669976c41355",
+      "probe": {
+        "nanovdb": "32.11.0",
+        "meta": [
+          {
+            "name": "density.lod8",
+            "nameKey": "3947954822438356607",
+            "stringHash": "3947954822438356607",
+            "hasGrid": true,
+            "type": "FloatN",
+            "class": "FOG",
+            "codec": "ZIP",
+            "gridSize": 305696,
+            "fileSize": 985,
+            "voxelCount": 236,
+            "indexBBox": {
+              "min": [
+                0,
+                0,
+                0
+              ],
+              "max": [
+                7,
+                5,
+                7
+              ]
+            },
+            "nodeCount": [
+              1,
+              1,
+              1,
+              1
+            ],
+            "tileCount": [
+              0,
+              0,
+              0
+            ],
+            "version": "32.9.1"
+          },
+          {
+            "name": "density.lod16",
+            "nameKey": "6258556071436169684",
+            "stringHash": "6258556071436169684",
+            "hasGrid": true,
+            "type": "FloatN",
+            "class": "FOG",
+            "codec": "ZIP",
+            "gridSize": 309952,
+            "fileSize": 3526,
+            "voxelCount": 1956,
+            "indexBBox": {
+              "min": [
+                0,
+                0,
+                0
+              ],
+              "max": [
+                15,
+                12,
+                15
+              ]
+            },
+            "nodeCount": [
+              8,
+              1,
+              1,
+              1
+            ],
+            "tileCount": [
+              0,
+              0,
+              0
+            ],
+            "version": "32.9.1"
+          },
+          {
+            "name": "density",
+            "nameKey": "9184452543000",
+            "stringHash": "9184452543000",
+            "hasGrid": true,
+            "type": "float",
+            "class": "FOG",
+            "codec": "ZIP",
+            "gridSize": 1380896,
+            "fileSize": 39894,
+            "voxelCount": 16504,
+            "indexBBox": {
+              "min": [
+                -5,
+                10,
+                -17
+              ],
+              "max": [
+                28,
+                37,
+                16
+              ]
+            },
+            "nodeCount": [
+              76,
+              4,
+              4,
+              1
+            ],
+            "tileCount": [
+              0,
+              0,
+              0
+            ],
+            "version": "32.9.1"
+          }
+        ],
+        "grid0": "density.lod8",
+        "byIndex": [
+          "density.lod8",
+          "error: UNZIP failed on byte size",
+          "error: UNZIP failed on byte size"
+        ],
+        "byName": [
+          {
+            "name": "density.lod8",
+            "type": "FloatN",
+            "gridIndex": 0,
+            "gridCount": 1,
+            "indexBBox": {
+              "min": [
+                0,
+                0,
+                0
+              ],
+              "max": [
+                7,
+                5,
+                7
+              ]
+            },
+            "activeVoxelCount": 236,
+            "probes": [
+              {
+                "ijk": [
+                  11,
+                  23,
+                  0
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  12,
+                  24,
+                  0
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  0,
+                  10,
+                  -10
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  -8,
+                  4,
+                  -20
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  31,
+                  43,
+                  19
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  5,
+                  30,
+                  -2
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  2,
+                  2,
+                  2
+                ],
+                "value": 0.616939604,
+                "active": true
+              },
+              {
+                "ijk": [
+                  1,
+                  6,
+                  -5
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  3,
+                  7,
+                  -1
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  100,
+                  0,
+                  0
+                ],
+                "value": 0,
+                "active": false
+              }
+            ]
+          },
+          {
+            "name": "density.lod16",
+            "type": "FloatN",
+            "gridIndex": 0,
+            "gridCount": 1,
+            "indexBBox": {
+              "min": [
+                0,
+                0,
+                0
+              ],
+              "max": [
+                15,
+                12,
+                15
+              ]
+            },
+            "activeVoxelCount": 1956,
+            "probes": [
+              {
+                "ijk": [
+                  11,
+                  23,
+                  0
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  12,
+                  24,
+                  0
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  0,
+                  10,
+                  -10
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  -8,
+                  4,
+                  -20
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  31,
+                  43,
+                  19
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  5,
+                  30,
+                  -2
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  2,
+                  2,
+                  2
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  1,
+                  6,
+                  -5
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  3,
+                  7,
+                  -1
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  100,
+                  0,
+                  0
+                ],
+                "value": 0,
+                "active": false
+              }
+            ]
+          },
+          {
+            "name": "density",
+            "type": "float",
+            "gridIndex": 0,
+            "gridCount": 1,
+            "indexBBox": {
+              "min": [
+                -5,
+                10,
+                -17
+              ],
+              "max": [
+                28,
+                37,
+                16
+              ]
+            },
+            "activeVoxelCount": 16504,
+            "probes": [
+              {
+                "ijk": [
+                  11,
+                  23,
+                  0
+                ],
+                "value": 0.897226453,
+                "active": true
+              },
+              {
+                "ijk": [
+                  12,
+                  24,
+                  0
+                ],
+                "value": 0.797534585,
+                "active": true
+              },
+              {
+                "ijk": [
+                  0,
+                  10,
+                  -10
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  -8,
+                  4,
+                  -20
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  31,
+                  43,
+                  19
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  5,
+                  30,
+                  -2
+                ],
+                "value": 0.494074404,
+                "active": true
+              },
+              {
+                "ijk": [
+                  2,
+                  2,
+                  2
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  1,
+                  6,
+                  -5
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  3,
+                  7,
+                  -1
+                ],
+                "value": 0,
+                "active": false
+              },
+              {
+                "ijk": [
+                  100,
+                  0,
+                  0
+                ],
+                "value": 0,
+                "active": false
+              }
+            ]
+          }
+        ],
+        "all": [
+          "density.lod8",
+          "density.lod16",
+          "density"
+        ]
+      },
+      "validate": {
+        "density.lod8": "passed",
+        "density.lod16": "failed: Leaf node is not stored breadth-first",
+        "density": "passed"
+      },
+      "nanovdbConvertVdbGridOrder": [
+        "density.lod8",
+        "density.lod16",
+        "density"
+      ]
+    }
+  }
+}

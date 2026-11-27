@@ -275,7 +275,7 @@ describe("K4.9 synthetic inactive tiles", () => {
 });
 
 // ---------------------------------------------------------------------------
-// K4.12: root entries in unsigned key order
+// K4.12 / K7.7: root entries in native (signed origin) order
 // ---------------------------------------------------------------------------
 
 describe("root table order (K4.12, reverted by K7.C1 to native's signed order)", () => {

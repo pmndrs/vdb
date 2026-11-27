@@ -46,6 +46,23 @@ Those restrictions are not equivalent to CC BY-SA 4.0. Bunny derivatives are
 therefore excluded from the automated fixture fetch, repository, parity corpus,
 and all npm package tarballs.
 
+One exception (K4.10, lead-approved 2026-11-28, owner to confirm): the
+test sidecar `packages/vdb/test/tools/fixtures/native-probes/bunny_cloud.density.json`
+holds native reference measurements of `bunny_cloud.vdb` (about 200 probe
+values, counts, bounding boxes, stats and two 32-bit checksums, 21 KB). It
+contains no grid bytes and cannot rebuild the volume; it is a test oracle that
+runs only where the git-ignored file is present, and it is not in any package.
+If the owner prefers none, replace it with a digest of the same JSON.
+
+## Native probe sidecars of the sample models
+
+`packages/vdb/test/tools/fixtures/native-probes/explosion.v.json` and
+`waterfall_points.json` hold native OpenVDB measurements of the openvdb.org
+samples `explosion.vdb` and `waterfall_points.vdb` (CC BY-SA 4.0): ~200 probe
+values and node stats, and 128 sampled points with per-attribute hashes and
+sums. No grid or point arrays are committed; credit: OpenVDB sample models,
+<https://www.openvdb.org/download/>.
+
 ## Walt Disney Animation Studios cloud
 
 The WDAS cloud data set is © Walt Disney Animation Studios and distributed

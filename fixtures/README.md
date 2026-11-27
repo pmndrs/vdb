@@ -56,13 +56,20 @@ that per D6 also seeds the interim companion service) and falls back to a
 local `g++` build against a sparse clone of the pinned headers (NanoVDB
 is header-only). Force either with `BAKE_MODE=docker|local`.
 
-Converting downloaded `.vdb` assets needs `nanovdb_convert` from the
-Docker image (or a native install):
+Converting downloaded `.vdb` assets needs `nanovdb_convert` (OpenVDB v14.0.0 since K7.7) from the
+Docker image or the local build `sh scripts/native/build-native-v14.sh` makes in
+`~/.cache/pmndrs-vdb-native/v14.0.0/prefix/bin` (no Docker):
 
 ```sh
+docker build -t webvdb-fixture-bake \
+  --build-context generators=packages/vdb/test/tools/fixtures/native-v14/generators docker/fixture-bake
 docker run --rm -v "$PWD/fixtures:/out" webvdb-fixture-bake \
   nanovdb_convert --fp8 /out/wdas/wdas_cloud_quarter.vdb /out/wdas/wdas_cloud_quarter_fp8.nvdb
 ```
+
+`pnpm build && pnpm parity:native` compares the native tools with ours (samples, the K7.C native-v14
+fixtures, the Half sidecars, the native probe sidecars, coarse-first files); see
+`packages/vdb/test/tools/fixtures/native-probes/README.md`.
 
 `fixtures:bake-sequence` requires `SEQUENCE_TEMPORAL=1`, verifies distinct
 monotonically increasing frame numbers, converts every source frame deterministically,
