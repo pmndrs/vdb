@@ -42,6 +42,32 @@ export interface WvdbDenseTexture {
   readonly texelBytes: 1 | 4;
   /** CPU box mip atlas (levels 1..`levels` side by side on x), or null without mipmaps. */
   readonly mip: WvdbMipAtlas | null;
+  /**
+   * K4.22: a partially streamed LOD's bricks to fill from a coarser LOD (`wvdbDensePartialVolume` with
+   * `fill: 'upsample'`), or absent / null. `data` and `mip` then hold the background in those bricks; the core's
+   * dense source fills them on the GPU, `wvdbDenseResolve` on the CPU.
+   */
+  readonly fill?: WvdbDenseFill | null;
+}
+
+/**
+ * K4.22: the bricks of a partially streamed LOD that are stored but not decoded yet, and the coarser LOD's texels
+ * to fill them with (his `wvdbKernel` upsample: trilinear, texel centres aligned, edges clamped).
+ */
+export interface WvdbDenseFill {
+  /** One bit per brick of the texture (brick index x fastest; word `index >> 5`, bit `index & 31`). */
+  readonly pending: Uint32Array;
+  /** Bricks set in `pending`. */
+  readonly count: number;
+  /** The coarser LOD's texels in the texture's format (a complete LOD), and their size. */
+  readonly from: { readonly data: Uint8Array<ArrayBuffer>; readonly dimensions: WvdbVec3 };
+  /**
+   * The mip atlas of the filled texture: `'box'` builds every level from the filled texels (his frameMipmaps);
+   * `'coarse'` takes level 1 of the pending bricks from the coarser LOD itself (the LOD a `.wvdb` bake makes by a
+   * 2x box filter of this one), when its size is level 1's, so a far view of a pending brick is the coarser LOD,
+   * not a blur of its upsample. Default `'coarse'`.
+   */
+  readonly mips?: "coarse" | "box";
 }
 
 /** His `packAtlas` output (frameMipmaps.js L65–88). */
@@ -207,12 +233,29 @@ function downsample(source: Uint8Array<ArrayBuffer>, width: number, height: numb
 }
 
 /**
+ * The mip atlas size and level count `wvdbMipAtlas` gives for a texture of `dimensions`, without building it
+ * (null when the texture has one texel on every side).
+ */
+export function wvdbMipAtlasLayout(dimensions: readonly number[]): { dimensions: WvdbVec3; levels: number } | null {
+  const [width, height, depth] = dimensions as WvdbVec3;
+  const levels = wvdbMipLevelCount(width, height, depth);
+  if (levels < 1) return null;
+  return { dimensions: [2 ** Math.max(Math.ceil(Math.log2(width)), levels), wvdbMipLevelSize(height, 1), wvdbMipLevelSize(depth, 1)], levels };
+}
+
+/**
  * frameMipmaps.js L90–106 `buildAtlas` + L65–88 `packAtlas`: levels 1..n (n =
  * `ceil(log2(max side))`), level l at x = atlasWidth − atlasWidth / 2^(l−1);
  * atlas width 2^max(ceil(log2 width), n), height and depth those of level 1.
  * Null when the texture has one texel on every side.
  */
-export function wvdbMipAtlas(data: Uint8Array<ArrayBuffer>, dimensions: readonly number[], channels: 1 | 4): WvdbMipAtlas | null {
+export function wvdbMipAtlas(
+  data: Uint8Array<ArrayBuffer>,
+  dimensions: readonly number[],
+  channels: 1 | 4,
+  /** K4.22: edits level 1 (texels x fastest) before the higher levels are built from it. */
+  editLevel1?: (level: { data: Uint8Array<ArrayBuffer>; width: number; height: number; depth: number }) => void,
+): WvdbMipAtlas | null {
   const [width, height, depth] = dimensions as WvdbVec3;
   const count = wvdbMipLevelCount(width, height, depth);
   if (count < 1) return null;
@@ -220,6 +263,7 @@ export function wvdbMipAtlas(data: Uint8Array<ArrayBuffer>, dimensions: readonly
   let level = { data, width, height, depth };
   for (let index = 1; index <= count; index++) {
     level = downsample(level.data, level.width, level.height, level.depth, channels);
+    if (index === 1) editLevel1?.(level);
     levels.push(level);
   }
   const atlasWidth = 2 ** Math.max(Math.ceil(Math.log2(width)), levels.length);
@@ -249,6 +293,34 @@ function denseTexture(data: Uint8Array<ArrayBuffer>, dimensions: WvdbVec3, texel
   };
 }
 
+/**
+ * K4.22: a texture whose `fill` bricks are still background. Its mip atlas is built on first read of `mip.data`
+ * (from the background-filled texels): the core's dense source builds the filled atlas on the GPU and never reads it.
+ */
+export function wvdbDenseFillTexture(data: Uint8Array<ArrayBuffer>, dimensions: WvdbVec3, texelBytes: 1 | 4, mipmaps: boolean, fill: WvdbDenseFill | null): WvdbDenseTexture {
+  if (!fill) return denseTexture(data, dimensions, texelBytes, mipmaps);
+  const layout = mipmaps ? wvdbMipAtlasLayout(dimensions) : null;
+  let atlas: Uint8Array<ArrayBuffer> | null = null;
+  const mip: WvdbMipAtlas | null = layout
+    ? {
+        get data() {
+          return (atlas ??= wvdbMipAtlas(data, dimensions, texelBytes)!.data);
+        },
+        dimensions: layout.dimensions,
+        levels: layout.levels,
+      }
+    : null;
+  return { data, dimensions, format: texelBytes === 4 ? "rgba8unorm" : "r8unorm", texelBytes, mip, fill };
+}
+
+/** @internal How {@link wvdbDenseAssemble} reads each grid's level and makes its texture (K4.22: partial LODs). */
+export interface WvdbDenseAssembly {
+  /** The level of `grid` to upload. */
+  level(grid: WvdbVolumeGrid, role: string): WvdbVolumeLevel;
+  /** The texture of `grid` from its texels (default: {@link denseTexture} with a CPU atlas). */
+  texture?(grid: WvdbVolumeGrid, level: WvdbVolumeLevel, data: Uint8Array<ArrayBuffer>, texelBytes: 1 | 4, mipmaps: boolean, scale: number): WvdbDenseTexture;
+}
+
 function volumeGrid(file: WvdbFile, name: string, role: string): WvdbVolumeGrid {
   const grid = file.grids.find((g) => g.name === name);
   if (!grid) throw new VDBToolsError("VDB_BAD_OPTION", `wvdbDenseVolume: no grid named "${name}" for ${role} (grids: ${file.grids.map((g) => g.name).join(", ")})`);
@@ -273,26 +345,44 @@ function levelOf(grid: WvdbVolumeGrid, lod: number): WvdbVolumeLevel {
  * @param o Which grids to read, the LOD, scales and mipmaps.
  */
 export function wvdbDenseVolume(file: WvdbFile, o: WvdbDenseOptions = {}): WvdbDenseVolume {
+  const density = wvdbDenseDensityGrid(file, o);
+  const lod = o.lod ?? density.levels.length - 1;
+  if (!Number.isInteger(lod) || lod < 0) throw new VDBToolsError("VDB_BAD_OPTION", `wvdbDenseVolume: lod must be a non-negative integer, got ${o.lod}`);
+  return wvdbDenseAssemble(file, o, lod, { level: (grid) => levelOf(grid, lod) });
+}
+
+/** @internal The density grid {@link wvdbDenseVolume} reads (`o.density`, else `density`, else the first volume grid). */
+export function wvdbDenseDensityGrid(file: WvdbFile, o: Pick<WvdbDenseOptions, "density">): WvdbVolumeGrid {
   const volumeGrids = file.grids.filter((g): g is WvdbVolumeGrid => g.kind === "volume");
   const densityName = o.density ?? (file.grids.find((g) => g.name === "density" && g.kind === "volume") ?? volumeGrids[0])?.name;
   if (densityName === undefined) throw new VDBToolsError("VDB_BAD_OPTION", "wvdbDenseVolume: the file has no volume grid");
   const density = volumeGrid(file, densityName, "density");
   if (density.channels !== 1) throw new VDBToolsError("VDB_BAD_OPTION", `wvdbDenseVolume: density grid "${densityName}" has 3 channels; pass a scalar grid`);
-  const lod = o.lod ?? density.levels.length - 1;
-  if (!Number.isInteger(lod) || lod < 0) throw new VDBToolsError("VDB_BAD_OPTION", `wvdbDenseVolume: lod must be a non-negative integer, got ${o.lod}`);
+  return density;
+}
+
+/**
+ * @internal {@link wvdbDenseVolume}'s assembly from one level per grid (`how.level`): texels, aux channels, stats.
+ * K4.22's partial volumes pass the stream event's levels and textures with a `fill`.
+ */
+export function wvdbDenseAssemble(file: WvdbFile, o: WvdbDenseOptions, lod: number, how: WvdbDenseAssembly): WvdbDenseVolume {
+  const density = wvdbDenseDensityGrid(file, o);
+  const densityName = density.name;
   const mipmaps = o.mipmaps ?? true;
   // WVDBReader.js L494: scales[name] || 1.0
   const scaleOf = (name: string) => o.scales?.[name] || 1.0;
-  const level = levelOf(density, lod);
+  const level = how.level(density, "density");
   const dimensions = [...level.dimensions] as WvdbVec3;
   const densityData = wvdbTexels(density, level, scaleOf(densityName));
+  const makeTexture = (grid: WvdbVolumeGrid, l: WvdbVolumeLevel, data: Uint8Array<ArrayBuffer>, texelBytes: 1 | 4) =>
+    how.texture ? how.texture(grid, l, data, texelBytes, mipmaps, scaleOf(grid.name)) : denseTexture(data, dimensions, texelBytes, mipmaps);
 
   const aux = (name: string | undefined, role: "mask" | "albedo" | "emission"): WvdbDenseTexture | null => {
     if (name === undefined) return null;
     const grid = volumeGrid(file, name, role);
     const want = role === "albedo" ? 3 : 1;
     if (grid.channels !== want) throw new VDBToolsError("VDB_BAD_OPTION", `wvdbDenseVolume: ${role} grid "${name}" has ${grid.channels} channel(s), expected ${want}`);
-    const auxLevel = levelOf(grid, lod);
+    const auxLevel = how.level(grid, role);
     if (auxLevel.dimensions.some((v, a) => v !== dimensions[a])) {
       // FrameVolume.js L357–405: raw aux grids are uploaded at the density grid's dimensions.
       throw new VDBToolsError("VDB_BAD_OPTION", 
@@ -301,7 +391,7 @@ export function wvdbDenseVolume(file: WvdbFile, o: WvdbDenseOptions = {}): WvdbD
       );
     }
     const data = wvdbTexels(grid, auxLevel, scaleOf(name));
-    return denseTexture(data, dimensions, role === "albedo" ? 4 : 1, mipmaps);
+    return makeTexture(grid, auxLevel, data, role === "albedo" ? 4 : 1);
   };
 
   // WVDBReader.js L519–523 + WVDBLoader.js L147–152: baked stats when the header has
@@ -317,6 +407,10 @@ export function wvdbDenseVolume(file: WvdbFile, o: WvdbDenseOptions = {}): WvdbD
     if (v > max) max = v;
     if (v > 0) active++;
   }
+  const densityTexture = makeTexture(density, level, densityData, 1);
+  // K4.22: upsampled texels lie between coarse texels, so the coarse LOD's largest bounds them (vdbSrcMaxIn).
+  const from = densityTexture.fill?.from.data;
+  if (from) for (let i = 0; i < from.length; i++) if (from[i]! > max) max = from[i]!;
 
   return {
     kind: "dense",
@@ -324,7 +418,7 @@ export function wvdbDenseVolume(file: WvdbFile, o: WvdbDenseOptions = {}): WvdbD
     lod,
     dimensions,
     bbox: density.bbox,
-    density: denseTexture(densityData, dimensions, 1, mipmaps),
+    density: densityTexture,
     mask: aux(o.mask, "mask"),
     albedo: aux(o.albedo, "albedo"),
     emission: aux(o.emission, "emission"),

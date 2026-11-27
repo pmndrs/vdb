@@ -54,6 +54,51 @@ for (;;) {
 reader.end();
 ```
 
+## Show a LOD while its pages stream
+
+A LOD is stored in pages of bricks. With `partialLods: true` the reader also emits an event after every page
+(`complete: false`), so a LOD can be shown before it is whole. `wvdbDensePartialVolume(reader.file, event, options?)`
+turns any event into a dense volume. Its options are those of `wvdbDenseVolume`, plus `fill`:
+
+- `'upsample'` (default): bricks that are stored but not decoded yet show the coarser LOD, upsampled as mjurczyk's
+  loader does (trilinear, texel centres aligned). The picture only gains detail as pages land.
+- `'background'`: those bricks stay empty until their page lands.
+
+Give the volume to the dense source with `replace`, as any LOD. The frame renderer's dense source (`vdbDenseSource`)
+fills the pending bricks on the GPU with one compute pass, and rebuilds the mip atlas from the result. In that atlas,
+level 1 of a pending brick is the coarser LOD itself (`fillMips: 'coarse'`, the default), so a far view of a brick that
+has not arrived reads exactly the coarser LOD. `fillMips: 'box'` builds every level from the upsample, as his renderer
+does. Without the core, `wvdbDenseResolve(volume)` gives the same bytes on the CPU.
+
+{/* snippet: wvdb-partial */}
+```ts
+import { WvdbStreamReader, wvdbDensePartialVolume } from '@pmndrs/vdb/tools';
+import { vdbDenseTextures, type VDBThreeDenseSource } from '@pmndrs/vdb/three';
+
+// A partial event after every page; the levels are live, so build the volume before the next push.
+const reader = new WvdbStreamReader({ partialLods: true });
+let source: VDBThreeDenseSource | null = null;
+const response = await fetch(url);
+const stream = response.body!.getReader();
+for (;;) {
+    const { done, value } = await stream.read();
+    if (done) break;
+    const event = reader.push(value).at(-1);
+    if (!event) continue;
+    // Bricks not decoded yet are upsampled from the coarser LOD (on the GPU, by the frame renderer's dense source).
+    const volume = wvdbDensePartialVolume(reader.file!, event, { fill: 'upsample' });
+    if (source) source.replace(volume);
+    else show((source = vdbDenseTextures(volume))); // e.g. new VDBFrameVolume(source, { extinction: 100 })
+}
+reader.end();
+```
+
+Events share the reader's live levels: a page decoded later in the same `push` is already in an earlier event's
+levels, so build each volume before the next push (the texels are copied then). A completed LOD is byte-identical
+whatever was shown while it streamed. Gallery demo 16 (`?format=wvdb`) streams smoke.vdb this way and compares the
+modes. On SwiftShader at low quality, the mean PSNR of the partial pages against the final frame was 49.4 dB for
+`upsample`, 42.4 dB with his mips, 42.9 dB for whole LODs only and 34.2 dB for empty bricks.
+
 ## Write and bake
 
 `writeWvdb(grids, options)` writes dense grids you made. `vdbToWvdb(vdb, options)` and `nvdbToWvdb(images, options)`

@@ -34,6 +34,12 @@ export interface VDBVolumeSourceInfo {
   readonly boxToSource: Float32Array;
   /** Bumps when bindings must be rebuilt (new textures after a LOD swap, pool growth). */
   readonly version: number;
+  /**
+   * K4.22: bumps whenever the volume's content changes, bindings or not (a dense `replace` of the same size writes
+   * into the same textures: a sequence frame, a streamed page). Lighting caches key on it (the frame renderer's
+   * shadow grid and emission probes). Absent: `version` covers content changes (sparse slots: the image revision).
+   */
+  readonly revision?: number;
 }
 
 /** Options of {@link VDBVolumeSource.wgsl}. */

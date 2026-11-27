@@ -29,6 +29,10 @@ export {
 } from "./pool/layout.js";
 export type { VDBGridRecord, VDBPoolHeader } from "./pool/layout.js";
 export { VDB_MODULE_BANNER } from "./wgsl/generate.js";
+// K4.22: the dense source's GPU fill of a partial `.wvdb` LOD.
+export { VDBDenseFiller, vdbDenseFillFits, vdbDenseFillLayout, vdbDenseFillWgsl } from "./source/dense-fill.js";
+export type { VDBDenseFillLayout } from "./source/dense-fill.js";
+export { vdbDenseSourceTextures } from "./source/dense.js";
 export { boxPyramidWgsl } from "./compute/index.js";
 export {
   VDB_FRAME_MULTI_SCALE_PARAMS_BYTES,

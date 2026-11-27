@@ -100,4 +100,81 @@ test.describe("demo 16 — gallery: streaming", () => {
       expect(errors, detail()).toEqual([]);
     });
   }
+
+  // K4.22: smoke.vdb baked as a 3-LOD `.wvdb` with small pages streams page by page into one dense source. One frame per
+  // stream event (a page or a completed LOD) at the same file offsets in every mode, each against the final frame by
+  // PSNR over the volume's pixels: `upsample` (pending bricks filled from the coarser LOD on the GPU, their mip level 1
+  // the coarser LOD) starts within 2 dB of the coarser LOD it replaces (`off` keeps that until the LOD is whole) and
+  // gains from there; on average it beats `off`, his mips (`upsample-box`: every level from the upsample) and empty
+  // bricks (`background`) by 3 dB or more. The final frame is byte-identical in every mode and to the whole file added
+  // directly.
+  test("K4.22 .wvdb partial LODs: upsampled pages beat whole LODs only, his mips and empty bricks; the final frame identical in every mode", async ({ page }) => {
+    const fixture = await page.request.head(SOURCE);
+    test.skip(!fixture.ok(), `fixtures missing (${SOURCE} -> ${fixture.status()}): pnpm fixtures:vdb-samples`);
+    const errors = collectErrors(page);
+    const WVDB = `${BASE}&gallery=0&format=wvdb`;
+    type Run = NonNullable<NonNullable<Window["__DEMO16__"]>["wvdb"]>;
+    const runs = {} as Record<"upsample" | "upsample-box" | "background" | "off", Run>;
+    for (const partial of ["upsample", "upsample-box", "background", "off"] as const) {
+      const state = await openDone(page, `${WVDB}&partial=${partial}`);
+      const detail = JSON.stringify({ ...state, phases: [] }, null, 2);
+      expect(state.error, detail).toBeUndefined();
+      expect(state.uncaptured, detail).toEqual([]);
+      expect(state.wvdb?.partial, detail).toBe(partial);
+      runs[partial] = state.wvdb!;
+    }
+    const direct = await openDone(page, `${WVDB}&mode=direct`);
+    expect(direct.error, JSON.stringify(direct)).toBeUndefined();
+    const detail = JSON.stringify(runs, null, 2);
+    const { upsample, background, off } = runs;
+    const his = runs["upsample-box"];
+    // The same events in every mode (the reader always reports pages; `off` only keeps the last whole LOD on screen).
+    expect(background.frames.map((f) => f.bytes), detail).toEqual(upsample.frames.map((f) => f.bytes));
+    expect(off.frames.map((f) => f.bytes), detail).toEqual(upsample.frames.map((f) => f.bytes));
+    expect(his.frames.map((f) => f.bytes), detail).toEqual(upsample.frames.map((f) => f.bytes));
+    expect(upsample.lods.length, detail).toBe(3);
+    // The completed LOD is byte-identical whatever showed mid-stream: the final frames, and the direct render.
+    expect(background.finalHash, detail).toBe(upsample.finalHash);
+    expect(off.finalHash, detail).toBe(upsample.finalHash);
+    expect(his.finalHash, detail).toBe(upsample.finalHash);
+    expect(direct.referenceHash, detail).toBe(upsample.finalHash);
+    // The fills ran on the GPU (none on the CPU), on several pages of LODs 1 and 2.
+    expect(upsample.fills?.cpu, detail).toBe(0);
+    expect(upsample.fills?.gpu ?? 0, detail).toBeGreaterThanOrEqual(upsample.frames.filter((f) => f.filled).length);
+    const partials = upsample.frames.map((f, i) => ({ i, f })).filter(({ f }) => f.filled);
+    expect(new Set(partials.map(({ f }) => f.lod)), detail).toEqual(new Set([1, 2]));
+    expect(partials.length, detail).toBeGreaterThanOrEqual(6);
+    expect(upsample.region, detail).toBeGreaterThan(1000);
+    const rows = upsample.frames.map((f, i) => {
+      const b = background.frames[i]!;
+      const o = off.frames[i]!;
+      const h = his.frames[i]!;
+      const what = f.complete ? "complete" : `${String(f.decoded).padStart(3)}/${f.stored} bricks`;
+      return (
+        `LOD ${f.lod} ${what.padEnd(14)} @ ${(f.bytes / 1024).toFixed(1).padStart(5)} KiB: upsample ${f.regionPsnr.toFixed(2)} dB, his mips ${h.regionPsnr.toFixed(2)}, ` +
+        `whole LODs only (LOD ${o.shownLod}) ${o.regionPsnr.toFixed(2)}, empty bricks ${b.regionPsnr.toFixed(2)}; builds ${f.builds}/${h.builds}/${o.builds}/${b.builds}`
+      );
+    });
+    const mean = (r: Run) => partials.reduce((s, { i }) => s + r.frames[i]!.regionPsnr, 0) / partials.length;
+    console.log(
+      `demo 16 .wvdb (${upsample.lods.map((d) => d.join("x")).join(" → ")}, region ${upsample.region} px, GPU fills ${upsample.fills?.gpu}), PSNR vs the final frame over the volume's pixels:\n  ${rows.join("\n  ")}\n` +
+        `  mean over the ${partials.length} partial pages: upsample ${mean(upsample).toFixed(2)} dB, his mips ${mean(his).toFixed(2)} dB, whole LODs only ${mean(off).toFixed(2)} dB, empty bricks ${mean(background).toFixed(2)} dB`,
+    );
+    // SwiftShader, quality low (2026-11-28): upsample 49.4 dB mean, his mips 42.4, whole LODs only 42.9, empty 34.2.
+    for (const { i, f } of partials) {
+      const u = f.regionPsnr;
+      const o = off.frames[i]!.regionPsnr;
+      // The first page of a LOD shows the coarser LOD at the finer size: within 1.3 dB of it (the march and the level-0
+      // reads follow the texture size); every later page only adds detail.
+      expect(u, `${rows[i]}\n${detail}`).toBeGreaterThanOrEqual(o - 2);
+      // While at most half the bricks are in, empty bricks are far worse (later the missing ones may be near empty).
+      if (f.decoded * 2 <= f.stored) expect(u, `${rows[i]}\n${detail}`).toBeGreaterThan(background.frames[i]!.regionPsnr + 3);
+    }
+    expect(mean(upsample), detail).toBeGreaterThan(mean(off) + 3);
+    expect(mean(upsample), detail).toBeGreaterThan(mean(his) + 3);
+    expect(mean(upsample), detail).toBeGreaterThan(mean(background) + 3);
+    // The finest LOD's pages build no shader module or pipeline (the fill kernels and the frame kernels exist by then).
+    expect(upsample.frames.filter((f) => f.lod === 2).map((f) => f.builds), detail).toEqual(upsample.frames.filter((f) => f.lod === 2).map(() => 0));
+    expect(errors, detail).toEqual([]);
+  });
 });

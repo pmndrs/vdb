@@ -163,6 +163,8 @@ export {
   vdbToWvdb,
   nvdbToWvdb,
   wvdbDenseVolume,
+  wvdbDensePartialVolume,
+  wvdbDenseResolve,
   wvdbDenseToNvdb,
 } from "./wvdb/index.js";
 export type {
@@ -196,6 +198,9 @@ export type {
   WvdbDenseVolume,
   WvdbDenseTexture,
   WvdbDenseOptions,
+  WvdbDenseFill,
+  WvdbDensePartialFill,
+  WvdbDensePartialOptions,
   WvdbMipAtlas,
   WvdbTexelStats,
   WvdbLodEvent,

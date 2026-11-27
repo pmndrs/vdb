@@ -374,6 +374,11 @@ export interface WvdbVolumeLevel {
   values: Float32Array;
   /** Bricks decoded so far (equals the LOD's brick count once complete; less in a partial stream event). */
   bricksDecoded: number;
+  /**
+   * K4.22: one bit per brick (word `index >> 5`, bit `index & 31`), set once its page is decoded. Equals the
+   * stored bricks once complete; a partial stream event's undecoded stored bricks are the ones to fill.
+   */
+  decoded: Uint32Array;
 }
 
 /** One decoded LOD of a points grid. */
@@ -551,8 +556,9 @@ function volumeLodDecoder(grid: WvdbVolumeGridHeader, lod: number, bits: WvdbBit
     maxs: new Float32Array(entry.bricks * channels),
     values,
     bricksDecoded: 0,
+    decoded: new Uint32Array(Math.ceil(total / 32)),
   };
-  const seen = sparse ? new Uint32Array(Math.ceil(total / 32)) : null;
+  const seen = level.decoded;
   let masks = 0;
 
   return {
@@ -579,10 +585,8 @@ function volumeLodDecoder(grid: WvdbVolumeGridHeader, lod: number, bits: WvdbBit
       level.bricksDecoded += c.count;
       for (let b = 0; b < page.indices.length; b++) {
         const index = page.indices[b]!;
-        if (seen) {
-          if (isMaskBitSet(seen, index)) throw new WvdbFormatError(`LOD ${lod} of "${grid.name}": brick ${index} is stored twice`);
-          seen[index >>> 5]! |= 1 << (index & 31);
-        }
+        if (isMaskBitSet(seen, index)) throw new WvdbFormatError(`LOD ${lod} of "${grid.name}": brick ${index} is stored twice`);
+        seen[index >>> 5]! |= 1 << (index & 31);
         const [ox, oy, oz] = brickOrigin(dimensions, index);
         const nx = Math.min(WVDB_BRICK_DIM, X - ox);
         const ny = Math.min(WVDB_BRICK_DIM, Y - oy);
@@ -605,7 +609,7 @@ function volumeLodDecoder(grid: WvdbVolumeGridHeader, lod: number, bits: WvdbBit
         const mask = level.mask;
         if (!mask) throw new WvdbFormatError(`LOD ${lod} of "${grid.name}": sparse LOD without a mask chunk`);
         for (let w = 0; w < mask.length; w++) {
-          if (mask[w] !== seen![w]) {
+          if (mask[w] !== seen[w]) {
             throw new WvdbFormatError(`LOD ${lod} of "${grid.name}": the mask does not match the stored brick indices (§6.3)`);
           }
         }

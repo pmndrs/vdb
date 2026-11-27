@@ -16,16 +16,24 @@
  *
  * D10 says kernels need no textures; that holds for the sparse source. A
  * kernel compiled against a dense source binds textures, by the host's choice.
+ *
+ * K4.22: a volume from `wvdbDensePartialVolume` (a `.wvdb` LOD still streaming) carries a `fill` on its
+ * textures: the bricks stored but not decoded yet, and the coarser LOD to upsample there. The source fills them
+ * on the GPU (`dense-fill.ts`: one compute pass, its own submit) and builds the mip atlas from the result; the
+ * CPU twin (`wvdbDenseResolve`) gives the same bytes and is the fallback (`fill: 'cpu'`, or a texture too large
+ * for one storage binding).
  */
 
 import { VDBError } from "../errors.js";
 import { VDBRetireQueue } from "../frame/resources.js";
 import type { VDBSlot } from "../types.js";
 import type { WvdbDenseTexture, WvdbDenseVolume } from "../../tools/wvdb/dense.js";
+import { wvdbDenseResolveTexture } from "../../tools/wvdb/partial.js";
+import { VDBDenseFiller, vdbDenseFillFits, vdbDenseFillLayout } from "./dense-fill.js";
 import type { VDBVolumeChannels, VDBVolumeSlot, VDBVolumeSource, VDBVolumeSourceWgslOptions } from "./types.js";
 
-/** `GPUTextureUsage.TEXTURE_BINDING | COPY_DST` (0x04 | 0x02); the globals do not exist in Node. */
-const TEXTURE_USAGE = 0x04 | 0x02;
+/** `GPUTextureUsage.TEXTURE_BINDING | COPY_DST | COPY_SRC` (0x04 | 0x02 | 0x01); the globals do not exist in Node. */
+const TEXTURE_USAGE = 0x04 | 0x02 | 0x01;
 /** `GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE`. */
 const STAGE_FRAGMENT_COMPUTE = 0x2 | 0x4;
 
@@ -37,6 +45,12 @@ const CAP: Record<ChannelName, string> = { density: "Density", mask: "Mask", alb
 export interface VDBDenseSourceOptions {
   /** Label prefix of the GPU objects. */
   label?: string;
+  /**
+   * K4.22: where a partial LOD's pending bricks (`WvdbDenseTexture.fill`) are filled: `'gpu'` (default, a compute
+   * kernel) or `'cpu'` (`wvdbDenseResolve`, then an upload). Both give the same bytes; a texture whose fill buffer
+   * would pass the device's storage binding or buffer size limit is filled on the CPU anyway.
+   */
+  fill?: "gpu" | "cpu";
 }
 
 interface Uploaded {
@@ -44,22 +58,36 @@ interface Uploaded {
   mip: GPUTexture | null;
 }
 
+/** K4.22 probes: each source's live textures (core internal, `vdbDenseSourceTextures`). */
+const liveTextures = new WeakMap<object, () => Partial<Record<ChannelName, Uploaded>>>();
+
+/**
+ * @internal The textures a dense source holds now, per channel (`map`, and `mip` the atlas): for probes that read
+ * them back (they have `COPY_SRC`). Null for an object that is not a dense source.
+ */
+export function vdbDenseSourceTextures(source: object): Partial<Record<ChannelName, { map: GPUTexture; mip: GPUTexture | null }>> | null {
+  return liveTextures.get(source)?.() ?? null;
+}
+
 const bad = (message: string) => new VDBError("VDB_BAD_OPTION", message);
 
-function upload(device: GPUDevice, data: Uint8Array<ArrayBuffer>, dims: readonly number[], format: GPUTextureFormat, texelBytes: number, label: string): GPUTexture {
+function create(device: GPUDevice, dims: readonly number[], format: GPUTextureFormat, label: string): GPUTexture {
+  const [w, h, d] = dims as [number, number, number];
+  return device.createTexture({ label, size: [w, h, d], dimension: "3d", format, usage: TEXTURE_USAGE });
+}
+
+function write(device: GPUDevice, texture: GPUTexture, data: Uint8Array<ArrayBuffer>, dims: readonly number[], texelBytes: number, label: string): void {
   const [w, h, d] = dims as [number, number, number];
   if (data.byteLength !== w * h * d * texelBytes) {
     throw bad(`vdbDenseSource: ${label} has ${data.byteLength} bytes, expected ${w}x${h}x${d}x${texelBytes}`);
   }
-  const texture = device.createTexture({ label, size: [w, h, d], dimension: "3d", format, usage: TEXTURE_USAGE });
   // writeTexture has no 256-byte row alignment rule (only buffer copies do); FrameVolume uses unpackAlignment 1.
   device.queue.writeTexture({ texture }, data, { bytesPerRow: w * texelBytes, rowsPerImage: h }, [w, h, d]);
-  return texture;
 }
 
-function uploadChannel(device: GPUDevice, tex: WvdbDenseTexture, label: string): Uploaded {
-  const map = upload(device, tex.data, tex.dimensions, tex.format, tex.texelBytes, `${label}`);
-  const mip = tex.mip ? upload(device, tex.mip.data, tex.mip.dimensions, tex.format, tex.texelBytes, `${label} mip atlas`) : null;
+function createChannel(device: GPUDevice, tex: WvdbDenseTexture, label: string): Uploaded {
+  const map = create(device, tex.dimensions, tex.format, `${label}`);
+  const mip = tex.mip ? create(device, tex.mip.dimensions, tex.format, `${label} mip atlas`) : null;
   return { map, mip };
 }
 
@@ -122,6 +150,8 @@ class DenseSource implements VDBVolumeSource, VDBVolumeSlot {
   /** Local unit box → uvw: translate by 0.5 (column-major). */
   readonly boxToSource = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.5, 0.5, 0.5, 1]);
   version = 0;
+  /** K4.22: every `replace` (same size included) bumps it: the content changed (`VDBVolumeSourceInfo.revision`). */
+  revision = 0;
   readonly #device: GPUDevice;
   readonly #label: string;
   #volume: WvdbDenseVolume;
@@ -129,10 +159,18 @@ class DenseSource implements VDBVolumeSource, VDBVolumeSlot {
   #sampler: GPUSampler;
   #disposed = false;
   readonly #retire = new VDBRetireQueue();
+  readonly #fillMode: "gpu" | "cpu";
+  /** K4.22: one GPU filler per channel while that channel's LOD streams in. */
+  readonly #fillers = new Map<ChannelName, VDBDenseFiller>();
+  /** K4.22: channel fills done on the GPU and on the CPU (for tests and probes). */
+  readonly fills = { gpu: 0, cpu: 0 };
 
   constructor(device: GPUDevice, volume: WvdbDenseVolume, o: VDBDenseSourceOptions) {
     this.#device = device;
     this.#label = o.label ?? "vdb dense source";
+    if (o.fill !== undefined && o.fill !== "gpu" && o.fill !== "cpu") throw bad(`vdbDenseSource: fill must be 'gpu' or 'cpu', got ${JSON.stringify(o.fill)}.`);
+    this.#fillMode = o.fill ?? "gpu";
+    liveTextures.set(this, () => ({ ...this.#textures }));
     this.#volume = volume;
     this.channels = { mask: !!volume.mask, albedo: !!volume.albedo, emission: !!volume.emission };
     // FrameRenderer.js L483–487 + Data3DTexture defaults: linear, clamp to edge, no mipmaps.
@@ -155,7 +193,40 @@ class DenseSource implements VDBVolumeSource, VDBVolumeSlot {
     const textures = present(volume);
     for (const name of CHANNELS) {
       const tex = textures[name];
-      if (tex) this.#textures[name] = uploadChannel(this.#device, tex, `${this.#label} ${name}`);
+      if (!tex) continue;
+      const up = createChannel(this.#device, tex, `${this.#label} ${name}`);
+      this.#textures[name] = up;
+      this.#write(name, tex, up);
+    }
+  }
+
+  /** Writes a channel's texels and atlas; K4.22: a texture with pending bricks is filled first (GPU or CPU). */
+  #write(name: ChannelName, tex: WvdbDenseTexture, up: Uploaded): void {
+    const label = `${this.#label} ${name}`;
+    let t = tex;
+    if (tex.fill && tex.fill.count > 0) {
+      if (this.#fillMode === "gpu" && vdbDenseFillFits(this.#device, vdbDenseFillLayout(tex))) {
+        let filler = this.#fillers.get(name);
+        if (!filler) this.#fillers.set(name, (filler = new VDBDenseFiller(this.#device, label)));
+        for (const b of filler.fill(up.map, up.mip, tex)) this.#retire.retireAfterTask(b);
+        this.fills.gpu++;
+        return;
+      }
+      t = wvdbDenseResolveTexture(tex);
+      this.fills.cpu++;
+    }
+    write(this.#device, up.map, t.data, t.dimensions, t.texelBytes, label);
+    if (t.mip && up.mip) write(this.#device, up.mip, t.mip.data, t.mip.dimensions, t.texelBytes, `${label} mip atlas`);
+  }
+
+  /** Retires the GPU fillers of channels that have no pending bricks in `volume` (their LOD is complete). */
+  #releaseFillers(volume: WvdbDenseVolume): void {
+    const textures = present(volume);
+    for (const [name, filler] of this.#fillers) {
+      const tex = textures[name];
+      if (tex?.fill && tex.fill.count > 0) continue;
+      for (const b of filler.release()) this.#retire.retireAfterTask(b);
+      this.#fillers.delete(name);
     }
   }
 
@@ -199,17 +270,13 @@ class DenseSource implements VDBVolumeSource, VDBVolumeSlot {
     }
     const sameSize = (a: WvdbDenseTexture | null, b: WvdbDenseTexture | null) =>
       !a || !b || (a.dimensions.every((v, i) => v === b.dimensions[i]) && (!a.mip || a.mip.dimensions.every((v, i) => v === b.mip!.dimensions[i])));
+    this.#releaseFillers(volume);
     if (CHANNELS.every((n) => sameSize(now[n], next[n]))) {
       for (const name of CHANNELS) {
         const tex = next[name];
         const up = this.#textures[name];
         if (!tex || !up) continue;
-        const [w, h, d] = tex.dimensions;
-        this.#device.queue.writeTexture({ texture: up.map }, tex.data, { bytesPerRow: w * tex.texelBytes, rowsPerImage: h }, [w, h, d]);
-        if (tex.mip && up.mip) {
-          const [aw, ah, ad] = tex.mip.dimensions;
-          this.#device.queue.writeTexture({ texture: up.mip }, tex.mip.data, { bytesPerRow: aw * tex.texelBytes, rowsPerImage: ah }, [aw, ah, ad]);
-        }
+        this.#write(name, tex, up);
       }
     } else {
       this.#retireTextures();
@@ -217,6 +284,7 @@ class DenseSource implements VDBVolumeSource, VDBVolumeSlot {
       this.version++;
     }
     this.#volume = volume;
+    this.revision++;
     this.texels = [...volume.dimensions] as [number, number, number];
     this.lodLevels = volume.density.mip?.levels ?? 0;
     this.stats = { meanNonZero: volume.meanDensity, max: volume.maxDensity, activeVoxels: volume.activeTexels };
@@ -320,6 +388,8 @@ fn vdbSrcMaxIn(v: u32, uvwMin: vec3f, uvwMax: vec3f) -> f32 {
 
   dispose(): void {
     if (this.#disposed) return;
+    for (const filler of this.#fillers.values()) for (const b of filler.release()) this.#retire.retireAfterTask(b);
+    this.#fillers.clear();
     this.#retireTextures();
     this.#retire.drain();
     this.#disposed = true;
@@ -330,7 +400,15 @@ fn vdbSrcMaxIn(v: u32, uvwMin: vec3f, uvwMax: vec3f) -> f32 {
 export type VDBDenseSource = VDBVolumeSource & VDBVolumeSlot & {
   readonly kind: "dense";
   readonly volume: WvdbDenseVolume;
+  /**
+   * Swap in another LOD or frame. K4.22: a partial LOD (`wvdbDensePartialVolume`) is filled before the upload
+   * (its pending bricks upsampled from the coarser LOD, on the GPU by default; see {@link VDBDenseSourceOptions}).
+   */
   replace(volume: WvdbDenseVolume): void;
+  /** K4.22: how many channel fills ran on the GPU and on the CPU (partial LODs). */
+  readonly fills: { readonly gpu: number; readonly cpu: number };
+  /** K4.22: bumps on every `replace` (the content changed; `version` only when the textures are new). */
+  readonly revision: number;
 };
 
 /**

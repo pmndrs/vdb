@@ -52,6 +52,7 @@ under `dist/`):
 - `src/core/frame/wgsl/lighting.ts`
 - `src/core/frame/wgsl/resolve.ts`
 - `src/core/frame/wgsl/shadows.ts` (also commit `62a6e3e`)
+- `src/core/source/dense-fill.ts`
 - `src/core/source/dense.ts`
 - `src/core/source/sparse-wgsl.ts`
 - `src/core/source/sparse.ts`
@@ -98,6 +99,7 @@ under `dist/`):
 - `src/tools/wvdb/format.ts`
 - `src/tools/wvdb/index.ts`
 - `src/tools/wvdb/level-set.ts`
+- `src/tools/wvdb/partial.ts`
 - `src/tools/wvdb/read.ts`
 - `src/tools/wvdb/write.ts`
 
