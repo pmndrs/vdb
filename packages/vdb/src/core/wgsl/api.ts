@@ -7,9 +7,11 @@
  * Every pool read goes through `vdb_load`, the module's one buffer access,
  * which the generator emits for the chosen binding mode.
  *
- * Layers stack: `sample` includes `read`, `march` includes `sample`
- * (`majorant` is deferred past 0.1, D22). Each layer is a function of the
- * normalized options and the profile rank.
+ * Layers stack: `sample` includes `read`, `march` includes `sample`, and
+ * `majorant` (P1.3) includes `sample` and, with `majorant: 'nodeMax'`, `march`
+ * (`./majorant.ts`). `reader: 'lean'` (P1.5) swaps the vendored accessor for
+ * `./lean.ts`. Each layer is a function of the normalized options and the
+ * profile rank.
  *
  * Conventions every layer keeps:
  * - A grid id is usable when it is below `vdbGridCount()` and its record is
@@ -21,7 +23,9 @@
  */
 
 import type { VDBGridTypeName } from "../types.js";
+import { leanReadLayer, leanSampleFunctions } from "./lean.js";
 import { levelSetWgsl } from "./level-set.js";
+import { majorantWgsl, type VDBMajorantMode } from "./majorant.js";
 import type { VDBModuleHelper } from "./types.js";
 
 /** Options the API layer depends on (normalized by the generator). */
@@ -32,6 +36,17 @@ export interface ApiOptions {
   readonly outside: "background" | "zero";
   /** Opt-in helpers, canonical order; the generator has checked each one's profile. */
   readonly helpers: readonly VDBModuleHelper[];
+  /** P1.5: the vendored accessor or the lean reader (`./lean.ts`). */
+  readonly reader: "vendored" | "lean";
+  /** P1.3/P1.4, `majorant` profile only (else `'brick'`): which walk. `'nodeMax'` includes the march layer. */
+  readonly majorant: VDBMajorantMode;
+  /** `majorant` profile only (else false): emit `vdbMajorantMinimum`. */
+  readonly minima: boolean;
+}
+
+/** Whether the module has the march layer: `march`, or `majorant` with `'nodeMax'`. */
+export function hasMarch(profileRank: number, o: Pick<ApiOptions, "majorant">): boolean {
+  return profileRank === 2 || (profileRank === 3 && o.majorant === "nodeMax");
 }
 
 /** Vendored grid-type constant names (after the rename) per compiled type. */
@@ -49,28 +64,15 @@ function carriesBBox(profileRank: number, o: ApiOptions): boolean {
   return profileRank >= 1 && o.outside === "zero";
 }
 
-/** Whether the accessor carries the stats flag and `valueMax` (`march`+). */
-function carriesStats(profileRank: number): boolean {
-  return profileRank >= 2;
+/** Whether the accessor carries the stats flag and `valueMax` (the march layer). */
+function carriesStats(profileRank: number, o: ApiOptions): boolean {
+  return hasMarch(profileRank, o);
 }
 
-function readLayer(o: ApiOptions, profileRank: number): string {
-  const bbox = carriesBBox(profileRank, o);
-  const stats = carriesStats(profileRank);
+/** The record functions every reader shares, in emission order. */
+function recordFunctions(o: ApiOptions): string[] {
   const typeOk = o.types.map((t) => `t == ${GRID_TYPE_CONSTANT[t]}`).join(" || ");
-  const extraFields = (bbox ? "\n    lo: vec3i,\n    hi: vec3i," : "") + (stats ? "\n    stats: bool,\n    vmax: f32," : "");
-  const extraInit =
-    (bbox ? "\n        a.lo = vdbIndexMin(g);\n        a.hi = vdbIndexMax(g);" : "") +
-    (stats
-      ? "\n        a.stats = (vdb_rec(g, VDB_REC_FLAGS) & VDB_REC_FLAG_HAS_STATS) != 0u;\n        a.vmax = bitcast<f32>(vdb_rec(g, VDB_REC_VALUE_MAX));"
-      : "");
-  const parts = [
-    `struct VdbAccessor {
-    buf: vdb_buf_t,
-    gridType: u32,
-    ok: bool,
-    inner: vdb_readaccessor_t,${extraFields}
-}`,
+  return [
     `fn vdb_rec(g: u32, w: u32) -> u32 {
     return vdb_load(VDB_POOL_TABLE_WORD + g * VDB_POOL_RECORD_WORDS + w);
 }`,
@@ -101,6 +103,27 @@ function readLayer(o: ApiOptions, profileRank: number): string {
     }
     return bitcast<vec3i>(vec3u(vdb_rec(g, VDB_REC_INDEX_BBOX_MAX), vdb_rec(g, VDB_REC_INDEX_BBOX_MAX + 1u), vdb_rec(g, VDB_REC_INDEX_BBOX_MAX + 2u)));
 }`,
+  ];
+}
+
+function readLayer(o: ApiOptions, profileRank: number): string {
+  const bbox = carriesBBox(profileRank, o);
+  if (o.reader === "lean") return leanReadLayer(o, bbox, recordFunctions(o));
+  const stats = carriesStats(profileRank, o);
+  const extraFields = (bbox ? "\n    lo: vec3i,\n    hi: vec3i," : "") + (stats ? "\n    stats: bool,\n    vmax: f32," : "");
+  const extraInit =
+    (bbox ? "\n        a.lo = vdbIndexMin(g);\n        a.hi = vdbIndexMax(g);" : "") +
+    (stats
+      ? "\n        a.stats = (vdb_rec(g, VDB_REC_FLAGS) & VDB_REC_FLAG_HAS_STATS) != 0u;\n        a.vmax = bitcast<f32>(vdb_rec(g, VDB_REC_VALUE_MAX));"
+      : "");
+  const parts = [
+    `struct VdbAccessor {
+    buf: vdb_buf_t,
+    gridType: u32,
+    ok: bool,
+    inner: vdb_readaccessor_t,${extraFields}
+}`,
+    ...recordFunctions(o),
     `fn vdbAccessorInit(g: u32) -> VdbAccessor {
     var a: VdbAccessor;
     a.gridType = vdbGridType(g);
@@ -156,7 +179,8 @@ function readLayer(o: ApiOptions, profileRank: number): string {
  * CPU twins: `tools` `vdbSampleTrilinearCpu` / `vdbSampleNearestCpu` with `{ outside: 'zero' }`.
  */
 function sampleFunction(o: ApiOptions, profileRank: number): string[] {
-  const read = (ijk: string) => `vdb_readaccessor_get_value_float((*acc).gridType, (*acc).buf, &inner, ${ijk})`;
+  if (o.reader === "lean") return leanSampleFunctions(o, carriesBBox(profileRank, o));
+  const read =(ijk: string) => `vdb_readaccessor_get_value_float((*acc).gridType, (*acc).buf, &inner, ${ijk})`;
   if (!carriesBBox(profileRank, o)) {
     const lookup =
       o.sampler === "trilinear" ? "vdb_sample_trilinear_typed((*acc).gridType, (*acc).buf, &inner, xyz)" : read("vec3i(floor(xyz + vec3f(0.5)))");
@@ -477,11 +501,19 @@ function helperFunctions(o: ApiOptions): string[] {
 
 /**
  * API layers in profile order. A profile's API is every layer up to and
- * including its own (`majorant`, rank 3, is deferred past 0.1, D22).
+ * including its own, except that `majorant` (rank 3) takes the march layer
+ * only with `majorant: 'nodeMax'` (P1.3: `brick` / `global` are `sample` plus
+ * the walk, K1-core §3.2).
  */
-export const API_LAYERS: readonly ((o: ApiOptions, profileRank: number) => string)[] = [readLayer, sampleLayer, marchLayer];
+export const API_LAYERS: readonly ((o: ApiOptions, profileRank: number) => string)[] = [
+  readLayer,
+  sampleLayer,
+  marchLayer,
+  (o) => majorantWgsl(o),
+];
 
-/** The public API text for the profile at `profileRank` (0 = read, 1 = sample, 2 = march), then the requested helpers. */
+/** The public API text for the profile at `profileRank` (0 = read, 1 = sample, 2 = march, 3 = majorant), then the requested helpers. */
 export function apiWgsl(profileRank: number, o: ApiOptions): string {
-  return [...API_LAYERS.slice(0, profileRank + 1).map((layer) => layer(o, profileRank)), ...helperFunctions(o)].join("\n");
+  const layers = API_LAYERS.slice(0, profileRank + 1).filter((_, i) => i !== 2 || hasMarch(profileRank, o));
+  return [...layers.map((layer) => layer(o, profileRank)), ...helperFunctions(o)].join("\n");
 }

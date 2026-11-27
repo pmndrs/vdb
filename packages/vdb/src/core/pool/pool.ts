@@ -20,17 +20,20 @@
  */
 
 import { VDBError } from "../errors.js";
+import type { VDBBrickMajorant } from "../../tools/cpu/majorant.js";
 import { applyAffine, composeGridAffines, type GridAffines } from "./affine.js";
 import { RangeAllocator, type AllocatedRange } from "./allocator.js";
 import type { VDBGridTypeName, VDBSlot } from "../types.js";
 import { gridClassName, readImageHeader, type VDBImageHeader } from "./image-header.js";
 import {
   VDB_GPU_LAYOUT_VERSION,
+  VDB_MAJORANT_HEADER_BYTES,
   VDB_POOL_HEADER_WORDS,
   VDB_POOL_RECORD_WORDS,
   align32,
   dataStartOffset,
   encodeHeader,
+  encodeMajorantRange,
   encodeRecord,
   recordByteOffset,
   type VDBGridRecord,
@@ -47,18 +50,11 @@ import {
 } from "./limits.js";
 
 /**
- * A dense grid of upper bounds over a grid's index space, one f32 per brick of
- * `2^brickLog2` voxels per side, x fastest (§5.1). Built by `tools`; the pool
- * only stores it.
+ * A dense grid of upper (and optionally lower) bounds over a grid's index space, one f32 per brick of
+ * `2^brickLog2` voxels per side, x fastest (§5.1). Built by `tools` (`vdbBrickMajorant`); the pool only
+ * stores it (one declaration, shared with `@pmndrs/vdb/tools`, D32).
  */
-export interface VDBBrickMajorant {
-  /** log2 of the brick edge in index voxels (3 for 8³ bricks). */
-  brickLog2: number;
-  /** Cells along x, y, z. */
-  dims: readonly [number, number, number];
-  /** `dims[0] * dims[1] * dims[2]` bounds, x fastest. */
-  data: Float32Array;
-}
+export type { VDBBrickMajorant } from "../../tools/cpu/majorant.js";
 
 /** A 4x4 column-major object-to-world matrix (three's `Matrix4.elements`), or `null` for the file's map. */
 export type VDBTransformInput = Float32Array | Float64Array | readonly number[] | null;
@@ -135,6 +131,10 @@ export interface VDBGridInfo {
   majorantOffset: number | null;
   /** Brick counts of the majorant per axis, or `null` when none. */
   majorantDims: VDBVec3 | null;
+  /** Index position of the majorant's cell 0 (P1.3), or `null` when none. */
+  majorantOrigin: VDBVec3 | null;
+  /** True when the majorant carries lower bounds (the module's `minima` reads them). */
+  majorantMinima: boolean;
   /** True when an instance transform (`setTransform`) is set. */
   instanceTransform: boolean;
   /** The tree's background value. */
@@ -171,6 +171,8 @@ interface RangeState {
 interface MajorantState extends RangeState {
   brickLog2: number;
   dims: VDBVec3;
+  origin: VDBVec3;
+  minima: boolean;
   bytes: number;
   pending: Float32Array | null;
   /** The data last written, kept while a growth is unconfirmed so a rollback can stage it again. */
@@ -248,7 +250,11 @@ function copyTransform(m: VDBTransformInput | undefined): Float64Array | null {
   return Float64Array.from(m);
 }
 
-function validateMajorant(m: VDBBrickMajorant): MajorantState {
+/**
+ * Checks a brick majorant and packs its range (P1.3: header, upper bounds, optional lower bounds;
+ * `encodeMajorantRange`). Without `origin` the cells start at the grid's `indexBBoxMin - 1`.
+ */
+function validateMajorant(m: VDBBrickMajorant, header: VDBImageHeader): MajorantState {
   if (typeof m !== "object" || m === null) badOption("majorant must be { brickLog2, dims, data } or null.");
   checkCount("majorant.brickLog2", m.brickLog2, 0);
   if (m.brickLog2 > 10) badOption(`majorant.brickLog2 is ${m.brickLog2}; bricks larger than 1024 voxels aren't supported.`);
@@ -261,9 +267,26 @@ function validateMajorant(m: VDBBrickMajorant): MajorantState {
   if (m.data.length !== cells) {
     badOption(`majorant.data has ${m.data.length} values; dims ${dims.join("x")} need ${cells}. Rebuild the majorant.`);
   }
-  const bytes = cells * 4;
+  if (m.minima !== undefined) {
+    if (!(m.minima instanceof Float32Array)) badOption("majorant.minima must be a Float32Array (or absent).");
+    if (m.minima.length !== cells) badOption(`majorant.minima has ${m.minima.length} values; dims ${dims.join("x")} need ${cells}. Rebuild the majorant.`);
+  }
+  let origin: VDBVec3;
+  if (m.origin === undefined) {
+    const lo = header.indexBBoxMin;
+    origin = [lo[0] - 1, lo[1] - 1, lo[2] - 1];
+  } else {
+    if ((!Array.isArray(m.origin) && !ArrayBuffer.isView(m.origin)) || m.origin.length !== 3) badOption("majorant.origin must be [x, y, z].");
+    origin = [m.origin[0], m.origin[1], m.origin[2]];
+    origin.forEach((v, k) => {
+      if (!Number.isInteger(v) || v < -(2 ** 31) || v >= 2 ** 31) badOption(`majorant.origin[${k}] must be a 32-bit integer, got ${String(v)}.`);
+    });
+  }
+  const minima = m.minima !== undefined;
+  const bytes = VDB_MAJORANT_HEADER_BYTES + cells * 4 * (minima ? 2 : 1);
   if (bytes > 2 ** 32 - 32) badOption(`majorant needs ${bytes} bytes; the pool addresses ranges with 32 bits.`);
-  return { brickLog2: m.brickLog2, dims, bytes, pending: m.data, retained: null, range: null, resident: false };
+  const pending = encodeMajorantRange({ origin, dims, data: m.data, minima: m.minima });
+  return { brickLog2: m.brickLog2, dims, origin, minima, bytes, pending, retained: null, range: null, resident: false };
 }
 
 /**
@@ -525,7 +548,7 @@ export class VDBGridPool {
     const transform = copyTransform(options.transform);
     const affines = composeGridAffines(header, transform);
     const valueMaxOverride = checkValueMax(options.valueMax);
-    const majorant = options.majorant ? validateMajorant(options.majorant) : null;
+    const majorant = options.majorant ? validateMajorant(options.majorant, header) : null;
 
     let id = this.#grids.findIndex((g) => g === undefined);
     if (id < 0) id = this.#grids.length;
@@ -641,7 +664,7 @@ export class VDBGridPool {
       this.#touch(id);
       return;
     }
-    const next = validateMajorant(majorant);
+    const next = validateMajorant(majorant, grid.header);
     const current = grid.majorant;
     if (current?.range && align32(next.bytes) <= current.range.size) {
       next.range = current.range;
@@ -688,6 +711,8 @@ export class VDBGridPool {
       hasBrickMajorant: m !== null,
       majorantOffset: m?.range?.offset ?? null,
       majorantDims: m ? [...m.dims] : null,
+      majorantOrigin: m ? [...m.origin] : null,
+      majorantMinima: m?.minima ?? false,
       instanceTransform: g.transform !== null,
       background: h.background,
       valueMax: this.#valueMax(g),

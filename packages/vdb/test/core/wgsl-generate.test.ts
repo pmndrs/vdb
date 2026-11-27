@@ -47,9 +47,13 @@ describe("wgslNameProblems (helper)", () => {
 });
 
 describe("vdbModuleWgsl: every variant", () => {
-  it("covers the K1.4a + K1.4b matrix (read/sample/march x 8 type sets (K7.H: + half, float+half) x slot/buffer x isActive, + nearest / outside zero) + K1.7a helpers + K3.2 nodeAverage + K3.7 levelSet", () => {
-    expect(VARIANTS.filter((v) => v.options.helpers === undefined)).toHaveLength(176);
+  it("covers the K1.4a + K1.4b matrix (read/sample/march x 8 type sets (K7.H: + half, float+half) x slot/buffer x isActive, + nearest / outside zero) + K1.7a helpers + K3.2 nodeAverage + K3.7 levelSet + P1 majorant and lean", () => {
+    const p1 = (v: (typeof VARIANTS)[number]) => v.options.profile === "majorant" || v.options.reader === "lean";
+    expect(VARIANTS.filter((v) => !p1(v) && v.options.helpers === undefined)).toHaveLength(176);
     expect(VARIANTS.filter((v) => v.options.helpers !== undefined)).toHaveLength(96);
+    // P1.3/P1.4: 7 majorant variants, P1.5: 2 lean read + 3 lean sample, each x 8 type sets x slot/buffer.
+    expect(VARIANTS.filter((v) => v.options.profile === "majorant")).toHaveLength(7 * 16);
+    expect(VARIANTS.filter((v) => v.options.profile !== "majorant" && v.options.reader === "lean")).toHaveLength(5 * 16);
   });
 
   it.each(VARIANTS)("$id is clean", ({ options }) => {
@@ -300,7 +304,15 @@ describe("vdbModuleWgsl: options", () => {
       { ...base, types: [] },
       { ...base, types: "float" },
       { ...base, types: ["double"] },
-      { ...base, profile: "majorant" },
+      { ...base, majorant: "brick" },
+      { ...base, profile: "sample", minima: true },
+      { ...base, profile: "majorant", majorant: "dda" },
+      { ...base, profile: "majorant", minima: 1 },
+      { ...base, profile: "majorant", helpers: ["hddaCellEnd"] },
+      { ...base, profile: "majorant", majorant: "nodeMax", reader: "lean" },
+      { ...base, profile: "march", reader: "lean" },
+      { ...base, profile: "sample", reader: "lean", helpers: ["fastTrilinear"] },
+      { ...base, reader: "fast" },
       { ...base, slot: undefined, buffer: "__vdbPool.value" },
       { ...base, slot: undefined, buffer: "vdbPool.__value" },
       { ...base, slot: undefined, buffer: "loop.value" },
@@ -321,8 +333,10 @@ describe("vdbModuleWgsl: options", () => {
     for (const options of cases) expectCode(() => vdbModuleWgsl(options as VDBModuleOptions), "VDB_BAD_OPTION");
   });
 
-  it("says majorant is deferred past 0.1 (D22)", () => {
-    expect(() => vdbModuleWgsl({ ...base, profile: "majorant" })).toThrow(/deferred past 0\.1 \(D22\)/);
+  it("P1.3: profile 'majorant' generates; march helpers need majorant 'nodeMax'", () => {
+    expect(vdbModuleWgsl({ ...base, profile: "majorant" })).toContain("fn vdbMajorantNext(");
+    expect(() => vdbModuleWgsl({ ...base, profile: "majorant", helpers: ["cellBoundTrilinear"] })).toThrow(/only with majorant: 'nodeMax'/);
+    expect(vdbModuleWgsl({ ...base, profile: "majorant", majorant: "nodeMax", helpers: ["cellBoundTrilinear"] })).toContain("fn vdbCellBoundTrilinear(");
   });
 
   it("names the offending part of a reserved buffer expression", () => {

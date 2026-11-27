@@ -481,7 +481,7 @@ export class VDBGridNode {
       if (!OPTION_KEYS.has(key)) throw bad(`unknown option '${key}'; use ${[...OPTION_KEYS].join(", ")}.`);
     }
     if ((options.profile as string | undefined) === "majorant") {
-      throw new VDBError("VDB_BAD_OPTION", "VDBGridNode: profile 'majorant' is deferred past 0.1 (D22). Use 'read', 'sample' or 'march'.");
+      throw new VDBError("VDB_BAD_OPTION", "VDBGridNode: profile 'majorant' is for raw WGSL hosts (vdbModuleWgsl; P1). Use 'read', 'sample' or 'march'.");
     }
     const name = options.name ?? "vdbPool";
     const explicitTypes = options.types !== undefined;

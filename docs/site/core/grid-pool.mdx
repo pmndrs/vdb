@@ -109,6 +109,32 @@ try {
 }
 ```
 
+## Several grids at one binding
+
+A kernel binds the pool once and reads any grid in it by id, so several media (or instances of one) cost no extra
+binding. Give each grid its own transform; the image is never touched.
+
+{/* snippet: multi-grid */}
+```ts
+// Several grids, one binding: one module and one pool serve every medium; the shader picks the grid by id.
+const media = [id, pool.add(cloud), pool.add(fire)];
+pool.setTransform(media[1]!, [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 10, 0, -4, 1]); // instance: scale 2, then move
+pool.setTransform(media[2]!, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -6, 1, 0, 1]);
+// A host keeps its own per-medium data (sigma, albedo) in its own buffer, indexed the same way.
+```
+
+In the shader, the id is just a `u32` per query or per medium:
+
+```wgsl
+let g = mediumGrid[medium];                 // your table: medium -> pool grid id
+let p = vdbWorldToIndex(g, worldPos);       // the record's affine: the file's map and your transform
+var a = vdbAccessorInit(g);
+let density = vdbSample(&a, p);
+```
+
+The module must be generated for every grid type in the pool (see [the WGSL module](/core/wgsl-module)). Brick
+majorants are per grid too: `setMajorant(id, …)`.
+
 ## Other things on the pool
 
 | Member | What it gives |
@@ -118,6 +144,7 @@ try {
 | `gridCount`, `gridCapacity` | Highest live id + 1, and the table's capacity (`maxGrids`, default 16, doubles through the growth path). |
 | `byteLength`, `usedBytes`, `retiredBytes` | The buffer's size, the allocation high-water mark, and bytes in replaced buffers still alive. |
 | `setTransform(id, matrix)` | A 4x4 column-major object-to-world matrix (three's `Matrix4.elements`), or `null` for the file's own map. Composed in f64, rounded to f32. |
+| `setMajorant(id, majorant)` | Brick-majorant bounds (`vdbBrickMajorant` from `@pmndrs/vdb/tools`) for the `majorant` profile, or `null` to drop them. `replace` drops them too. |
 
 `VDBGridPoolOptions` has `initialBytes` (default 1 MiB), `maxGrids`, `maxBytes`, `label`, `usage`, and `buffer`. Pass a
 host-owned `buffer` (`STORAGE | COPY_DST`) and the pool never grows or destroys it; when it is full, `add` throws

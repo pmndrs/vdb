@@ -70,6 +70,15 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 
 ### Added
 
+- `@pmndrs/vdb` (P1.3, P1.4): the `majorant` WGSL profile for delta and ratio tracking. `vdbMajorantInit(g, o, d, tMin,
+  tMax)` / `vdbMajorantNext(&it)` walk a piecewise-constant bound of the sampled field along an index-space ray;
+  `majorant: 'brick'` (default; a DDA over the grid's brick bounds), `'global'` (one segment, `valueMax`) or `'nodeMax'`
+  (an HDDA bounded by node stats); `minima: true` adds `vdbMajorantMinimum`; `vdbMajorantGlobal(g)` in every mode.
+  `VDBBrickMajorant` takes optional `origin` and `minima`; `pool.info()` reports `majorantOrigin` and `majorantMinima`.
+- `@pmndrs/vdb/tools` (P1.2): `vdbBrickMajorant(image, { brickLog2, minima, align, outside, resolution })` builds the
+  brick bounds for `pool.setMajorant`; `align: 'pathtracer'` lays them out as pmndrs/pathtracer's `brickMajorants`.
+- `@pmndrs/vdb` (P1.5): `reader: 'lean'` module option, a compact reader with the same API and values: `read` for Float
+  is 3.1 KiB instead of 17.1, `sample` 5.1 KiB instead of 19.7 (profiles `read`, `sample`, `majorant` brick/global).
 - `@pmndrs/vdb/tools` (K7.C1): `writeNvdb(images, { codec: 'blosc' })` writes NanoVDB's `Codec::BLOSC`: LZ4 Blosc
   frames (byte shuffle, 1 MiB blocks of four 256 KiB streams, a frame per 1 GiB), byte-identical to native NanoVDB v14 for
   the same image, so native tools and NVIDIA Warp read them. A pure-TypeScript LZ4 block compressor (a port of LZ4 1.9.4,

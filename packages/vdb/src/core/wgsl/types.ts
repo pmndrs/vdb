@@ -1,8 +1,9 @@
 import type { VDBGridTypeName, VDBSlot } from "../types.js";
 
 /**
- * Generator profiles; each includes the previous one. `majorant` is deferred
- * past 0.1 (D22) and throws `VDB_BAD_OPTION`.
+ * Generator profiles; each includes the previous one, except that `majorant`
+ * (P1.3) is `sample` plus the majorant walk, and includes `march` only with
+ * `majorant: 'nodeMax'`.
  */
 export type VDBModuleProfile = "read" | "sample" | "march" | "majorant";
 
@@ -70,6 +71,28 @@ export interface VDBModuleCommonOptions {
   readonly outside?: "background" | "zero" | undefined;
   /** Opt-in helpers ({@link VDBModuleHelper}); a set: order and duplicates don't matter. Default none. */
   readonly helpers?: Iterable<VDBModuleHelper> | undefined;
+  /**
+   * `majorant` profile only (P1.3, P1.4): the walk `vdbMajorantInit` / `vdbMajorantNext` compile.
+   * - `'brick'` (default): the DDA over the grid's brick-majorant cells (`pool.setMajorant` with
+   *   `tools` `vdbBrickMajorant`); a grid without them walks as `'global'`.
+   * - `'global'`: one segment over the sampler's support box, bounded by the record's `valueMax`.
+   * - `'nodeMax'`: an HDDA over the tree bounded by node stats (needs `HAS_MIN_MAX`; adds the march
+   *   layer, so the module is about 10 KiB larger).
+   * Every mode also has `vdbMajorantGlobal(g) -> f32`, the scalar bound.
+   */
+  readonly majorant?: "brick" | "global" | "nodeMax" | undefined;
+  /**
+   * `majorant` profile only: also emit `vdbMajorantMinimum(it) -> f32`, the lower bound of the last
+   * segment (the brick minima when the grid's majorant has them, else 0). Default false.
+   */
+  readonly minima?: boolean | undefined;
+  /**
+   * The voxel reader (P1.5): `'vendored'` (default; the audited PNanoVDB accessor) or `'lean'`, a
+   * compact descent with a one-leaf cache, about a fifth of the size (`read` / Float ≤ 4 KiB), for kernels
+   * near a compiler's size limit. Same public functions and values. Profiles `read`, `sample` and
+   * `majorant` with `'brick'` / `'global'`; no march layer, and of the helpers only `'rayClipSupport'`.
+   */
+  readonly reader?: "vendored" | "lean" | undefined;
 }
 
 /** `slot` mode: the module declares `@group(g) @binding(b) var<storage, read> vdbPool: array<u32>;`. */

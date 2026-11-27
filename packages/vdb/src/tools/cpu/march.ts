@@ -412,6 +412,68 @@ export function treeNodes(gridWords: Uint32Array): TreeNode[] {
   return out;
 }
 
+/** One region of the tree for {@link forEachTreeRegion}: a leaf, or a tile (active or not). */
+export interface TreeRegion {
+  /** 0 leaf, 1 lower-node tile (8³), 2 upper-node tile (128³), 3 root tile (4096³). */
+  level: NodeLevel;
+  /** Index-space min corner. */
+  origin: Vec3;
+  /** Edge in voxels: 8, 8, 128 or 4096. */
+  dim: number;
+  /** Byte address of the leaf (level 0; read it with {@link leafVoxels}); 0 for a tile. */
+  leaf: number;
+  /** The tile's value (levels 1-3, active or inactive); 0 for a leaf. */
+  value: number;
+}
+
+/**
+ * Every leaf and every tile of the tree, active or not (P1.2, the brick-majorant builder needs the
+ * values a trilinear tap can read, inactive ones included). Space under no root tile reads the
+ * background: the result lists the min corners of the root tiles (with or without a child), so a
+ * caller can tell which 4096-blocks are covered.
+ */
+export function forEachTreeRegion(gridWords: Uint32Array, visit: (r: TreeRegion) => void): { background: number; rootTiles: Vec3[] } {
+  const g = grid(gridWords);
+  const gt = g.gt;
+  const rootTiles: Vec3[] = [];
+  const count = u32(g.words, g.root + ROOT_OFF_TABLE_SIZE);
+  for (let i = 0; i < count; i++) {
+    const t = g.root + gt.root_size + i * gt.root_tile_size;
+    const key = (BigInt(u32(g.words, t + ROOT_TILE_OFF_KEY + 4)) << 32n) | BigInt(u32(g.words, t + ROOT_TILE_OFF_KEY));
+    const origin: Vec3 = [
+      Number((key >> 42n) & 0x1fffffn) << 12 | 0,
+      Number((key >> 21n) & 0x1fffffn) << 12 | 0,
+      Number(key & 0x1fffffn) << 12 | 0,
+    ];
+    rootTiles.push(origin);
+    const child = childOffset(g, t + ROOT_TILE_OFF_CHILD);
+    if (child === 0 && u32(g.words, t + ROOT_TILE_OFF_CHILD + 4) === 0) {
+      visit({ level: 3, origin, dim: 4096, leaf: 0, value: readValueSlot(g, t + gt.root_tile_off_value) });
+      continue;
+    }
+    const upper = g.root + child;
+    for (let un = 0; un < 32768; un++) {
+      const uo: Vec3 = [origin[0] + ((un >> 10) & 31) * 128, origin[1] + ((un >> 5) & 31) * 128, origin[2] + (un & 31) * 128];
+      const ut = upper + gt.upper_off_table + gt.table_stride * un;
+      if (!maskBit(g, upper + UPPER_OFF_CHILD_MASK, un)) {
+        visit({ level: 2, origin: uo, dim: 128, leaf: 0, value: readValueSlot(g, ut) });
+        continue;
+      }
+      const lower = upper + childOffset(g, ut);
+      for (let ln = 0; ln < 4096; ln++) {
+        const lo3: Vec3 = [uo[0] + ((ln >> 8) & 15) * 8, uo[1] + ((ln >> 4) & 15) * 8, uo[2] + (ln & 15) * 8];
+        const lt = lower + gt.lower_off_table + gt.table_stride * ln;
+        if (!maskBit(g, lower + LOWER_OFF_CHILD_MASK, ln)) {
+          visit({ level: 1, origin: lo3, dim: 8, leaf: 0, value: readValueSlot(g, lt) });
+          continue;
+        }
+        visit({ level: 0, origin: lo3, dim: 8, leaf: lower + childOffset(g, lt), value: 0 });
+      }
+    }
+  }
+  return { background: readValueSlot(g, g.root + gt.root_off_background), rootTiles };
+}
+
 /** A leaf's 512 decoded values (f32, WGSL decode order) and active flags, x-major (`n = x*64 + y*8 + z`). */
 export function leafVoxels(gridWords: Uint32Array, leafAddress: number): { values: Float32Array; active: Uint8Array } {
   const g = grid(gridWords);

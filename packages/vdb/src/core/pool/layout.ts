@@ -102,6 +102,51 @@ export const VDB_RECORD_BRICK_LOG2_SHIFT = 16;
 /** Mask (after shifting) of the 8-bit class and brick-log2 fields. */
 export const VDB_RECORD_BYTE_FIELD_MASK = 0xff;
 
+/**
+ * A brick-majorant range (P1.3; record words 36-39 point at it): a 32-byte header, then
+ * `dims.x * dims.y * dims.z` f32 upper bounds (x fastest), then as many lower bounds when the header's
+ * minima flag is set. The header carries what the record has no room for: the index position of cell 0's
+ * min corner and the flags. Layout 1 never defined the range's bytes (no 0.1 module read them, D22); the
+ * magic lets a module tell a P1 range from a 0.1 pool's bare bounds and walk the latter as `global`.
+ */
+export const VDB_MAJORANT_HEADER_BYTES = 32;
+/** Majorant header word 4: `"VDBM"` read as a little-endian u32. */
+export const VDB_MAJORANT_MAGIC = 0x4d424456;
+/** Majorant range header word indices. */
+export const VDB_MAJORANT_WORD = {
+  /** i32 x3: index position of cell 0's min corner. */
+  origin: 0,
+  /** u32: see {@link VDB_MAJORANT_FLAG}. */
+  flags: 3,
+  /** {@link VDB_MAJORANT_MAGIC}. */
+  magic: 4,
+} as const;
+/** Majorant range header flag bits (word 3). */
+export const VDB_MAJORANT_FLAG = {
+  /** b0: lower bounds follow the upper bounds. */
+  minima: 1 << 0,
+} as const;
+
+/** Packs a brick majorant's range: header, upper bounds, optional lower bounds. `bytes` is its size. */
+export function encodeMajorantRange(m: {
+  readonly origin: VDBVec3;
+  readonly dims: VDBVec3;
+  readonly data: Float32Array;
+  readonly minima?: Float32Array | undefined;
+}): Float32Array {
+  const cells = m.dims[0] * m.dims[1] * m.dims[2];
+  const headerWords = VDB_MAJORANT_HEADER_BYTES / 4;
+  const out = new Float32Array(headerWords + cells * (m.minima ? 2 : 1));
+  const u32 = new Uint32Array(out.buffer);
+  const i32 = new Int32Array(out.buffer);
+  for (let k = 0; k < 3; k++) i32[VDB_MAJORANT_WORD.origin + k] = m.origin[k]!;
+  u32[VDB_MAJORANT_WORD.flags] = m.minima ? VDB_MAJORANT_FLAG.minima : 0;
+  u32[VDB_MAJORANT_WORD.magic] = VDB_MAJORANT_MAGIC;
+  out.set(m.data, headerWords);
+  if (m.minima) out.set(m.minima, headerWords + cells);
+  return out;
+}
+
 /** Decoded pool header (§1.1). */
 export interface VDBPoolHeader {
   magic: number;
@@ -313,6 +358,9 @@ function u32Hex(n: number): string {
  *   a record), e.g. `VDB_REC_IMAGE_OFFSET = 0u`, `VDB_REC_WORLD_TO_INDEX = 4u`
  * - `VDB_REC_FLAG_<NAME>` for every {@link VDB_RECORD_FLAG} bit, plus
  *   `VDB_REC_GRID_CLASS_SHIFT`, `VDB_REC_BRICK_LOG2_SHIFT`, `VDB_REC_BYTE_FIELD_MASK`
+ * - P1.3, the brick-majorant range header: `VDB_MAJORANT_MAGIC`, `VDB_MAJORANT_HEADER_WORDS`,
+ *   `VDB_MAJ_<FIELD>` for every {@link VDB_MAJORANT_WORD} entry and `VDB_MAJ_FLAG_<NAME>` per
+ *   {@link VDB_MAJORANT_FLAG} bit
  *
  * Word `w` of record `g` is `vdb_load(VDB_POOL_TABLE_WORD + g * VDB_POOL_RECORD_WORDS + w)`.
  */
@@ -340,6 +388,14 @@ export function vdbPoolLayoutWgsl(): string {
     `const VDB_REC_GRID_CLASS_SHIFT: u32 = ${VDB_RECORD_GRID_CLASS_SHIFT}u;`,
     `const VDB_REC_BRICK_LOG2_SHIFT: u32 = ${VDB_RECORD_BRICK_LOG2_SHIFT}u;`,
     `const VDB_REC_BYTE_FIELD_MASK: u32 = ${u32Hex(VDB_RECORD_BYTE_FIELD_MASK)};`,
+    `const VDB_MAJORANT_MAGIC: u32 = ${u32Hex(VDB_MAJORANT_MAGIC)};`,
+    `const VDB_MAJORANT_HEADER_WORDS: u32 = ${VDB_MAJORANT_HEADER_BYTES / 4}u;`,
   );
+  for (const [name, word] of Object.entries(VDB_MAJORANT_WORD)) {
+    lines.push(`const VDB_MAJ_${upperSnake(name)}: u32 = ${word}u;`);
+  }
+  for (const [name, bit] of Object.entries(VDB_MAJORANT_FLAG)) {
+    lines.push(`const VDB_MAJ_FLAG_${upperSnake(name)}: u32 = ${u32Hex(bit)};`);
+  }
   return lines.join("\n") + "\n";
 }

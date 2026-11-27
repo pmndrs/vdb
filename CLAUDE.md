@@ -691,3 +691,21 @@ From v1; details in docs/archive/handoffs/.
   scattering) and quote the 'neural' rows separately.
 - K6.Q1b: an ambient / probe error that 'volume' lighting shares (WDAS + probe +28 % in both) is the isotropic visibility
   (V128), not the grid: the `*-only` / `*-only-iso` report groups separate the phase weight from the pair quadrature.
+- P1.3: `vdbMajorantNext` never returns a zero-length segment (a `t1 <= t0` result ENDS the walk); the pathtracer's
+  `ptDdaNext` / `ddaSegments` emit zero-length ones at cell corners. Filter them before comparing the two walks.
+- P1.3: a brick-majorant range starts with a 32-byte header (origin, minima flag, `"VDBM"`; `encodeMajorantRange`):
+  reading the bounds straight from the pool skips `VDB_MAJORANT_HEADER_BYTES`. Build the bricks with the module's
+  `outside` (`vdbBrickMajorant(image, { outside: 'zero' })` for an `outside: 'zero'` module), and `align: 'pathtracer'`
+  needs the grid's bbox inside `[0, resolution)`.
+- The primitive fixtures' root background is 3 beyond their root tiles (0 inside): a test's dense cache of the sampled
+  field must cover the whole brick walk (bbox + one brick per side), or samples past it read 3 and look like bound
+  violations (P1.2's first run).
+- WGSL pointer arguments must be whole variables: `vdbHddaInit(&it.h, …)` on a struct member doesn't compile without
+  `unrestricted_pointer_parameters`. Copy into a local, call, copy back (as `vdbMajorantInit` does).
+- `pnpm typecheck` (`tsc --build`) covers `src` only, not `packages/vdb/test`. A helper shared by a harness page and a
+  vitest goes in `examples/src/harness/` (the examples project) and the test imports it by path (`p1-smoke.ts`): a
+  harness that imports from `packages/vdb/test/` fails TS6059 and that failed build leaves stray `.d.ts` / `.d.ts.map`
+  files next to the imported file (delete them).
+- Node 22 imports a `.ts` helper from a script only with `node --experimental-strip-types` (`scripts/p1/majorant-counters.mjs`).
+- The lean reader computes the leaf voxel index twice: in `vdbReadValue` (`ijk & 7`) and in `vdb_ln_find` (the mask bit
+  `vdbIsActive` reads). A WGSL mutation of one leaves the other row green (`p1-parity` has one mutation per site).

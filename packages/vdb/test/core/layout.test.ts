@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   VDB_GPU_LAYOUT_VERSION,
   VDB_HEADER_WORD,
+  VDB_MAJORANT_FLAG,
+  VDB_MAJORANT_HEADER_BYTES,
+  VDB_MAJORANT_MAGIC,
+  VDB_MAJORANT_WORD,
   VDB_POOL_RECORD_BYTES,
   VDB_POOL_RECORD_WORDS,
   VDB_POOL_TABLE_OFFSET,
@@ -11,6 +15,7 @@ import {
   VDBGridPool,
   decodeHeader,
   decodeRecord,
+  encodeMajorantRange,
   encodeRecord,
   vdbPoolLayoutWgsl,
   type VDBGridRecord,
@@ -123,6 +128,11 @@ describe("pool layout (K1.3a)", () => {
       ["VDB_REC_GRID_CLASS_SHIFT", VDB_RECORD_GRID_CLASS_SHIFT],
       ["VDB_REC_BRICK_LOG2_SHIFT", VDB_RECORD_BRICK_LOG2_SHIFT],
       ["VDB_REC_BYTE_FIELD_MASK", VDB_RECORD_BYTE_FIELD_MASK],
+      // P1.3: the brick-majorant range header.
+      ["VDB_MAJORANT_MAGIC", VDB_MAJORANT_MAGIC],
+      ["VDB_MAJORANT_HEADER_WORDS", VDB_MAJORANT_HEADER_BYTES / 4],
+      ...Object.entries(VDB_MAJORANT_WORD).map(([k, v]) => [`VDB_MAJ_${snake(k)}`, v] as [string, number]),
+      ...Object.entries(VDB_MAJORANT_FLAG).map(([k, v]) => [`VDB_MAJ_FLAG_${snake(k)}`, v] as [string, number]),
     ]);
     expect(consts).toEqual(expected);
     // Spot checks the generator agent relies on.
@@ -130,6 +140,24 @@ describe("pool layout (K1.3a)", () => {
     expect(wgsl).toContain("const VDB_REC_IMAGE_OFFSET: u32 = 0u;");
     expect(wgsl).toContain("const VDB_REC_WORLD_TO_INDEX: u32 = 4u;");
     expect(wgsl).toContain("const VDB_REC_INDEX_BBOX_MAX: u32 = 32u;");
+    expect(wgsl).toContain("const VDB_MAJ_MAGIC: u32 = 4u;");
+  });
+
+  it("majorant range (P1.3): header words, bounds, minima; VDBM in memory order", () => {
+    const data = new Float32Array([1, 2, 3, 4, 5, 6]);
+    const minima = new Float32Array([0, 0.5, 1, 1.5, 2, 2.5]);
+    const r = encodeMajorantRange({ origin: [-3, 4, -(2 ** 31)], dims: [3, 2, 1], data, minima });
+    const u = new Uint32Array(r.buffer);
+    const i = new Int32Array(r.buffer);
+    expect(r.length * 4).toBe(VDB_MAJORANT_HEADER_BYTES + 2 * 6 * 4);
+    expect([i[0], i[1], i[2]]).toEqual([-3, 4, -(2 ** 31)]);
+    expect(u[VDB_MAJORANT_WORD.flags]).toBe(VDB_MAJORANT_FLAG.minima);
+    expect(new TextDecoder().decode(new Uint8Array(r.buffer, 16, 4))).toBe("VDBM");
+    expect(Array.from(r.subarray(8, 14))).toEqual(Array.from(data));
+    expect(Array.from(r.subarray(14, 20))).toEqual(Array.from(minima));
+    const bare = encodeMajorantRange({ origin: [0, 0, 0], dims: [3, 2, 1], data });
+    expect(bare.length).toBe(8 + 6);
+    expect(new Uint32Array(bare.buffer)[VDB_MAJORANT_WORD.flags]).toBe(0);
   });
 });
 

@@ -31,13 +31,29 @@ export const MARCH_LEVEL_SET_HELPERS = ["levelSet"];
  * nearest), and sample/march with every helper they allow. Returns
  * `{ id, options }[]`.
  */
+/** P1.5: the lean reader's variants per profile (appended). */
+export const LEAN_EXTRAS = {
+  read: [{ reader: "lean" }, { reader: "lean", isActive: false }],
+  sample: [{ reader: "lean" }, { reader: "lean", outside: "zero" }, { reader: "lean", outside: "zero", sampler: "nearest" }],
+};
+/** P1.3 / P1.4: the majorant profile's variants (a profile of its own, appended after march). */
+export const MAJORANT_EXTRAS = [
+  { majorant: "brick" },
+  { majorant: "brick", minima: true },
+  { majorant: "global" },
+  { majorant: "nodeMax" },
+  { majorant: "brick", minima: true, outside: "zero" },
+  { majorant: "brick", minima: true, outside: "zero", reader: "lean" },
+  { majorant: "global", outside: "zero", reader: "lean" },
+];
+
 export function variantMatrix() {
   const out = [];
-  for (const profile of ["read", "sample", "march"]) {
+  for (const profile of ["read", "sample", "march", "majorant"]) {
     for (const types of TYPE_SETS) {
       for (const mode of ["slot", "buffer"]) {
         const binding = mode === "slot" ? { slot: CHECK_SLOT } : { buffer: CHECK_BUFFER_EXPRESSION };
-        const extras = [{ isActive: true }, { isActive: false }];
+        const extras = profile === "majorant" ? [...MAJORANT_EXTRAS] : [{ isActive: true }, { isActive: false }];
         if (profile === "sample") extras.push({ sampler: "nearest" }, { outside: "zero" });
         if (profile === "sample" || profile === "march") extras.push({ outside: "zero", sampler: "nearest" });
         if (profile === "march") extras.push({ outside: "zero" });
@@ -48,6 +64,7 @@ export function variantMatrix() {
         if (profile === "sample") extras.push({ helpers: FAST_HELPERS });
         if (profile === "march") extras.push({ helpers: MARCH_FRAME_FAST_HELPERS });
         if (profile === "march") extras.push({ helpers: MARCH_LEVEL_SET_HELPERS });
+        extras.push(...(LEAN_EXTRAS[profile] ?? []));
         for (const extra of extras) {
           const options = { ...binding, types, profile, ...extra };
           const tag = Object.entries(extra)
@@ -77,7 +94,8 @@ export function checkKernel(module, options) {
       : "";
   const isActive = options.isActive ?? true;
   const sample = options.profile !== "read";
-  const march = options.profile === "march";
+  const majorant = options.profile === "majorant";
+  const march = options.profile === "march" || (majorant && options.majorant === "nodeMax");
   const helpers = new Set(options.helpers ?? []);
   const helperCalls = [
     helpers.has("rayClipSupport")
@@ -140,6 +158,19 @@ ${isActive ? "    if vdbIsActive(&a, ijk) {\n        s += 1.0;\n    }\n" : ""}${
     if vdbHasStats(g) {
         s += vdbValueMax(g);
     }
+`
+      : ""
+  }${
+    majorant
+      ? `    var it = vdbMajorantInit(g, p, d, 0.0, 1.0e30);
+    for (var i = 0u; i < 8u; i++) {
+        let m = vdbMajorantNext(&it);
+        if m.y <= m.x {
+            break;
+        }
+        s += m.z * (m.y - m.x);
+${options.minima ? "        s += vdbMajorantMinimum(&it);\n" : ""}    }
+    s += vdbMajorantGlobal(g);
 `
       : ""
   }${helperCalls}    checkOut[g] = s;

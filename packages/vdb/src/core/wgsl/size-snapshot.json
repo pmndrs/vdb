@@ -2,6 +2,454 @@
   "method": "design note §3.5: min = comments stripped, whitespace collapsed, no mangling (wgsl-variants minifyWgsl); gz = gzip level 9 of min",
   "unit": "bytes",
   "variants": {
+    "majorant/float+fp8+fpn/buffer/majorant=brick": {
+      "gz": 5097,
+      "min": 25152
+    },
+    "majorant/float+fp8+fpn/buffer/majorant=brick,minima=true": {
+      "gz": 5175,
+      "min": 25478
+    },
+    "majorant/float+fp8+fpn/buffer/majorant=brick,minima=true,outside=zero": {
+      "gz": 5164,
+      "min": 25121
+    },
+    "majorant/float+fp8+fpn/buffer/majorant=brick,minima=true,outside=zero,reader=lean": {
+      "gz": 2905,
+      "min": 8985
+    },
+    "majorant/float+fp8+fpn/buffer/majorant=global": {
+      "gz": 4509,
+      "min": 23387
+    },
+    "majorant/float+fp8+fpn/buffer/majorant=global,outside=zero,reader=lean": {
+      "gz": 2237,
+      "min": 6894
+    },
+    "majorant/float+fp8+fpn/buffer/majorant=nodeMax": {
+      "gz": 6208,
+      "min": 33182
+    },
+    "majorant/float+fp8+fpn/slot/majorant=brick": {
+      "gz": 5138,
+      "min": 25202
+    },
+    "majorant/float+fp8+fpn/slot/majorant=brick,minima=true": {
+      "gz": 5216,
+      "min": 25528
+    },
+    "majorant/float+fp8+fpn/slot/majorant=brick,minima=true,outside=zero": {
+      "gz": 5205,
+      "min": 25171
+    },
+    "majorant/float+fp8+fpn/slot/majorant=brick,minima=true,outside=zero,reader=lean": {
+      "gz": 2942,
+      "min": 9035
+    },
+    "majorant/float+fp8+fpn/slot/majorant=global": {
+      "gz": 4547,
+      "min": 23437
+    },
+    "majorant/float+fp8+fpn/slot/majorant=global,outside=zero,reader=lean": {
+      "gz": 2274,
+      "min": 6944
+    },
+    "majorant/float+fp8+fpn/slot/majorant=nodeMax": {
+      "gz": 6249,
+      "min": 33232
+    },
+    "majorant/float+half/buffer/majorant=brick": {
+      "gz": 4797,
+      "min": 23305
+    },
+    "majorant/float+half/buffer/majorant=brick,minima=true": {
+      "gz": 4881,
+      "min": 23631
+    },
+    "majorant/float+half/buffer/majorant=brick,minima=true,outside=zero": {
+      "gz": 4869,
+      "min": 23274
+    },
+    "majorant/float+half/buffer/majorant=brick,minima=true,outside=zero,reader=lean": {
+      "gz": 2845,
+      "min": 8657
+    },
+    "majorant/float+half/buffer/majorant=global": {
+      "gz": 4210,
+      "min": 21540
+    },
+    "majorant/float+half/buffer/majorant=global,outside=zero,reader=lean": {
+      "gz": 2175,
+      "min": 6566
+    },
+    "majorant/float+half/buffer/majorant=nodeMax": {
+      "gz": 5841,
+      "min": 31033
+    },
+    "majorant/float+half/slot/majorant=brick": {
+      "gz": 4838,
+      "min": 23355
+    },
+    "majorant/float+half/slot/majorant=brick,minima=true": {
+      "gz": 4922,
+      "min": 23681
+    },
+    "majorant/float+half/slot/majorant=brick,minima=true,outside=zero": {
+      "gz": 4910,
+      "min": 23324
+    },
+    "majorant/float+half/slot/majorant=brick,minima=true,outside=zero,reader=lean": {
+      "gz": 2882,
+      "min": 8707
+    },
+    "majorant/float+half/slot/majorant=global": {
+      "gz": 4250,
+      "min": 21590
+    },
+    "majorant/float+half/slot/majorant=global,outside=zero,reader=lean": {
+      "gz": 2211,
+      "min": 6616
+    },
+    "majorant/float+half/slot/majorant=nodeMax": {
+      "gz": 5882,
+      "min": 31083
+    },
+    "majorant/float/buffer/majorant=brick": {
+      "gz": 4704,
+      "min": 22870
+    },
+    "majorant/float/buffer/majorant=brick,minima=true": {
+      "gz": 4788,
+      "min": 23196
+    },
+    "majorant/float/buffer/majorant=brick,minima=true,outside=zero": {
+      "gz": 4777,
+      "min": 22839
+    },
+    "majorant/float/buffer/majorant=brick,minima=true,outside=zero,reader=lean": {
+      "gz": 2783,
+      "min": 8431
+    },
+    "majorant/float/buffer/majorant=global": {
+      "gz": 4116,
+      "min": 21105
+    },
+    "majorant/float/buffer/majorant=global,outside=zero,reader=lean": {
+      "gz": 2114,
+      "min": 6340
+    },
+    "majorant/float/buffer/majorant=nodeMax": {
+      "gz": 5697,
+      "min": 30116
+    },
+    "majorant/float/slot/majorant=brick": {
+      "gz": 4745,
+      "min": 22920
+    },
+    "majorant/float/slot/majorant=brick,minima=true": {
+      "gz": 4829,
+      "min": 23246
+    },
+    "majorant/float/slot/majorant=brick,minima=true,outside=zero": {
+      "gz": 4817,
+      "min": 22889
+    },
+    "majorant/float/slot/majorant=brick,minima=true,outside=zero,reader=lean": {
+      "gz": 2820,
+      "min": 8481
+    },
+    "majorant/float/slot/majorant=global": {
+      "gz": 4157,
+      "min": 21155
+    },
+    "majorant/float/slot/majorant=global,outside=zero,reader=lean": {
+      "gz": 2151,
+      "min": 6390
+    },
+    "majorant/float/slot/majorant=nodeMax": {
+      "gz": 5738,
+      "min": 30166
+    },
+    "majorant/fp16/buffer/majorant=brick": {
+      "gz": 4957,
+      "min": 24161
+    },
+    "majorant/fp16/buffer/majorant=brick,minima=true": {
+      "gz": 5035,
+      "min": 24487
+    },
+    "majorant/fp16/buffer/majorant=brick,minima=true,outside=zero": {
+      "gz": 5025,
+      "min": 24130
+    },
+    "majorant/fp16/buffer/majorant=brick,minima=true,outside=zero,reader=lean": {
+      "gz": 2850,
+      "min": 8572
+    },
+    "majorant/fp16/buffer/majorant=global": {
+      "gz": 4370,
+      "min": 22396
+    },
+    "majorant/fp16/buffer/majorant=global,outside=zero,reader=lean": {
+      "gz": 2184,
+      "min": 6481
+    },
+    "majorant/fp16/buffer/majorant=nodeMax": {
+      "gz": 6056,
+      "min": 32085
+    },
+    "majorant/fp16/slot/majorant=brick": {
+      "gz": 4998,
+      "min": 24211
+    },
+    "majorant/fp16/slot/majorant=brick,minima=true": {
+      "gz": 5076,
+      "min": 24537
+    },
+    "majorant/fp16/slot/majorant=brick,minima=true,outside=zero": {
+      "gz": 5067,
+      "min": 24180
+    },
+    "majorant/fp16/slot/majorant=brick,minima=true,outside=zero,reader=lean": {
+      "gz": 2888,
+      "min": 8622
+    },
+    "majorant/fp16/slot/majorant=global": {
+      "gz": 4411,
+      "min": 22446
+    },
+    "majorant/fp16/slot/majorant=global,outside=zero,reader=lean": {
+      "gz": 2222,
+      "min": 6531
+    },
+    "majorant/fp16/slot/majorant=nodeMax": {
+      "gz": 6097,
+      "min": 32135
+    },
+    "majorant/fp4/buffer/majorant=brick": {
+      "gz": 4954,
+      "min": 24155
+    },
+    "majorant/fp4/buffer/majorant=brick,minima=true": {
+      "gz": 5032,
+      "min": 24481
+    },
+    "majorant/fp4/buffer/majorant=brick,minima=true,outside=zero": {
+      "gz": 5021,
+      "min": 24124
+    },
+    "majorant/fp4/buffer/majorant=brick,minima=true,outside=zero,reader=lean": {
+      "gz": 2849,
+      "min": 8570
+    },
+    "majorant/fp4/buffer/majorant=global": {
+      "gz": 4367,
+      "min": 22390
+    },
+    "majorant/fp4/buffer/majorant=global,outside=zero,reader=lean": {
+      "gz": 2182,
+      "min": 6479
+    },
+    "majorant/fp4/buffer/majorant=nodeMax": {
+      "gz": 6054,
+      "min": 32079
+    },
+    "majorant/fp4/slot/majorant=brick": {
+      "gz": 4994,
+      "min": 24205
+    },
+    "majorant/fp4/slot/majorant=brick,minima=true": {
+      "gz": 5072,
+      "min": 24531
+    },
+    "majorant/fp4/slot/majorant=brick,minima=true,outside=zero": {
+      "gz": 5063,
+      "min": 24174
+    },
+    "majorant/fp4/slot/majorant=brick,minima=true,outside=zero,reader=lean": {
+      "gz": 2887,
+      "min": 8620
+    },
+    "majorant/fp4/slot/majorant=global": {
+      "gz": 4408,
+      "min": 22440
+    },
+    "majorant/fp4/slot/majorant=global,outside=zero,reader=lean": {
+      "gz": 2219,
+      "min": 6529
+    },
+    "majorant/fp4/slot/majorant=nodeMax": {
+      "gz": 6095,
+      "min": 32129
+    },
+    "majorant/fp8/buffer/majorant=brick": {
+      "gz": 4954,
+      "min": 24155
+    },
+    "majorant/fp8/buffer/majorant=brick,minima=true": {
+      "gz": 5033,
+      "min": 24481
+    },
+    "majorant/fp8/buffer/majorant=brick,minima=true,outside=zero": {
+      "gz": 5022,
+      "min": 24124
+    },
+    "majorant/fp8/buffer/majorant=brick,minima=true,outside=zero,reader=lean": {
+      "gz": 2849,
+      "min": 8570
+    },
+    "majorant/fp8/buffer/majorant=global": {
+      "gz": 4368,
+      "min": 22390
+    },
+    "majorant/fp8/buffer/majorant=global,outside=zero,reader=lean": {
+      "gz": 2182,
+      "min": 6479
+    },
+    "majorant/fp8/buffer/majorant=nodeMax": {
+      "gz": 6055,
+      "min": 32079
+    },
+    "majorant/fp8/slot/majorant=brick": {
+      "gz": 4995,
+      "min": 24205
+    },
+    "majorant/fp8/slot/majorant=brick,minima=true": {
+      "gz": 5074,
+      "min": 24531
+    },
+    "majorant/fp8/slot/majorant=brick,minima=true,outside=zero": {
+      "gz": 5065,
+      "min": 24174
+    },
+    "majorant/fp8/slot/majorant=brick,minima=true,outside=zero,reader=lean": {
+      "gz": 2887,
+      "min": 8620
+    },
+    "majorant/fp8/slot/majorant=global": {
+      "gz": 4409,
+      "min": 22440
+    },
+    "majorant/fp8/slot/majorant=global,outside=zero,reader=lean": {
+      "gz": 2220,
+      "min": 6529
+    },
+    "majorant/fp8/slot/majorant=nodeMax": {
+      "gz": 6096,
+      "min": 32129
+    },
+    "majorant/fpn/buffer/majorant=brick": {
+      "gz": 5013,
+      "min": 24404
+    },
+    "majorant/fpn/buffer/majorant=brick,minima=true": {
+      "gz": 5092,
+      "min": 24730
+    },
+    "majorant/fpn/buffer/majorant=brick,minima=true,outside=zero": {
+      "gz": 5080,
+      "min": 24373
+    },
+    "majorant/fpn/buffer/majorant=brick,minima=true,outside=zero,reader=lean": {
+      "gz": 2856,
+      "min": 8592
+    },
+    "majorant/fpn/buffer/majorant=global": {
+      "gz": 4428,
+      "min": 22639
+    },
+    "majorant/fpn/buffer/majorant=global,outside=zero,reader=lean": {
+      "gz": 2186,
+      "min": 6501
+    },
+    "majorant/fpn/buffer/majorant=nodeMax": {
+      "gz": 6114,
+      "min": 32328
+    },
+    "majorant/fpn/slot/majorant=brick": {
+      "gz": 5053,
+      "min": 24454
+    },
+    "majorant/fpn/slot/majorant=brick,minima=true": {
+      "gz": 5132,
+      "min": 24780
+    },
+    "majorant/fpn/slot/majorant=brick,minima=true,outside=zero": {
+      "gz": 5122,
+      "min": 24423
+    },
+    "majorant/fpn/slot/majorant=brick,minima=true,outside=zero,reader=lean": {
+      "gz": 2891,
+      "min": 8642
+    },
+    "majorant/fpn/slot/majorant=global": {
+      "gz": 4468,
+      "min": 22689
+    },
+    "majorant/fpn/slot/majorant=global,outside=zero,reader=lean": {
+      "gz": 2223,
+      "min": 6551
+    },
+    "majorant/fpn/slot/majorant=nodeMax": {
+      "gz": 6155,
+      "min": 32378
+    },
+    "majorant/half/buffer/majorant=brick": {
+      "gz": 4738,
+      "min": 22903
+    },
+    "majorant/half/buffer/majorant=brick,minima=true": {
+      "gz": 4822,
+      "min": 23229
+    },
+    "majorant/half/buffer/majorant=brick,minima=true,outside=zero": {
+      "gz": 4809,
+      "min": 22872
+    },
+    "majorant/half/buffer/majorant=brick,minima=true,outside=zero,reader=lean": {
+      "gz": 2811,
+      "min": 8467
+    },
+    "majorant/half/buffer/majorant=global": {
+      "gz": 4150,
+      "min": 21138
+    },
+    "majorant/half/buffer/majorant=global,outside=zero,reader=lean": {
+      "gz": 2142,
+      "min": 6376
+    },
+    "majorant/half/buffer/majorant=nodeMax": {
+      "gz": 5732,
+      "min": 30296
+    },
+    "majorant/half/slot/majorant=brick": {
+      "gz": 4779,
+      "min": 22953
+    },
+    "majorant/half/slot/majorant=brick,minima=true": {
+      "gz": 4863,
+      "min": 23279
+    },
+    "majorant/half/slot/majorant=brick,minima=true,outside=zero": {
+      "gz": 4850,
+      "min": 22922
+    },
+    "majorant/half/slot/majorant=brick,minima=true,outside=zero,reader=lean": {
+      "gz": 2846,
+      "min": 8517
+    },
+    "majorant/half/slot/majorant=global": {
+      "gz": 4191,
+      "min": 21188
+    },
+    "majorant/half/slot/majorant=global,outside=zero,reader=lean": {
+      "gz": 2178,
+      "min": 6426
+    },
+    "majorant/half/slot/majorant=nodeMax": {
+      "gz": 5774,
+      "min": 30346
+    },
     "march/float+fp8+fpn/buffer/helpers=cellBoundTrilinear+hddaCellEnd+nodeAverage": {
       "gz": 5880,
       "min": 33073
@@ -522,6 +970,14 @@
       "gz": 3541,
       "min": 19751
     },
+    "read/float+fp8+fpn/buffer/reader=lean": {
+      "gz": 1270,
+      "min": 3697
+    },
+    "read/float+fp8+fpn/buffer/reader=lean,isActive=false": {
+      "gz": 1228,
+      "min": 3518
+    },
     "read/float+fp8+fpn/slot/isActive=false": {
       "gz": 3253,
       "min": 16215
@@ -529,6 +985,14 @@
     "read/float+fp8+fpn/slot/isActive=true": {
       "gz": 3581,
       "min": 19801
+    },
+    "read/float+fp8+fpn/slot/reader=lean": {
+      "gz": 1305,
+      "min": 3747
+    },
+    "read/float+fp8+fpn/slot/reader=lean,isActive=false": {
+      "gz": 1266,
+      "min": 3568
     },
     "read/float+half/buffer/isActive=false": {
       "gz": 2911,
@@ -538,6 +1002,14 @@
       "gz": 3248,
       "min": 17904
     },
+    "read/float+half/buffer/reader=lean": {
+      "gz": 1206,
+      "min": 3369
+    },
+    "read/float+half/buffer/reader=lean,isActive=false": {
+      "gz": 1163,
+      "min": 3190
+    },
     "read/float+half/slot/isActive=false": {
       "gz": 2951,
       "min": 14368
@@ -545,6 +1017,14 @@
     "read/float+half/slot/isActive=true": {
       "gz": 3286,
       "min": 17954
+    },
+    "read/float+half/slot/reader=lean": {
+      "gz": 1243,
+      "min": 3419
+    },
+    "read/float+half/slot/reader=lean,isActive=false": {
+      "gz": 1201,
+      "min": 3240
     },
     "read/float/buffer/isActive=false": {
       "gz": 2817,
@@ -554,6 +1034,14 @@
       "gz": 3153,
       "min": 17469
     },
+    "read/float/buffer/reader=lean": {
+      "gz": 1146,
+      "min": 3143
+    },
+    "read/float/buffer/reader=lean,isActive=false": {
+      "gz": 1104,
+      "min": 2964
+    },
     "read/float/slot/isActive=false": {
       "gz": 2857,
       "min": 13933
@@ -561,6 +1049,14 @@
     "read/float/slot/isActive=true": {
       "gz": 3192,
       "min": 17519
+    },
+    "read/float/slot/reader=lean": {
+      "gz": 1185,
+      "min": 3193
+    },
+    "read/float/slot/reader=lean,isActive=false": {
+      "gz": 1143,
+      "min": 3014
     },
     "read/fp16/buffer/isActive=false": {
       "gz": 3076,
@@ -570,6 +1066,14 @@
       "gz": 3407,
       "min": 18760
     },
+    "read/fp16/buffer/reader=lean": {
+      "gz": 1215,
+      "min": 3284
+    },
+    "read/fp16/buffer/reader=lean,isActive=false": {
+      "gz": 1172,
+      "min": 3105
+    },
     "read/fp16/slot/isActive=false": {
       "gz": 3113,
       "min": 15224
@@ -577,6 +1081,14 @@
     "read/fp16/slot/isActive=true": {
       "gz": 3448,
       "min": 18810
+    },
+    "read/fp16/slot/reader=lean": {
+      "gz": 1254,
+      "min": 3334
+    },
+    "read/fp16/slot/reader=lean,isActive=false": {
+      "gz": 1211,
+      "min": 3155
     },
     "read/fp4/buffer/isActive=false": {
       "gz": 3073,
@@ -586,6 +1098,14 @@
       "gz": 3404,
       "min": 18754
     },
+    "read/fp4/buffer/reader=lean": {
+      "gz": 1213,
+      "min": 3282
+    },
+    "read/fp4/buffer/reader=lean,isActive=false": {
+      "gz": 1171,
+      "min": 3103
+    },
     "read/fp4/slot/isActive=false": {
       "gz": 3113,
       "min": 15218
@@ -593,6 +1113,14 @@
     "read/fp4/slot/isActive=true": {
       "gz": 3444,
       "min": 18804
+    },
+    "read/fp4/slot/reader=lean": {
+      "gz": 1250,
+      "min": 3332
+    },
+    "read/fp4/slot/reader=lean,isActive=false": {
+      "gz": 1209,
+      "min": 3153
     },
     "read/fp8/buffer/isActive=false": {
       "gz": 3074,
@@ -602,6 +1130,14 @@
       "gz": 3405,
       "min": 18754
     },
+    "read/fp8/buffer/reader=lean": {
+      "gz": 1214,
+      "min": 3282
+    },
+    "read/fp8/buffer/reader=lean,isActive=false": {
+      "gz": 1171,
+      "min": 3103
+    },
     "read/fp8/slot/isActive=false": {
       "gz": 3114,
       "min": 15218
@@ -609,6 +1145,14 @@
     "read/fp8/slot/isActive=true": {
       "gz": 3445,
       "min": 18804
+    },
+    "read/fp8/slot/reader=lean": {
+      "gz": 1251,
+      "min": 3332
+    },
+    "read/fp8/slot/reader=lean,isActive=false": {
+      "gz": 1210,
+      "min": 3153
     },
     "read/fpn/buffer/isActive=false": {
       "gz": 3132,
@@ -618,6 +1162,14 @@
       "gz": 3464,
       "min": 19003
     },
+    "read/fpn/buffer/reader=lean": {
+      "gz": 1220,
+      "min": 3304
+    },
+    "read/fpn/buffer/reader=lean,isActive=false": {
+      "gz": 1177,
+      "min": 3125
+    },
     "read/fpn/slot/isActive=false": {
       "gz": 3172,
       "min": 15467
@@ -625,6 +1177,14 @@
     "read/fpn/slot/isActive=true": {
       "gz": 3504,
       "min": 19053
+    },
+    "read/fpn/slot/reader=lean": {
+      "gz": 1258,
+      "min": 3354
+    },
+    "read/fpn/slot/reader=lean,isActive=false": {
+      "gz": 1215,
+      "min": 3175
     },
     "read/half/buffer/isActive=false": {
       "gz": 2849,
@@ -634,6 +1194,14 @@
       "gz": 3183,
       "min": 17502
     },
+    "read/half/buffer/reader=lean": {
+      "gz": 1170,
+      "min": 3179
+    },
+    "read/half/buffer/reader=lean,isActive=false": {
+      "gz": 1129,
+      "min": 3000
+    },
     "read/half/slot/isActive=false": {
       "gz": 2890,
       "min": 13966
@@ -641,6 +1209,14 @@
     "read/half/slot/isActive=true": {
       "gz": 3223,
       "min": 17552
+    },
+    "read/half/slot/reader=lean": {
+      "gz": 1207,
+      "min": 3229
+    },
+    "read/half/slot/reader=lean,isActive=false": {
+      "gz": 1165,
+      "min": 3050
     },
     "sample/float+fp8+fpn/buffer/helpers=fastTrilinear": {
       "gz": 4467,
@@ -665,6 +1241,18 @@
     "sample/float+fp8+fpn/buffer/outside=zero,sampler=nearest": {
       "gz": 4053,
       "min": 21572
+    },
+    "sample/float+fp8+fpn/buffer/reader=lean": {
+      "gz": 1855,
+      "min": 5740
+    },
+    "sample/float+fp8+fpn/buffer/reader=lean,outside=zero": {
+      "gz": 1909,
+      "min": 5897
+    },
+    "sample/float+fp8+fpn/buffer/reader=lean,outside=zero,sampler=nearest": {
+      "gz": 1797,
+      "min": 5418
     },
     "sample/float+fp8+fpn/buffer/sampler=nearest": {
       "gz": 4012,
@@ -694,6 +1282,18 @@
       "gz": 4095,
       "min": 21622
     },
+    "sample/float+fp8+fpn/slot/reader=lean": {
+      "gz": 1892,
+      "min": 5790
+    },
+    "sample/float+fp8+fpn/slot/reader=lean,outside=zero": {
+      "gz": 1946,
+      "min": 5947
+    },
+    "sample/float+fp8+fpn/slot/reader=lean,outside=zero,sampler=nearest": {
+      "gz": 1834,
+      "min": 5468
+    },
     "sample/float+fp8+fpn/slot/sampler=nearest": {
       "gz": 4053,
       "min": 21512
@@ -721,6 +1321,18 @@
     "sample/float+half/buffer/outside=zero,sampler=nearest": {
       "gz": 3758,
       "min": 19725
+    },
+    "sample/float+half/buffer/reader=lean": {
+      "gz": 1793,
+      "min": 5412
+    },
+    "sample/float+half/buffer/reader=lean,outside=zero": {
+      "gz": 1844,
+      "min": 5569
+    },
+    "sample/float+half/buffer/reader=lean,outside=zero,sampler=nearest": {
+      "gz": 1733,
+      "min": 5090
     },
     "sample/float+half/buffer/sampler=nearest": {
       "gz": 3717,
@@ -750,6 +1362,18 @@
       "gz": 3798,
       "min": 19775
     },
+    "sample/float+half/slot/reader=lean": {
+      "gz": 1828,
+      "min": 5462
+    },
+    "sample/float+half/slot/reader=lean,outside=zero": {
+      "gz": 1882,
+      "min": 5619
+    },
+    "sample/float+half/slot/reader=lean,outside=zero,sampler=nearest": {
+      "gz": 1771,
+      "min": 5140
+    },
     "sample/float+half/slot/sampler=nearest": {
       "gz": 3757,
       "min": 19665
@@ -777,6 +1401,18 @@
     "sample/float/buffer/outside=zero,sampler=nearest": {
       "gz": 3667,
       "min": 19290
+    },
+    "sample/float/buffer/reader=lean": {
+      "gz": 1730,
+      "min": 5186
+    },
+    "sample/float/buffer/reader=lean,outside=zero": {
+      "gz": 1786,
+      "min": 5343
+    },
+    "sample/float/buffer/reader=lean,outside=zero,sampler=nearest": {
+      "gz": 1673,
+      "min": 4864
     },
     "sample/float/buffer/sampler=nearest": {
       "gz": 3625,
@@ -806,6 +1442,18 @@
       "gz": 3706,
       "min": 19340
     },
+    "sample/float/slot/reader=lean": {
+      "gz": 1767,
+      "min": 5236
+    },
+    "sample/float/slot/reader=lean,outside=zero": {
+      "gz": 1822,
+      "min": 5393
+    },
+    "sample/float/slot/reader=lean,outside=zero,sampler=nearest": {
+      "gz": 1710,
+      "min": 4914
+    },
     "sample/float/slot/sampler=nearest": {
       "gz": 3664,
       "min": 19230
@@ -833,6 +1481,18 @@
     "sample/fp16/buffer/outside=zero,sampler=nearest": {
       "gz": 3919,
       "min": 20581
+    },
+    "sample/fp16/buffer/reader=lean": {
+      "gz": 1801,
+      "min": 5327
+    },
+    "sample/fp16/buffer/reader=lean,outside=zero": {
+      "gz": 1857,
+      "min": 5484
+    },
+    "sample/fp16/buffer/reader=lean,outside=zero,sampler=nearest": {
+      "gz": 1741,
+      "min": 5005
     },
     "sample/fp16/buffer/sampler=nearest": {
       "gz": 3878,
@@ -862,6 +1522,18 @@
       "gz": 3960,
       "min": 20631
     },
+    "sample/fp16/slot/reader=lean": {
+      "gz": 1838,
+      "min": 5377
+    },
+    "sample/fp16/slot/reader=lean,outside=zero": {
+      "gz": 1891,
+      "min": 5534
+    },
+    "sample/fp16/slot/reader=lean,outside=zero,sampler=nearest": {
+      "gz": 1777,
+      "min": 5055
+    },
     "sample/fp16/slot/sampler=nearest": {
       "gz": 3918,
       "min": 20521
@@ -889,6 +1561,18 @@
     "sample/fp4/buffer/outside=zero,sampler=nearest": {
       "gz": 3917,
       "min": 20575
+    },
+    "sample/fp4/buffer/reader=lean": {
+      "gz": 1800,
+      "min": 5325
+    },
+    "sample/fp4/buffer/reader=lean,outside=zero": {
+      "gz": 1856,
+      "min": 5482
+    },
+    "sample/fp4/buffer/reader=lean,outside=zero,sampler=nearest": {
+      "gz": 1739,
+      "min": 5003
     },
     "sample/fp4/buffer/sampler=nearest": {
       "gz": 3875,
@@ -918,6 +1602,18 @@
       "gz": 3957,
       "min": 20625
     },
+    "sample/fp4/slot/reader=lean": {
+      "gz": 1837,
+      "min": 5375
+    },
+    "sample/fp4/slot/reader=lean,outside=zero": {
+      "gz": 1890,
+      "min": 5532
+    },
+    "sample/fp4/slot/reader=lean,outside=zero,sampler=nearest": {
+      "gz": 1776,
+      "min": 5053
+    },
     "sample/fp4/slot/sampler=nearest": {
       "gz": 3915,
       "min": 20515
@@ -945,6 +1641,18 @@
     "sample/fp8/buffer/outside=zero,sampler=nearest": {
       "gz": 3917,
       "min": 20575
+    },
+    "sample/fp8/buffer/reader=lean": {
+      "gz": 1800,
+      "min": 5325
+    },
+    "sample/fp8/buffer/reader=lean,outside=zero": {
+      "gz": 1856,
+      "min": 5482
+    },
+    "sample/fp8/buffer/reader=lean,outside=zero,sampler=nearest": {
+      "gz": 1740,
+      "min": 5003
     },
     "sample/fp8/buffer/sampler=nearest": {
       "gz": 3876,
@@ -974,6 +1682,18 @@
       "gz": 3958,
       "min": 20625
     },
+    "sample/fp8/slot/reader=lean": {
+      "gz": 1837,
+      "min": 5375
+    },
+    "sample/fp8/slot/reader=lean,outside=zero": {
+      "gz": 1890,
+      "min": 5532
+    },
+    "sample/fp8/slot/reader=lean,outside=zero,sampler=nearest": {
+      "gz": 1775,
+      "min": 5053
+    },
     "sample/fp8/slot/sampler=nearest": {
       "gz": 3916,
       "min": 20515
@@ -1001,6 +1721,18 @@
     "sample/fpn/buffer/outside=zero,sampler=nearest": {
       "gz": 3975,
       "min": 20824
+    },
+    "sample/fpn/buffer/reader=lean": {
+      "gz": 1804,
+      "min": 5347
+    },
+    "sample/fpn/buffer/reader=lean,outside=zero": {
+      "gz": 1860,
+      "min": 5504
+    },
+    "sample/fpn/buffer/reader=lean,outside=zero,sampler=nearest": {
+      "gz": 1743,
+      "min": 5025
     },
     "sample/fpn/buffer/sampler=nearest": {
       "gz": 3934,
@@ -1030,6 +1762,18 @@
       "gz": 4016,
       "min": 20874
     },
+    "sample/fpn/slot/reader=lean": {
+      "gz": 1841,
+      "min": 5397
+    },
+    "sample/fpn/slot/reader=lean,outside=zero": {
+      "gz": 1895,
+      "min": 5554
+    },
+    "sample/fpn/slot/reader=lean,outside=zero,sampler=nearest": {
+      "gz": 1780,
+      "min": 5075
+    },
     "sample/fpn/slot/sampler=nearest": {
       "gz": 3974,
       "min": 20764
@@ -1058,6 +1802,18 @@
       "gz": 3697,
       "min": 19323
     },
+    "sample/half/buffer/reader=lean": {
+      "gz": 1756,
+      "min": 5222
+    },
+    "sample/half/buffer/reader=lean,outside=zero": {
+      "gz": 1813,
+      "min": 5379
+    },
+    "sample/half/buffer/reader=lean,outside=zero,sampler=nearest": {
+      "gz": 1696,
+      "min": 4900
+    },
     "sample/half/buffer/sampler=nearest": {
       "gz": 3656,
       "min": 19213
@@ -1085,6 +1841,18 @@
     "sample/half/slot/outside=zero,sampler=nearest": {
       "gz": 3737,
       "min": 19373
+    },
+    "sample/half/slot/reader=lean": {
+      "gz": 1792,
+      "min": 5272
+    },
+    "sample/half/slot/reader=lean,outside=zero": {
+      "gz": 1847,
+      "min": 5429
+    },
+    "sample/half/slot/reader=lean,outside=zero,sampler=nearest": {
+      "gz": 1732,
+      "min": 4950
     },
     "sample/half/slot/sampler=nearest": {
       "gz": 3695,

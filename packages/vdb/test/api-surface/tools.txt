@@ -16,6 +16,8 @@ type ReadWvdbOptions
 type VDBAtlasFilter
 type VDBAtlasFormat
 type VDBBakeCoarseFirstOptions
+type VDBBrickMajorant
+type VDBBrickMajorantOptions
 type VDBBuildFromDenseOptions
 type VDBBuildFromLeavesOptions
 type VDBBuiltGrid
@@ -139,6 +141,7 @@ value readNvdbStream
 value readWvdb
 value readWvdbHeader
 value vdbBakeCoarseFirst
+value vdbBrickMajorant
 value vdbBuildFromDense
 value vdbBuildFromDenseDetailed
 value vdbBuildFromLeavesDetailed
