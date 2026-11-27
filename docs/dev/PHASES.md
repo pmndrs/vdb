@@ -217,7 +217,7 @@ when OpenVDB, NanoVDB or mjurczyk/openvdb release.
 **Status 2026-11-28:** our side P1.1–P1.6 done ([handoff](../archive/handoffs/P1-ours.md)): the point-sample contract
 holds on `vdb-smoke` (CPU and GPU), `vdbBrickMajorant` (with the pathtracer's own layout), the `majorant` profile
 (`brick`, `global`, `nodeMax`, optional minima) with GPU parity, the lean reader (`read`/Float 3.1 KiB) and several
-grids at one binding. Open on our side: the lean reader's timing A/B (P1.5a, owner) and the layout question V170
+grids at one binding. Open on our side: the lean reader's timing A/B (P1.5a, owner) and the layout question V176
 (P1.14). Next: the pathtracer rows P1.7–P1.9, P1.11, P1.13, then the P1.10 A/B.
 
 Owner-led on the pathtracer side (D19); our side builds what it needs in the core. Inputs read from pmndrs/pathtracer

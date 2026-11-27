@@ -21,21 +21,21 @@ in tools and re-exported by core, one declaration). A cell's bound is the max (a
 sample in it can read: its `B + 1` taps per axis, from the tree's regions (`forEachTreeRegion`, new internal in
 `tools/cpu/march.ts`: every leaf, every tile active or not, root-tile coverage for the background), or 0 for a tap
 outside the bbox with `outside: 'zero'`. `align: 'support'` (origin `min − 1`, `ceil((max − min + 2) / B)` cells) or
-`'pathtracer'` (origin −1, `floor((n + 8) / 8)` cells, its two conservative rules kept; DIVERGES V169).
+`'pathtracer'` (origin −1, `floor((n + 8) / 8)` cells, its two conservative rules kept; DIVERGES V175).
 
 **P1.3 `majorant` profile** (`core/wgsl/majorant.ts`, generator `profile: 'majorant'`, options `majorant`, `minima`):
 `vdbMajorantInit(g, o, d, tMin, tMax)`, `vdbMajorantNext(&it) -> vec3f(t0, t1, bound)`, `vdbMajorantGlobal(g)`,
 `vdbMajorantMinimum(&it)` with minima. `brick` is the pathtracer's DDA in cell space (zero-length corner segments
-skipped, V171); a grid without bricks (or with a headerless 0.1 range) walks as `global`. `brick` / `global` are `sample`
+skipped, V177); a grid without bricks (or with a headerless 0.1 range) walks as `global`. `brick` / `global` are `sample`
 + the walk (no march layer, K1-core §3.2). Pool: `setMajorant` / `add({ majorant })` pack a 32-byte range header
 (origin, minima flag, `"VDBM"`; `encodeMajorantRange`, constants in `core/pool/layout.ts`), layout version unchanged
-(V170, owner question P1.14). `pool.info()` gains `majorantOrigin`, `majorantMinima`.
+(V176, owner question P1.14). `pool.info()` gains `majorantOrigin`, `majorantMinima`.
 
 **P1.4 `nodeMax`** (`majorant: 'nodeMax'`): the march layer + an HDDA walk over the trilinear support box, leaf-sized
 cells widening over tiles; bound = the 2x2x2 `vdbNodeMax` support of the cell (as `vdbCellBoundTrilinear`), ≥ 0 with
-`outside: 'zero'` (V172). CPU twin `majorantWalk` (tools internal) also counts accessor lookups per segment.
+`outside: 'zero'` (V178). CPU twin `majorantWalk` (tools internal) also counts accessor lookups per segment.
 
-**P1.5 lean reader** (`core/wgsl/lean.ts`, `reader: 'lean'`, V173, THIRD_PARTY row): one descent with literal offsets
+**P1.5 lean reader** (`core/wgsl/lean.ts`, `reader: 'lean'`, V179, THIRD_PARTY row): one descent with literal offsets
 (a test pins them to `vendor/stride-tables.json`), a one-leaf cache, active state from the same descent, Float / Half /
 Fp4 / Fp8 / Fp16 / FpN decoders; no vendored function. Same public API. Profiles `read`, `sample`, `majorant`
 brick/global; refuses `march`, `nodeMax` and every helper but `rayClipSupport`.
@@ -139,7 +139,7 @@ with minima).
 
 - P1.5a (owner): K1.8's timing A/B of the lean reader vs the vendored accessor on the reference device; `reader` stays
   opt-in until then.
-- P1.14 (owner question, V170): keep the majorant range header under layout 1 (suggested) or bump the layout. No GPU
+- P1.14 (owner question, V176): keep the majorant range header under layout 1 (suggested) or bump the layout. No GPU
   test pins the "headerless range walks as global" path yet.
 - P1.15: a GPU brick builder (only if a host rebuilds bricks per frame). P1.12 (optional B path, ours) untouched.
 - `nodeMax` has no minima (returns 0); the property test covers fog only (stats bound active values).
