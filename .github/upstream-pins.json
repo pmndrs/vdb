@@ -1,0 +1,64 @@
+{
+  "$comment": "K7.6 upstream watch: the last upstream state we reviewed. scripts/upstream-watch.mjs compares each watch's pin with upstream and opens (or updates) one issue on pmndrs/vdb when something moved. Bump a pin only after the review its 'review' line asks for, in the same commit as any VENDOR.md / THIRD_PARTY.md / TASKS change it brings.",
+  "issue": {
+    "repo": "pmndrs/vdb",
+    "title": "Upstream watch: changes to review"
+  },
+  "watches": [
+    {
+      "id": "openvdb-release",
+      "name": "OpenVDB / NanoVDB releases",
+      "kind": "github-release",
+      "repo": "AcademySoftwareFoundation/openvdb",
+      "pin": "v14.0.0",
+      "reviewed": "2026-11-28",
+      "review": "Release notes and nanovdb/nanovdb/PNanoVDB.h, NanoVDB.h, io/IO.h at the new tag: ABI or file-format changes, new grid types, codecs. Re-pin packages/vdb/vendor/upstream/PNanoVDB.h (K7.5 recipe in VENDOR.md)."
+    },
+    {
+      "id": "mjurczyk-tag",
+      "name": "mjurczyk/openvdb tags",
+      "kind": "github-tag",
+      "repo": "mjurczyk/openvdb",
+      "pin": "v0.29.0",
+      "reviewed": "2026-11-24",
+      "review": "His changelog and diff since the pin: .wvdb format, renderer fixes and features we port (THIRD_PARTY.md rows, DIVERGES). Read his code; don't run it (CLAUDE.md)."
+    },
+    {
+      "id": "mjurczyk-npm-openvdb",
+      "name": "npm openvdb",
+      "kind": "npm",
+      "package": "openvdb",
+      "pin": "0.29.0",
+      "reviewed": "2026-11-24",
+      "review": "Published with the mjurczyk/openvdb tag of the same version; check the licence field still says MIT."
+    },
+    {
+      "id": "mjurczyk-npm-three-openvdb",
+      "name": "npm three-openvdb",
+      "kind": "npm",
+      "package": "three-openvdb",
+      "pin": "0.29.0",
+      "reviewed": "2026-11-24",
+      "review": "His three.js renderer package (the K3/K6 port's source); check the licence field still says MIT."
+    },
+    {
+      "id": "mjurczyk-npm-webvdb",
+      "name": "npm webvdb",
+      "kind": "npm",
+      "package": "webvdb",
+      "pin": "0.29.0",
+      "reviewed": "2026-11-24",
+      "review": "His .wvdb CLI (baker); a format change shows here first."
+    },
+    {
+      "id": "emcfarlane-commit",
+      "name": "emcfarlane/webgpu-nanovdb commits",
+      "kind": "github-commit",
+      "repo": "emcfarlane/webgpu-nanovdb",
+      "branch": "main",
+      "pin": "265e8d825e4e4ab8752196a28cccad592d9b4262",
+      "reviewed": "2026-11-28",
+      "review": "Changes to pnanovdb.wgsl: diff against our fork (packages/vdb/vendor/VENDOR.md diff log); a fix to an upstream line we also fixed (DIVERGES V14) lets us drop ours."
+    }
+  ]
+}

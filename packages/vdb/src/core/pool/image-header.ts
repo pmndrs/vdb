@@ -3,7 +3,7 @@
  * needs, by byte offset (docs/dev/design/K1-core.md §1.4). The core never imports
  * `tools` (D20), so the offsets are restated here; `test/core/image-header.test.ts`
  * cross-checks every one against `tools`' constants and `vendor/stride-tables.json`
- * (ABI 32.9.1, PNanoVDB.h).
+ * (ABI 32.11.0, PNanoVDB.h; the offsets are those of 32.9.1).
  */
 
 import { VDBError } from "../errors.js";

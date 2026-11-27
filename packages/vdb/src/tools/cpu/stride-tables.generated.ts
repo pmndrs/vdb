@@ -1,5 +1,5 @@
 // GENERATED FILE — do not edit by hand.
-// Source: packages/vdb/vendor/stride-tables.json (NanoVDB ABI 32.9.1)
+// Source: packages/vdb/vendor/stride-tables.json (NanoVDB ABI 32.11.0)
 // Regenerate: node scripts/extract-stride-tables.mjs
 // Guarded by: packages/vdb/test/tools/stride-tables-generated.test.ts
 
@@ -14,9 +14,10 @@ export const strideTables = {
   "$meta": {
     "repo": "https://github.com/AcademySoftwareFoundation/openvdb",
     "path": "nanovdb/nanovdb/PNanoVDB.h",
-    "commit": "a532de5526ef791280b6483a872336a811a68542",
-    "sha256": "083a61491472bd2b008d5c3406aea0b1ac047c031b251047a5e38dac29f17410",
-    "abi": "32.9.1",
+    "commit": "ecae2bda85744412b0cd47e1b8e1e4e76beb7b88",
+    "tag": "v14.0.0",
+    "sha256": "babd0a1df29d8cfd371c9d05387f219f28e5aa29f1e98f25fdcc4bc8cf862037",
+    "abi": "32.11.0",
     "generatedBy": "scripts/extract-stride-tables.mjs"
   },
   "defines": {
@@ -26,8 +27,8 @@ export const strideTables = {
     "PNANOVDB_MAGIC_GRID": "0x314244566f6e614e",
     "PNANOVDB_MAGIC_FILE": "0x324244566f6e614e",
     "PNANOVDB_MAJOR_VERSION_NUMBER": 32,
-    "PNANOVDB_MINOR_VERSION_NUMBER": 9,
-    "PNANOVDB_PATCH_VERSION_NUMBER": 1,
+    "PNANOVDB_MINOR_VERSION_NUMBER": 11,
+    "PNANOVDB_PATCH_VERSION_NUMBER": 0,
     "PNANOVDB_GRID_TYPE_UNKNOWN": 0,
     "PNANOVDB_GRID_TYPE_FLOAT": 1,
     "PNANOVDB_GRID_TYPE_DOUBLE": 2,

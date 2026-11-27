@@ -1,0 +1,43 @@
+name: Upstream watch
+
+# K7.6: compares OpenVDB releases, mjurczyk/openvdb tags and npm packages, and emcfarlane/webgpu-nanovdb commits
+# with the pins in .github/upstream-pins.json, and keeps one issue ("Upstream watch: changes to review") in step:
+# opened when something moved, updated when the moved set changes, closed when every pin matches again.
+# Logic and tests: scripts/upstream-watch.mjs, packages/vdb/test/scripts/upstream-watch.test.mjs.
+# Locally: node scripts/upstream-watch.mjs --dry-run
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  workflow_dispatch:
+
+# One run at a time, so two runs cannot both open the issue.
+concurrency:
+  group: upstream-watch
+  cancel-in-progress: false
+
+# The token writes issues and nothing else; contents: read is only for the checkout.
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            scripts/upstream-watch.mjs
+            .github/upstream-pins.json
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Compare with the pins and update the issue
+        run: node scripts/upstream-watch.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

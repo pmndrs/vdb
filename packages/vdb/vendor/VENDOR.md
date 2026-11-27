@@ -36,11 +36,22 @@ diffs against a fixed target:
 |---|---|
 | Upstream | <https://github.com/AcademySoftwareFoundation/openvdb> |
 | File | `nanovdb/nanovdb/PNanoVDB.h` |
-| Pinned commit | `a532de5526ef791280b6483a872336a811a68542` |
-| ABI | 32.9.1 (`PNANOVDB_MAJOR/MINOR/PATCH_VERSION_NUMBER`) |
-| Vendored | 2026-07-11 |
+| Pinned tag | `v14.0.0` (commit `ecae2bda85744412b0cd47e1b8e1e4e76beb7b88`) |
+| ABI | 32.11.0 (`PNANOVDB_MAJOR/MINOR/PATCH_VERSION_NUMBER`) |
+| Vendored | 2026-11-28 (K7.5; first vendored 2026-07-11 at `a532de5526ef791280b6483a872336a811a68542`, ABI 32.9.1) |
 | License | Apache-2.0 (SPDX header in file) |
-| SHA-256 | `083a61491472bd2b008d5c3406aea0b1ac047c031b251047a5e38dac29f17410` |
+| SHA-256 | `babd0a1df29d8cfd371c9d05387f219f28e5aa29f1e98f25fdcc4bc8cf862037` |
+
+Provenance (repo, path, commit, tag, SHA-256, ABI) is also recorded in
+`stride-tables.json` `$meta` by `scripts/extract-stride-tables.mjs` and asserted by
+`test/tools/stride-tables.test.ts`. The upstream watch (K7.6,
+`.github/upstream-pins.json`) reports new OpenVDB releases.
+
+### Re-pin log
+
+| Date | From → to | What moved in the header | Effect here |
+|---|---|---|---|
+| 2026-11-28 (K7.5) | `a532de55` (32.9.1) → `v14.0.0` (32.11.0) | `PNANOVDB_MINOR/PATCH_VERSION_NUMBER` 9/1 → 11/0; a new C-only `PNANOVDB_UNUSED(X)` macro (empty for GLSL/HLSL) called on unused parameters in 37 places; `(void)size_in_words` in the C `pnanovdb_buf_t` branch. No struct, offset, constant-table, grid-type or function-body change. | `stride-tables.json`, `src/tools/cpu/stride-tables.generated.ts` and `src/core/wgsl/pnanovdb-constants.generated.wgsl` regenerated (only `$meta` and the two version defines moved). The fork, the generated modules (size snapshot unchanged) and the `tools` mirrors need nothing. Our writers keep stamping 32.9.1 (DIVERGES V163, TASKS K7.5a). |
 
 ## Extracted stride tables: `stride-tables.json`
 
