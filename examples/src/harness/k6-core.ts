@@ -297,11 +297,7 @@ const SPECTRAL_B: Partial<VDBFrameVolumeParams> = SPECTRAL ? { extinctionScale: 
 /** K6.Q1 `?ao=<pairs>` (`&aoSteps=`): the shadowed ambient in the frame and gather probes (0: off). */
 const AO_PAIRS = Number(params.get("ao") ?? 0);
 const AO_STEPS = Number(params.get("aoSteps") ?? 0);
-/** K6.Q1a `&probeTerm=radiance`: the probe's sky up / down terms as the hemisphere's mean radiance (internal `ambientProbe`). */
-const PROBE_TERM: "irradiance" | "radiance" = params.get("probeTerm") === "radiance" ? "radiance" : "irradiance";
-const AO_SETTINGS = { ambientOcclusion: AO_PAIRS > 0, ambientOcclusionPairs: Math.max(1, AO_PAIRS), ambientOcclusionSteps: AO_STEPS, ambientProbe: PROBE_TERM };
-/** The twins' probe term (?mutate=probe-term: three's irradiance). */
-const TWIN_PROBE_TERM = MUTATE === "probe-term" ? "irradiance" : PROBE_TERM;
+const AO_SETTINGS = { ambientOcclusion: AO_PAIRS > 0, ambientOcclusionPairs: Math.max(1, AO_PAIRS), ambientOcclusionSteps: AO_STEPS };
 /**
  * K6.Q1a `&aoJitter=<frameId>` (gather probe): jitter and temporal on, the first update at that frame id, so the ambient
  * ring turns by the frame's jitter (the twins read the same jitter; ?mutate=ao-ring: the unturned ring).
@@ -820,6 +816,8 @@ const PROBE_LIGHTS: VDBFrameLight[] = [
   { id: 6, kind: "probe", sh: Array.from({ length: 27 }, (_, i) => (i < 3 ? 0.08 : 0.02 * Math.sin(i))) },
 ];
 const PROBE_SH = Array.from({ length: 9 }, (_, i) => [0, 1, 2].map((c) => (i * 3 + c < 3 ? 0.08 : 0.02 * Math.sin(i * 3 + c))) as VDBFrameVec3);
+/** K6.Q1b: the twins' light probe (?mutate=probe-term: the probe's sky up / down terms dropped). */
+const TWIN_PROBE = MUTATE === "probe-term" ? null : PROBE_SH;
 
 /** K6.5b: the synthetic occluder maps of the probe lights (`?occluders=1`), or null. */
 async function probeOccluders(device: GPUDevice): Promise<SynthOccluders | null> {
@@ -985,7 +983,6 @@ async function probeGather(device: GPUDevice): Promise<void> {
     octaves: MS_OCTAVES,
     twoSided: MS_MODE === "two-sided",
     ambientOcclusion: AO_PAIRS > 0 ? { directions: AO_DIRECTIONS, steps: AO_STEPS } : null,
-    probeMode: PROBE_TERM,
   };
   const gatherCount = { n: 0 };
   if (occ && MUTATE !== "occluder") twinFrame.occluder = occluderTwin(occ, gatherCount);
@@ -1419,8 +1416,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
           environmentShadowSlot: sceneSlots,
           occluderAt: lightingOccluder,
           ambientOcclusion: AO_PAIRS > 0 && MUTATE !== "ao",
-          probeMode: TWIN_PROBE_TERM,
-          ...(MUTATE === "sky" ? {} : { probe: PROBE_SH, sky: [0, 1, 0] as VDBFrameVec3 }),
+          ...(MUTATE === "sky" ? {} : { ...(TWIN_PROBE ? { probe: TWIN_PROBE } : {}), sky: [0, 1, 0] as VDBFrameVec3 }),
         });
         const i = ((z * GH + y) * GW + x) * 4;
         compare(stats, [x, y, z], [scatter[i]!, scatter[i + 1]!, scatter[i + 2]!, scatter[i + 3]!], cpu, 2, 2 ** -20);
@@ -1476,7 +1472,7 @@ async function probeFrameSpectral(device: GPUDevice): Promise<void> {
     environmentSamples: 8,
     environmentShOrder: 2,
     spectral: true,
-    // K6.Q1a: the shadowed ambient (?ao=) and the probe term (?probeTerm=)
+    // K6.Q1a: the shadowed ambient (?ao=)
     ...AO_SETTINGS,
   };
   const renderer = vdbCreateFrameRenderer(device, { settings });
@@ -1734,9 +1730,8 @@ async function probeFrameSpectral(device: GPUDevice): Promise<void> {
           hemiSky: [0.3, 0.4, 0.6],
           hemiGround: [0.2, 0.15, 0.1],
           skyDirection: [0, 1, 0],
-          ...(MUTATE === "sky" ? {} : { lightProbe: PROBE_SH }),
+          ...(MUTATE === "sky" || !TWIN_PROBE ? {} : { lightProbe: TWIN_PROBE }),
           ambientOcclusion: AO_PAIRS > 0 && MUTATE !== "ao",
-          probeMode: TWIN_PROBE_TERM,
           lights: sorted.map((l) => ({ position: l.position, color: [l.color[0], l.color[1], l.color[2]] as VDBFrameVec3, spot: l.spot, penumbra: l.color[3], falloff: l.falloff })),
           shadowLightCount: MUTATE === "slots" ? 0 : sceneSlots,
           phase,

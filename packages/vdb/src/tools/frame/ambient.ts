@@ -14,7 +14,7 @@
 
 import { vdbFrameIsotropicDiffusion } from "./grid.js";
 import { vdbFrameOctavesOff, vdbFrameShadowTotal, type Vec3, type Vec4 } from "./index.js";
-import { vdbFrameSpectralShadowTotal, vdbShHemisphereRadianceAt, type VDBFrameSpectralMarch } from "./spectral.js";
+import { vdbFrameSpectralShadowTotal, type VDBFrameSpectralMarch } from "./spectral.js";
 
 /** Most direction pairs (the uniform table's length). */
 export const VDB_FRAME_AMBIENT_MAX_PAIRS = 8;
@@ -112,12 +112,7 @@ export interface VDBFrameDistantLight {
   probe?: readonly Vec3[] | null;
   /** Unit sky direction (the first hemisphere light's up, else +y). */
   sky: Vec3;
-  /** K6.Q1a `ambientProbe`: the probe along ± the sky as three's irradiance (default, his) or the hemisphere's mean radiance. */
-  probeMode?: VDBFrameAmbientProbe;
 }
-
-/** K6.Q1a `ambientProbe`: how the light probe's sky up / down terms read it. */
-export type VDBFrameAmbientProbe = "irradiance" | "radiance";
 
 /** three's getShIrradianceAt. */
 function shIrradiance(n: Vec3, sh: readonly Vec3[]): Vec3 {
@@ -128,23 +123,18 @@ function shIrradiance(n: Vec3, sh: readonly Vec3[]): Vec3 {
   return out;
 }
 
-/** K6.Q1a: the probe's light from the hemisphere around unit `n` (the WGSL `vdbFrameSkyProbe`). */
-export function vdbFrameSkyProbe(n: Vec3, sh: readonly Vec3[], mode: VDBFrameAmbientProbe = "irradiance"): Vec3 {
-  return mode === "radiance" ? vdbShHemisphereRadianceAt(n, sh) : shIrradiance(n, sh);
-}
-
 /**
  * The shadowed distant-light irradiance at visibilities (V_up, V_down) (both lightings): ambient × (V_up + V_down) / 2
  * + hemisphere sky × V_up / 2 + ground × V_down / 2 + the probe's irradiance along ± the sky direction × V / 2.
  * Unoccluded (1, 1) gives the ambient and hemisphere light of the unshadowed renderer. K6.Q1a: a visibility may be per
- * channel (spectral); `probeMode` picks the probe's term.
+ * channel (spectral).
  */
 export function vdbFrameAmbientIrradiance(light: VDBFrameDistantLight, visibility: readonly [number | Vec3, number | Vec3]): Vec3 {
   const ch = (v: number | Vec3, c: number) => (typeof v === "number" ? v : v[c]!) * 0.5;
   const out: Vec3 = [0, 1, 2].map((c) => light.ambient[c]! * (ch(visibility[0], c) + ch(visibility[1], c)) + light.hemiSky[c]! * ch(visibility[0], c) + light.hemiGround[c]! * ch(visibility[1], c)) as Vec3;
   if (light.probe) {
-    const a = vdbFrameSkyProbe(light.sky, light.probe, light.probeMode);
-    const b = vdbFrameSkyProbe([-light.sky[0], -light.sky[1], -light.sky[2]], light.probe, light.probeMode);
+    const a = shIrradiance(light.sky, light.probe);
+    const b = shIrradiance([-light.sky[0], -light.sky[1], -light.sky[2]], light.probe);
     for (let c = 0; c < 3; c++) out[c] = out[c]! + a[c]! * ch(visibility[0], c) + b[c]! * ch(visibility[1], c);
   }
   return out;

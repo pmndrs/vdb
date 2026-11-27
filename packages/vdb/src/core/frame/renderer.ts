@@ -43,7 +43,7 @@ import {
   type VDBFroxelArea,
   type VDBFroxelRect,
 } from "../../tools/frame/view.js";
-import { vdbFrameGridCascades, vdbFrameGridSignatureState, vdbFrameUpdateGridSignatures, vdbSameValues } from "../../tools/frame/grid.js";
+import { vdbFrameAdaptiveCellSize, vdbFrameAdaptiveGridResolution, vdbFrameGridCascades, vdbFrameGridSignatureState, vdbFrameUpdateGridSignatures, vdbSameValues, type VDBBox3Like } from "../../tools/frame/grid.js";
 import { vdbFrameStackLayout, type VDBFrameStackLayout } from "../../tools/frame/stack.js";
 import { GATHER_BINDINGS, VDB_FRAME_GATHER_WORDS } from "./wgsl/gather.js";
 import { FRAME_GATHER_BINDINGS, GRID_DENSITY_BINDINGS, TRANSMITTANCE_BINDINGS, VDB_FRAME_SPECTRAL_GRID_WORDS, VDB_FRAME_SUM_WORDS } from "./wgsl/lighting.js";
@@ -136,6 +136,11 @@ export interface VDBFrameRenderer {
   readonly settings: VDBFrameSettings;
   readonly outputs: VDBFrameOutputs;
   readonly redrawStats: VDBFrameRedrawStats;
+  /**
+   * K6.Q1b: the side of the 'frame' shadow grid the last update used (`shadowResolution`, or the size-adaptive side
+   * with `shadowResolutionMax`, after the device clamp); 0 before the first 'frame' update.
+   */
+  readonly shadowGridResolution: number;
   /**
    * K6.3 EXPERIMENTAL: the network of `multipleScattering: 'mlp'` / `'neural'` ('frame' lighting, grey): data for a
    * generic small-MLP evaluator (shapes as uniforms, weights in a storage buffer; a new network needs no rebuild).
@@ -255,6 +260,7 @@ class FrameRenderer implements VDBFrameRenderer {
     environmentGrid: { drawn: 0, skipped: 0 },
     volumeShadows: { drawn: 0, waiting: 0 },
   };
+  shadowGridResolution = 0;
   readonly outputs: {
     version: number;
     froxels: { integrated: GPUTexture; integratedAlpha: GPUTexture | null; layout: VDBFroxelLayout } | null;
@@ -623,7 +629,8 @@ class FrameRenderer implements VDBFrameRenderer {
     this.#env.prepare(frame.environment, s);
     // K6.Q1a: with jitter and temporal accumulation the ambient ring turns by the frame's jitter (its azimuth step x
     // the jitter value; a static frame keeps the fixed ring)
-    const ringPhase = s.jitter && s.temporal ? jitter : 0;
+    // K6.Q1a: the ambient ring turns with the frame's jitter (jitter + temporal); K6.11b internal A/B: 'fixed' keeps it
+    const ringPhase = s.jitter && s.temporal && (s as VDBFrameInternalSettings).ambientOcclusionRing !== "fixed" ? jitter : 0;
     const lightInfo = this.#packLights(frame.lights, s.occlusion ? (frame.occluders ?? []) : [], frameLighting && this.#env.present && this.#env.mode === "outward", ringPhase);
     const grid = usesGrid ? this.#frameGrid(casterGroups, cameraWorld, lightInfo, jitter, frameLighting && froxelWork) : null;
     this.device.queue.writeBuffer(this.#frameBuffer, 0, fw.buffer);
@@ -853,17 +860,20 @@ class FrameRenderer implements VDBFrameRenderer {
     const U = VDB_FRAME_UNIFORMS;
     const cascades = Math.min(VDB_FRAME_MAX_CASCADES, Math.max(1, Math.round(s.shadowCascades)));
     const spectral = !!s.spectral;
-    const resolution = this.#gridResolution(Math.max(2, Math.round(s.shadowResolution)), cascades, spectral);
-    // K6.4: the slot groups in use (his getFrameSpectralGroups over the scene slots and the environment slot, set below)
-    const sceneSlotCount = Math.min(lights.sorted.length, VDB_FRAME_SHADOW_SLOTS);
-    const envSlotWanted = this.#env.present && this.#env.mode === "directional" && sceneSlotCount < VDB_FRAME_SHADOW_SLOTS && !(!!s.multipleScattering && s.multipleScattering !== "octaves");
-    const groups = spectral ? vdbFrameSpectralGroups(sceneSlotCount + (envSlotWanted ? 1 : 0)) : 0;
-    const gt = this.#ensureGrid(resolution, cascades, casterGroups.length > 1, spectral, groups);
     const casters = casterGroups.flatMap((g) => g.records.filter((r) => r.caster));
     const boxes = casters.map((r) => {
       const b = vdbUnitBoxBounds(r.volume.params.matrixWorld);
       return { min: { x: b.min[0], y: b.min[1], z: b.min[2] }, max: { x: b.max[0], y: b.max[1], z: b.max[2] } };
     });
+    const base = Math.max(2, Math.round(s.shadowResolution));
+    // K6.Q1b: the size-adaptive grid (`shadowResolutionMax` above `shadowResolution`), from the casters' boxes and media
+    const resolution = this.#gridResolution(s.shadowResolutionMax > base ? this.#adaptiveResolution(casters, boxes, base) : base, cascades, spectral);
+    this.shadowGridResolution = resolution;
+    // K6.4: the slot groups in use (his getFrameSpectralGroups over the scene slots and the environment slot, set below)
+    const sceneSlotCount = Math.min(lights.sorted.length, VDB_FRAME_SHADOW_SLOTS);
+    const envSlotWanted = this.#env.present && this.#env.mode === "directional" && sceneSlotCount < VDB_FRAME_SHADOW_SLOTS && !(!!s.multipleScattering && s.multipleScattering !== "octaves");
+    const groups = spectral ? vdbFrameSpectralGroups(sceneSlotCount + (envSlotWanted ? 1 : 0)) : 0;
+    const gt = this.#ensureGrid(resolution, cascades, casterGroups.length > 1, spectral, groups);
     const cameraPosition = { x: cameraWorld[12]!, y: cameraWorld[13]!, z: cameraWorld[14]! };
     const count = casters.length > 0 ? vdbFrameGridCascades(boxes, cameraPosition, s.shadowDistance, resolution, cascades, this.#gridMin, this.#gridSize, this.#gridVoxel) : 0;
     vdbFrameUpdateGridSignatures(this.#gridState, count > 0 ? casters : [], count, resolution, false, this.#gridMin, this.#gridSize, (values, r) => {
@@ -993,6 +1003,28 @@ class FrameRenderer implements VDBFrameRenderer {
       this.#envGridSignature = envSignature;
     }
     return { count, drawGrid, drawTransmittance, drawEnvironmentGrid, scattering: plan.kind, groups };
+  }
+
+  /**
+   * K6.Q1b: the size-adaptive shadow grid side for these casters (`vdbFrameAdaptiveGridResolution`): each caster's
+   * world box, voxels across it and the shadow grid's extinction at its mean density (absorbance included, as the grid
+   * density pass) give the cell size of the rule; the side covers the casters' box with it, within [base, max].
+   */
+  #adaptiveResolution(casters: readonly VolumeRecord[], boxes: readonly VDBBox3Like[], base: number): number {
+    const r = (this.settings as VDBFrameInternalSettings).shadowResolutionRule;
+    const rule = r === "voxels" || r === "optical" ? r : "both";
+    const inputs = casters.map((r, i) => {
+      const p = r.volume.params;
+      const slot = r.volume.slot;
+      const b = boxes[i]!;
+      const mean = p.densityMean ?? slot.stats.meanNonZero;
+      return {
+        size: [b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z] as [number, number, number],
+        texels: [...slot.texels] as [number, number, number],
+        meanExtinction: (mean * this.#densityScaleOf(p, slot) * p.extinction * p.absorbance) / Math.max(vdbMat4MaxScale(p.matrixWorld), 1e-30),
+      };
+    });
+    return vdbFrameAdaptiveGridResolution(boxes, vdbFrameAdaptiveCellSize(inputs, rule), base, Math.round(this.settings.shadowResolutionMax));
   }
 
   /**
@@ -1411,8 +1443,7 @@ class FrameRenderer implements VDBFrameRenderer {
     w.set(L, 0, "color", used.flatMap((r) => r.slice(4, 8)));
     w.set(L, 0, "spot", used.flatMap((r) => r.slice(8, 12)));
     w.set(L, 0, "falloff", used.flatMap((r) => r.slice(12, 16)));
-    // K6.Q1a: w = the probe's sky up / down term (0 irradiance, his; 1 the hemisphere's mean radiance)
-    w.set(L, 0, "sky", [...skyDirection, (s as VDBFrameInternalSettings).ambientProbe === "radiance" ? 1 : 0]);
+    w.set(L, 0, "sky", [...skyDirection, 0]);
     w.set(L, 0, "hemiSkySum", [...hemiSkySum, 0]);
     w.set(L, 0, "hemiGroundSum", [...hemiGroundSum, 0]);
     if (views.length > 0) {

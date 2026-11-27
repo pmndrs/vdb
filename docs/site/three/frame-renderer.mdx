@@ -203,6 +203,15 @@ default. Meshes with `castShadow` shadow the volumes through three's shadow maps
 hemisphere and light-probe light by the medium; `false` gives 0.1's unshadowed ambient (about 35 to 148 % too bright in single
 scattering against a path-traced reference).
 
+`'frame'` lighting reads every light through the shadow grid, so its resolution bounds how sharply light falls off into a
+dense medium. The grid's voxels snap to powers of two, so `shadowResolution` 64 puts between 32 and 64 cells across the
+casters. On a large or dense cloud that is too coarse (the WDAS cloud in sun is about 20 % too bright against a path-traced
+reference). `settings.shadowResolutionMax` (default 0, off) grows the grid: above `shadowResolution`, it uses the smallest
+side (a multiple of 16, at most the max) whose cells span at most 16 of a caster's voxels and 2 optical depths at its mean
+density (the WDAS cloud gets 80, a dense bunny 96). A small thin medium keeps `shadowResolution`. The grid costs about 48 bytes per voxel (a 128-voxel side is about 96 MiB,
+64 is about 12 MiB). Its transmittance pass grows with about the fourth power of the side, and runs only when the lights or
+casters change (every frame with `jitter`). `frameRenderer.core?.shadowGridResolution` reports the side in use.
+
 ## Scattering and phase
 
 {/* snippet: frame-scattering */}

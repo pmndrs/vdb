@@ -3,6 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   VDBFrameEnvironmentLights,
   vdbFrameAtlasBilinear,
+  vdbFrameAdaptiveCellSize,
+  vdbFrameAdaptiveGridResolution,
+  VDB_FRAME_ADAPTIVE_OPTICAL_DEPTH,
+  VDB_FRAME_ADAPTIVE_STEP,
+  VDB_FRAME_ADAPTIVE_VOXELS,
   vdbFrameCascadeCasters,
   vdbFrameEnvironmentGridVoxel,
   vdbFrameEnvironmentMapDirection,
@@ -158,6 +163,60 @@ function atlasOf(f: (world: V3, cascade: number) => [number, number]): VDBFrameA
   }
   return { data, width: 32, height: 32, channels: 2 };
 }
+
+// K6.Q1b: the size-adaptive shadow grid (`shadowResolutionMax`): pure functions the core renderer calls per update.
+describe("K6.Q1b size-adaptive shadow grid resolution", () => {
+  const unit = box([-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]);
+  it("off (max ≤ base, no finite cell) keeps the base resolution exactly", () => {
+    expect(vdbFrameAdaptiveGridResolution([unit], 0.001, 64, 0)).toBe(64);
+    expect(vdbFrameAdaptiveGridResolution([unit], 0.001, 64, 64)).toBe(64);
+    expect(vdbFrameAdaptiveGridResolution([unit], Infinity, 64, 256)).toBe(64);
+    expect(vdbFrameAdaptiveGridResolution([], 0.01, 64, 256)).toBe(64);
+  });
+
+  it("picks the power-of-two voxel at or below the cell and the smallest stepped side whose cascade uses it", () => {
+    for (const [extent, cell] of [[1, 0.01], [1600, 13], [221, 0.9], [7.5, 0.03], [100, 0.7]] as const) {
+      const r = vdbFrameAdaptiveGridResolution([box([0, 0, 0], [extent, extent * 0.6, extent * 0.8])], cell, 2, 4096);
+      expect(r % VDB_FRAME_ADAPTIVE_STEP).toBe(0);
+      const c = cascades([box([0, 0, 0], [extent, extent * 0.6, extent * 0.8])], [0, 0, 0], 1e9, r, 1);
+      // the cascade's voxel on the largest axis is a power of two at or below the cell, and it covers the box
+      expect(c.gridVoxel[0]!.x).toBeLessThanOrEqual(cell);
+      expect(c.gridMin[0]!.x + c.gridSize[0]!.x).toBeGreaterThanOrEqual(extent);
+      // one step smaller would make the cascade's voxel coarser than the cell (minimal side, up to the step)
+      const smaller = r - VDB_FRAME_ADAPTIVE_STEP;
+      if (smaller >= 2) expect(cascades([box([0, 0, 0], [extent, extent * 0.6, extent * 0.8])], [0, 0, 0], 1e9, smaller, 1).gridVoxel[0]!.x).toBeGreaterThan(cell);
+    }
+  });
+
+  it("clamps to [base, max]; R 64 and 128 put only 32 and 64 cells across a unit box (voxel ≥ extent / (R − 1)), 144 puts 128", () => {
+    expect(vdbFrameAdaptiveGridResolution([unit], 1e-6, 64, 128)).toBe(128);
+    expect(vdbFrameAdaptiveGridResolution([unit], 0.4, 64, 128)).toBe(64);
+    expect(cascades([unit], [0, 0, 0], 512, 64, 1).gridVoxel[0]!.x).toBe(1 / 32);
+    expect(cascades([unit], [0, 0, 0], 512, 128, 1).gridVoxel[0]!.x).toBe(1 / 64);
+    expect(vdbFrameAdaptiveGridResolution([unit], 1 / 128, 64, 256)).toBe(144);
+    expect(cascades([unit], [0, 0, 0], 512, 144, 1).gridVoxel[0]!.x).toBe(1 / 128);
+  });
+
+  it("cell rules: 'optical' 2 optical depths at the mean extinction, 'voxels' 16 source voxels, 'both' the finer; the smallest caster wins", () => {
+    const wdas = { size: [1600, 1000, 1300] as V3, texels: [1600, 1000, 1300] as V3, meanExtinction: 40 / 1600 };
+    const bunny = { size: [1, 1, 1] as V3, texels: [128, 128, 128] as V3, meanExtinction: 100 };
+    expect(VDB_FRAME_ADAPTIVE_OPTICAL_DEPTH).toBe(2);
+    expect(vdbFrameAdaptiveCellSize([wdas], "optical")).toBeCloseTo(VDB_FRAME_ADAPTIVE_OPTICAL_DEPTH * 40, 9);
+    expect(vdbFrameAdaptiveCellSize([wdas], "voxels")).toBe(VDB_FRAME_ADAPTIVE_VOXELS);
+    expect(vdbFrameAdaptiveCellSize([wdas], "both")).toBe(VDB_FRAME_ADAPTIVE_VOXELS);
+    expect(vdbFrameAdaptiveCellSize([bunny], "optical")).toBeCloseTo(VDB_FRAME_ADAPTIVE_OPTICAL_DEPTH / 100, 9);
+    expect(vdbFrameAdaptiveCellSize([bunny], "voxels")).toBe(16 / 128);
+    expect(vdbFrameAdaptiveCellSize([bunny], "both")).toBeCloseTo(VDB_FRAME_ADAPTIVE_OPTICAL_DEPTH / 100, 9);
+    expect(vdbFrameAdaptiveCellSize([wdas, bunny], "optical")).toBeCloseTo(VDB_FRAME_ADAPTIVE_OPTICAL_DEPTH / 100, 9);
+    expect(vdbFrameAdaptiveCellSize([{ ...wdas, meanExtinction: 0 }], "optical")).toBe(Infinity);
+    // a small thin medium asks for nothing finer than the default grid: 'both' keeps the base side
+    const thin = { size: [1, 1, 1] as V3, texels: [128, 128, 128] as V3, meanExtinction: 5 };
+    expect(vdbFrameAdaptiveGridResolution([box([-0.5, -0.5, -0.5], [0.5, 0.5, 0.5])], vdbFrameAdaptiveCellSize([thin], "both"), 64, 256)).toBe(64);
+    // the K6-Q1b A/B: the dense bunny (extinction 100 on a unit box) and a 1600-voxel cloud both land on 80
+    expect(vdbFrameAdaptiveGridResolution([box([-0.5, -0.5, -0.5], [0.5, 0.5, 0.5])], vdbFrameAdaptiveCellSize([bunny], "both"), 64, 256)).toBe(80);
+    expect(vdbFrameAdaptiveGridResolution([box([0, 0, 0], [1600, 1000, 1300])], vdbFrameAdaptiveCellSize([wdas], "both"), 64, 256)).toBe(112);
+  });
+});
 
 describe("grid shader twins", () => {
   it("getGridCell: the atlas pixel of tile z in cascade c is voxel z of c, at the voxel centre", () => {

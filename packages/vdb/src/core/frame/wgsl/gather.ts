@@ -384,7 +384,7 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSpec
     let down = ambientDown / f32(ambientPairs) * 0.5;
     let sky = normalize(vdbFrameLights.sky.xyz);
     if ((lightMask & VDB_FRAME_LIGHT_AMBIENT) != 0u) {
-      irradiance += vdbFrameLights.ambient.xyz * (up + down) + vdbFrameSkyProbe(sky) * up + vdbFrameSkyProbe(-sky) * down;
+      irradiance += vdbFrameLights.ambient.xyz * (up + down) + vdbFrameShIrradiance(sky) * up + vdbFrameShIrradiance(-sky) * down;
     }
     if ((lightMask & VDB_FRAME_LIGHT_HEMISPHERE) != 0u) {
       irradiance += vdbFrameLights.hemiSkySum.xyz * up + vdbFrameLights.hemiGroundSum.xyz * down;
@@ -789,7 +789,7 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> vec4f {
     let down = ambientDown / f32(ambientPairs) * 0.5;
     let sky = normalize(vdbFrameLights.sky.xyz);
     if ((lightMask & VDB_FRAME_LIGHT_AMBIENT) != 0u) {
-      irradiance += vdbFrameLights.ambient.xyz * (up + down) + vdbFrameSkyProbe(sky) * up + vdbFrameSkyProbe(-sky) * down;
+      irradiance += vdbFrameLights.ambient.xyz * (up + down) + vdbFrameShIrradiance(sky) * up + vdbFrameShIrradiance(-sky) * down;
     }
     if ((lightMask & VDB_FRAME_LIGHT_HEMISPHERE) != 0u) {
       irradiance += vdbFrameLights.hemiSkySum.xyz * up + vdbFrameLights.hemiGroundSum.xyz * down;

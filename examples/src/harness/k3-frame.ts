@@ -301,6 +301,8 @@ const HIS_SCENES: Record<string, SceneDef> = {
 interface Result {
   done: boolean;
   error?: string;
+  /** K6.Q1b: the 'frame' shadow grid side the core used (`shadowResolution`, or the size-adaptive side). */
+  shadowGridResolution?: number;
   adapter?: string;
   scene?: string;
   parityExpected?: boolean;
@@ -741,9 +743,12 @@ async function main(): Promise<void> {
   if (params.has("ao")) s.ambientOcclusion = params.get("ao") === "1";
   if (params.has("aoPairs")) s.ambientOcclusionPairs = Number(params.get("aoPairs"));
   if (params.has("aoSteps")) s.ambientOcclusionSteps = Number(params.get("aoSteps"));
-  // K6.Q1a `?ambientProbe=radiance`: the probe's sky up / down terms as the hemisphere's mean radiance (internal setting)
-  if (params.has("ambientProbe")) Object.assign(s, { ambientProbe: params.get("ambientProbe") === "radiance" ? "radiance" : "irradiance" });
   if (params.get("occlusion") === "0") s.occlusion = false;
+  // K6.Q1b `?shadowResMax=` (the size-adaptive shadow grid; result.shadowGridResolution), `?shadowRule=` (internal A/B);
+  // K6.11b `?aoRing=turn|fixed` (internal A/B of the ring under jitter + temporal)
+  if (params.has("shadowResMax")) s.shadowResolutionMax = Number(params.get("shadowResMax"));
+  if (params.has("shadowRule")) Object.assign(s, { shadowResolutionRule: params.get("shadowRule") === "voxels" ? "voxels" : params.get("shadowRule") === "optical" ? "optical" : "both" });
+  if (params.has("aoRing")) Object.assign(s, { ambientOcclusionRing: params.get("aoRing") === "fixed" ? "fixed" : "turn" });
   result.backend = "core";
   Object.assign(frameRenderer.settings, {
     width: FROXELS[0],
@@ -1090,6 +1095,7 @@ async function main(): Promise<void> {
   result.height = H;
   result.rgba = toBase64(first);
   result.nonBackground = nonBackground;
+  result.shadowGridResolution = frameRenderer.core?.shadowGridResolution ?? 0;
 
   const canvas = document.createElement("canvas");
   canvas.width = W;
@@ -1151,7 +1157,7 @@ async function main(): Promise<void> {
   if (LIGHTING === "frame") {
     // no volume in the scene (`?novolume=1`): no core renderer, no grid
     const g = frameRenderer.core ? vdbFrameRendererGrid(frameRenderer.core) : null;
-    if (g) result.grid = { count: g.count, resolution: frameRenderer.settings.shadowResolution, gridMin: g.gridMin.slice(0, g.count).map((v) => [...v]), gridVoxel: g.gridVoxel.slice(0, g.count).map((v) => [...v]) };
+    if (g) result.grid = { count: g.count, resolution: frameRenderer.core?.shadowGridResolution || frameRenderer.settings.shadowResolution, gridMin: g.gridMin.slice(0, g.count).map((v) => [...v]), gridVoxel: g.gridVoxel.slice(0, g.count).map((v) => [...v]) };
     for (let f = 0; f < REDRAW_FRAMES; f++) await frame();
     result.redraw = JSON.parse(JSON.stringify(frameRenderer.redrawStats)) as VDBFrameRedrawStats;
     log(`redraws (drawn/skipped): ${JSON.stringify(result.redraw)}`);

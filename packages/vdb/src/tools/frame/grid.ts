@@ -153,6 +153,75 @@ export function vdbFrameGridCascades(
   return count;
 }
 
+/**
+ * K6.Q1b: how the size-adaptive shadow grid picks its cell size per caster (`shadowResolutionMax`). `'optical'`: a cell
+ * spans at most {@link VDB_FRAME_ADAPTIVE_OPTICAL_DEPTH} of optical depth at the caster's mean density (the shadow
+ * grid interpolates transmittance between cell centres; a thicker cell loses the light's falloff into a dense medium).
+ * `'voxels'`: a cell spans at most {@link VDB_FRAME_ADAPTIVE_VOXELS} of the caster's own voxels (a large sparse cloud).
+ * `'both'` (the renderer's default): the finer of the two. The K6.R A/B (K6-Q1b handoff): 'optical' alone at half an
+ * optical depth asked for 112 to 256 voxels a side (the absorbing bunny 256) and moved the 'neural' MS term; 'voxels'
+ * alone missed the dense bunny; 'both' at 2 optical depths gives the large and the dense cloud 80.
+ */
+export type VDBFrameAdaptiveGridRule = "both" | "optical" | "voxels";
+
+/** K6.Q1b `'optical'`: the optical depth one shadow grid cell may span at the caster's mean density. */
+export const VDB_FRAME_ADAPTIVE_OPTICAL_DEPTH = 2;
+/** K6.Q1b `'voxels'`: the source voxels one shadow grid cell may span. */
+export const VDB_FRAME_ADAPTIVE_VOXELS = 16;
+/** K6.Q1b: adaptive resolutions are multiples of this (fewer distinct sizes: fewer grid reallocations). */
+export const VDB_FRAME_ADAPTIVE_STEP = 16;
+
+/** One caster for {@link vdbFrameAdaptiveCellSize}: its world box size, voxels across it, and mean extinction. */
+export interface VDBFrameAdaptiveCaster {
+  /** World size of the caster's box on each axis. */
+  size: Vec3;
+  /** The source's voxels across the box on each axis (level 0). */
+  texels: Vec3;
+  /** Extinction coefficient (world units⁻¹) of the shadow grid at the caster's mean non-zero density. */
+  meanExtinction: number;
+}
+
+/**
+ * K6.Q1b: the largest grid cell (world units) the casters ask for under `rule`: the smallest over the casters
+ * (Infinity: none asks, e.g. no extinction).
+ */
+export function vdbFrameAdaptiveCellSize(casters: readonly VDBFrameAdaptiveCaster[], rule: VDBFrameAdaptiveGridRule): number {
+  let cell = Infinity;
+  for (const c of casters) {
+    if (rule !== "optical") {
+      for (let a = 0; a < 3; a++) if (c.texels[a]! > 0 && c.size[a]! > 0) cell = Math.min(cell, (VDB_FRAME_ADAPTIVE_VOXELS * c.size[a]!) / c.texels[a]!);
+    }
+    if (rule !== "voxels" && c.meanExtinction > 0) cell = Math.min(cell, VDB_FRAME_ADAPTIVE_OPTICAL_DEPTH / c.meanExtinction);
+  }
+  return cell;
+}
+
+/**
+ * K6.Q1b: the size-adaptive shadow grid resolution. {@link vdbFrameGridCascades} snaps the casters' cascade (the
+ * last one) to power-of-two voxels: voxel = 2^⌈log2(extent / (R − 1))⌉, so R alone covers the largest box side with
+ * between R / 2 and R cells. This picks the power-of-two voxel at or below `cell` and the smallest R whose cascade
+ * uses it (R − 1 ≥ extent / voxel), rounded up to a multiple of {@link VDB_FRAME_ADAPTIVE_STEP}, within [`base`,
+ * `max`]. `max` ≤ `base` (the default 0) or no finite `cell` gives `base`: the fixed `shadowResolution`.
+ */
+export function vdbFrameAdaptiveGridResolution(casterBoxes: readonly VDBBox3Like[], cell: number, base: number, max: number): number {
+  if (!(max > base) || !(cell > 0) || !Number.isFinite(cell)) return base;
+  let extent = 0;
+  for (const a of AXES) {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const b of casterBoxes) {
+      lo = Math.min(lo, b.min[a]);
+      hi = Math.max(hi, b.max[a]);
+    }
+    if (hi > lo) extent = Math.max(extent, hi - lo);
+  }
+  if (!(extent > 0)) return base;
+  const voxel = Math.pow(2, Math.floor(Math.log2(cell)));
+  const need = Math.ceil(extent / voxel - 1e-9) + 1;
+  const stepped = Math.ceil(need / VDB_FRAME_ADAPTIVE_STEP) * VDB_FRAME_ADAPTIVE_STEP;
+  return Math.max(base, Math.min(Math.floor(max), stepped));
+}
+
 const toCell = (value: number, min: number, voxel: number, resolution: number, round: (x: number) => number) =>
   Math.min(resolution, Math.max(0, round((value - min) / voxel)));
 
@@ -904,8 +973,6 @@ export interface VDBFrameLightingInputs {
   occluderAt?: ((index: number, world: Vec3) => number) | null;
   /** K6.Q1 shadowed ambient: ambient × the mean of the sky up / down values (the hemispherical visibilities). */
   ambientOcclusion?: boolean;
-  /** K6.Q1a `ambientProbe`: the probe along ± the sky as three's irradiance (default, his) or the hemisphere's mean radiance. */
-  probeMode?: "irradiance" | "radiance";
 }
 
 /** three's `getShIrradianceAt` (the probe's L2 irradiance at a unit normal). */
@@ -961,10 +1028,8 @@ export function vdbFrameLightingFroxel(
   const irradiance: Vec3 = [0, 1, 2].map((c) => inputs.ambient[c]! * ambientScale + inputs.hemiSky[c]! * skyUp + inputs.hemiGround[c]! * skyDown) as Vec3;
   if (inputs.probe) {
     const sky = normalize3(inputs.sky ?? [0, 1, 0]);
-    // K6.Q1a: 'radiance': π × the probe's mean radiance over each hemisphere (bands 0, 1 × 1, ½)
-    const read = (n: Vec3): Vec3 => (inputs.probeMode === "radiance" ? ([0, 1, 2].map((c) => Math.PI * (0.282095 * inputs.probe![0]![c]! + 0.488603 * 0.5 * (inputs.probe![1]![c]! * n[1] + inputs.probe![2]![c]! * n[2] + inputs.probe![3]![c]! * n[0]))) as Vec3) : shIrradiance(n, inputs.probe!));
-    const up = read(sky);
-    const down = read([-sky[0], -sky[1], -sky[2]]);
+    const up = shIrradiance(sky, inputs.probe);
+    const down = shIrradiance([-sky[0], -sky[1], -sky[2]], inputs.probe);
     for (let c = 0; c < 3; c++) irradiance[c] = irradiance[c]! + up[c]! * skyUp + down[c]! * skyDown;
   }
   inputs.lights.forEach((light, i) => {

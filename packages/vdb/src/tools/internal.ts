@@ -177,6 +177,11 @@ export { vdbBoxPyramidLayout, vdbPyramidLevelSize, vdbPackPyramidBlocks } from "
 export type { VDBBoxPyramidLayout, VDBPyramidAtlasLevel, VDBPyramidPacking } from "./frame/pyramid-layout.js";
 export {
   vdbFrameGridCascades,
+  vdbFrameAdaptiveCellSize,
+  vdbFrameAdaptiveGridResolution,
+  VDB_FRAME_ADAPTIVE_OPTICAL_DEPTH,
+  VDB_FRAME_ADAPTIVE_STEP,
+  VDB_FRAME_ADAPTIVE_VOXELS,
   vdbFrameGridRange,
   vdbFrameCascadeCasters,
   vdbFrameGridSignatureState,
@@ -212,6 +217,8 @@ export type {
   VDBFrameLightingInputs,
   VDBFrameDensityInputs,
   VDBFrameTransmittanceModes,
+  VDBFrameAdaptiveCaster,
+  VDBFrameAdaptiveGridRule,
 } from "./frame/grid.js";
 export {
   vdbFrameStackLayout,
@@ -260,8 +267,6 @@ export {
   vdbFrameAmbientVisibility,
   vdbFrameSpectralAmbientPairTotals,
   vdbFrameSpectralAmbientVisibility,
-  vdbFrameSkyProbe,
-  type VDBFrameAmbientProbe,
   type VDBFrameDistantLight,
 } from "./frame/ambient.js";
 // K6.5b: mesh → volume shadows (host occluder maps)
@@ -378,7 +383,6 @@ export {
   vdbFrameSpectralLightingFroxel,
   vdbFrameSpectralGroupsAt,
   vdbShIrradianceAt,
-  vdbShHemisphereRadianceAt,
   vdbFrameInjectIsotropicIrradiance,
   vdbFrameSpectralShadowMarch,
   vdbFrameSpectralInjectSlice,
