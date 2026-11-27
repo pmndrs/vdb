@@ -380,6 +380,8 @@ function nodeAtOffset(offset, nodesByAddress, start, size) {
 
 function fieldForOffset(topology, offset, mode) {
   if (offset >= 8 && offset < 16) return "grid-checksum";
+  // GridData::mVersion: native v14 writes 32.11.0, our writer 32.9.1 (the vendored PNanoVDB.h pin, K7.5).
+  if (offset >= 16 && offset < 20) return "nanovdb-version";
   if (offset >= topology.rootStart + ROOT_STATS_START && offset < topology.rootStart + ROOT_STATS_END)
     return "derived-root-statistic";
 

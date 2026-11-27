@@ -3,7 +3,8 @@
 // .nvdb + JSON sidecars) into fixtures/primitives/.
 //
 // Two paths, tried in order:
-//   1. docker  — the reproducible route: docker/fixture-bake image
+//   1. docker  — the reproducible route: docker/fixture-bake image (OpenVDB v14.0.0
+//                tools; bake_primitives itself on the a532de55 headers, see the Dockerfile)
 //   2. local   — g++ against a sparse clone of the pinned NanoVDB headers
 //                (NanoVDB is header-only, so no OpenVDB build is needed)
 // Force one with BAKE_MODE=docker or BAKE_MODE=local.
@@ -29,8 +30,16 @@ const have = (cmd) => spawnSync(cmd, ["--version"], { stdio: "ignore" }).status 
 
 function bakeDocker() {
   console.error("• baking via docker (docker/fixture-bake)");
-  if (run("docker", ["build", "-t", "webvdb-fixture-bake", "docker/fixture-bake"]).status !== 0)
-    return false;
+  // K7.7: the image builds OpenVDB v14.0.0 and our generators (a second build context).
+  const build = [
+    "build",
+    "-t",
+    "webvdb-fixture-bake",
+    "--build-context",
+    "generators=packages/vdb/test/tools/fixtures/native-v14/generators",
+    "docker/fixture-bake",
+  ];
+  if (run("docker", build).status !== 0) return false;
   return run("docker", ["run", "--rm", "-v", `${OUT}:/out`, "webvdb-fixture-bake"]).status === 0;
 }
 

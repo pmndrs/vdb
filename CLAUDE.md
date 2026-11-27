@@ -246,15 +246,33 @@ From v1; details in docs/archive/handoffs/.
 - OpenVDB never ZIPs a fog volume or level set (`Archive::setGridCompression` clears `COMPRESS_ZIP`): a "zip" `.vdb` of one is uncompressed. Native fixtures that must exercise zlib mark the grid class Unknown.
 - NVIDIA Warp's `.nvdb` (`Volume.save_to_nvdb`): `NanoVDB0` header, FileMetaData `indexBBox`/`voxelCount` zero (we fill them from the image), `fileSize` without the 8-byte codec prefix (so a stream's `bytesTotal` is 8 bytes short per grid), BloscLZ frames with typesize 8.
 - `tools/vdb/blosc.ts` throws `VdbFormatError` (`VDB_BAD_VDB`) even for `.nvdb` frames; `.nvdb` callers go through `decodeBloscChunk` (`nvdb-file.ts`), which rethrows as `NvdbFormatError` / `VDBUnsupportedError`.
-- Native OpenVDB/NanoVDB v14 builds without Docker in minutes on macOS: oneTBB from source, then OpenVDB's CMake with `USE_ZSTD=OFF` (Blosc is vendored, Boost gone); NanoVDB is header-only plus one C file for Blosc. Recipe: `packages/vdb/test/tools/fixtures/native-v14/README.md`.
+- Native OpenVDB/NanoVDB v14 builds without Docker in minutes on macOS: `sh scripts/native/build-native-v14.sh` (oneTBB
+  + OpenVDB from sha256-pinned tarballs, `USE_ZSTD=OFF`, our probes and generators) into `~/.cache/pmndrs-vdb-native`;
+  `pnpm build && pnpm parity:native` uses it (`--native=docker` for the image, `--only=<section>`, `--update` rewrites
+  the `native-probes/` sidecars). A worktree-isolated agent cannot run `git` outside its worktree: fetch tarballs with
+  `curl`, not `git clone`. Docker Desktop (7.7 GiB VM) hung building OpenVDB at `BUILD_JOBS=6`: keep the image at 2.
+- NanoVDB v14 native defects (K4.17, K7.10): `io::readGrid(file, n)` with n ≥ 1 inside a multi-grid segment reads grid
+  0's bytes (codec NONE returns grid 0 again, ZIP / BLOSC throw "UNZIP failed on byte size" / "Internal read error in
+  BLOSC"), native files too; by name and `n = -1` work. `nanovdb_validate` fails every FpN grid with more than one leaf
+  ("Leaf node is not stored breadth-first"; it steps variable-size leaves by the header size), native ones too.
+  `nanovdb_convert` v14 rejects a `HalfGrid` ("Unrecognized OpenVDB grid type").
+- `io::hasGrid` matches the FileMetaData `nameKey` (= `io::stringHash(name)`); `readGrid` by name also takes 0. Our writer
+  wrote 0 until K7.7.
+- `NvdbFile` and `treeNodes` read scalar grids only: a native Vec3f `.nvdb` (explosion `v`) is taken apart by hand
+  (`run-native-parity.mjs` `walkNodes`, `native-probes.test.ts` `vec3Nodes`).
+- `vdbReadValueCpu` decodes Fp4/8/16/N in f64 (`code * quantum + minimum` unrounded); native decodes in f32, fused or not
+  by its build flags (cmake's `nanovdb_convert` fuses on arm64, our `-ffp-contract=off` probes do not). Compare
+  `Math.fround(value)` or `vdbReadValueF32Cpu` (the WGSL twin) with native, never the raw f64.
 - Half grids (K7.H, `GridType::Half` = 9): values, tile values, the background AND min/max stats are binary16 at
   2-byte-aligned addresses (root background/min/max at 28/30/32, leaf min/max 80/82, values from 96 at 2 bytes);
   ave/stddev stay f32 (root 36/40, leaf 84/88). Never read them as f32: use `nodeStats` / `vdbReadValueF32Cpu` /
   `readImageHeader` or the WGSL readers. Generation transform 8 strips the Half readers from modules without `'half'`.
 - `nanovdb_convert` (even v14) has no Half option: native Half grids come from `createNanoGrid<…, nanovdb::Half>` in
   C++. `pnpm fixtures:bake-half` builds them with OpenVDB v14.0.0 headers (needs the float primitives first).
-- NanoVDB v14 stores root tiles in another order than the a532de55 bake: `treeNodes` order differs between a native
-  v14 grid and ours even when every node is equal. Compare trees by (level, origin), not by index.
+- Native NanoVDB (a532de55 and v14) stores the root table and the upper nodes in OpenVDB's signed `Coord` order (its
+  root lookup is a linear scan; nothing needs the u64 key order). K4.12's unsigned table broke `nanovdb_validate`
+  ("Upper node is not stored breadth-first") and `parity:native` for every grid straddling 0 until K7.7 reverted it.
+  Images from other writers may still differ in order: compare trees by (level, origin), not by index.
 - The fake device's `queue.writeBuffer` (`test/core/fake-gpu.ts`) reads `data.buffer`: pass an `ArrayBufferView`
   (`new Uint8Array(bytes)`), never a bare `ArrayBuffer`, or it writes zeros silently (real WebGPU accepts both).
 - The core sparse source (K6.7, `vdbSparseSource`) serves every volume of a pool through one uniform table indexed

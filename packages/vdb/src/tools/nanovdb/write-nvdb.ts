@@ -105,6 +105,22 @@ interface ImageMeta {
   nameBytes: Uint8Array; // incl. trailing NUL
 }
 
+const U64 = (1n << 64n) - 1n;
+
+/**
+ * NanoVDB `io::stringHash` (IO.h, v14.0.0) over the name's bytes (no NUL): the FileMetaData `nameKey`.
+ * `io::hasGrid` matches on it, so a 0 key hid our grids from it (K7.7).
+ */
+function nvdbStringHash(bytes: Uint8Array): bigint {
+  let hash = 0n;
+  for (const c of bytes) {
+    const overflow = hash >> 56n;
+    hash = (hash * 67n) & U64;
+    hash = (hash + BigInt(c) + overflow) & U64;
+  }
+  return hash;
+}
+
 function imageDataView(image: Uint32Array): DataView {
   return new DataView(image.buffer, image.byteOffset, image.byteLength);
 }
@@ -238,7 +254,8 @@ export function writeNvdb(images: Uint32Array[], opts: WriteNvdbOptions = {}): A
     // FileMetaData.
     dv.setBigUint64(off + MD_OFF_GRID_SIZE, BigInt(m.gridSize), true);
     dv.setBigUint64(off + MD_OFF_FILE_SIZE, BigInt(payloads[g]!.byteLength), true);
-    dv.setBigUint64(off + MD_OFF_NAME_KEY, 0n, true); // advisory; loader ignores
+    // io::stringHash(name), as native writers set it: io::hasGrid needs it (readGrid by name also takes 0).
+    dv.setBigUint64(off + MD_OFF_NAME_KEY, nvdbStringHash(m.nameBytes.subarray(0, m.nameBytes.length - 1)), true);
     dv.setBigUint64(off + MD_OFF_VOXEL_COUNT, BigInt(m.voxelCount), true);
     dv.setUint32(off + MD_OFF_GRID_TYPE, m.gridType, true);
     dv.setUint32(off + MD_OFF_GRID_CLASS, m.gridClass, true);
