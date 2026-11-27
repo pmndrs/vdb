@@ -53,6 +53,9 @@ export type {
 // K3.7 (R1 §6 Step 7): level-set surfaces traced on the sparse pool, and point grids as sprites.
 export { VDBLevelSetMaterial, VDB_LEVEL_SET_SAMPLES_CAP } from "./level-set-material.js";
 export type { VDBLevelSetMaterialParameters } from "./level-set-material.js";
+// G13a: the same trace on three's physical material (glass, clearcoat).
+export { VDBLevelSetPhysicalMaterial } from "./level-set-physical-material.js";
+export type { VDBLevelSetPhysicalMaterialParameters } from "./level-set-physical-material.js";
 export { VDBPoints } from "./points.js";
 export type { VDBPointsData, VDBPointsOptions } from "./points.js";
 

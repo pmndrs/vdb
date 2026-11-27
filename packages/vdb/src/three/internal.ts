@@ -9,6 +9,9 @@
 export * from "./index.js";
 
 export { vdbAttenuatedPointSize, vdbPointDiscTexture } from "./points.js";
+export { vdbApplyLevelSetTrace, vdbLevelSetLightingPosition, vdbLevelSetTrace } from "./level-set-material.js";
+export type { VDBLevelSetTrace, VDBLevelSetTraceParameters } from "./level-set-material.js";
+export { VDBLevelSetPhysicalLightingModel } from "./level-set-physical-material.js";
 export {
   VDBFrameCoreIntegrateMaterial,
   VDBFrameVolumeShadowReceivers,

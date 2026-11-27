@@ -5,7 +5,7 @@ import { collectErrors } from "./console-errors";
  * Demo 13 — the level-set sculpture gallery. One small piece (the icosahedron, 1 MB) keeps SwiftShader runtime low:
  * it must load in readback presentation, cover a real part of the frame (the coverage probe renders once without
  * the gallery's content and counts the pixels that change), raise no WebGPU validation error, and a material change
- * and the normal view must change the image. Runs with the gallery assets off (`?gallery=0`, procedural studio) and
+ * (chrome, then transmissive glass) and the normal view must change the image. Runs with the gallery assets off (`?gallery=0`, procedural studio) and
  * with them on when `fixtures/gallery/` has the HDR skies (else that test is skipped).
  */
 const DEMO = "/src/demos/13-level-sets/index.html";
@@ -63,13 +63,20 @@ test.describe("demo 13 — level-set gallery", () => {
     await page.selectOption("#ctl-material", "chrome");
     const chrome = await settle(page);
     const dChrome = thumbDiff(base, chrome);
+    // G13a: real glass (VDBLevelSetPhysicalMaterial transmission, three's transparent pass) builds and draws.
+    await page.selectOption("#ctl-material", "glass");
+    const glass = await settle(page, 4);
+    const dGlass = thumbDiff(chrome, glass);
+    await page.selectOption("#ctl-material", "chrome");
+    await settle(page);
     await page.locator("#ctl-normals").check();
     const normals = await settle(page, 4);
     const dNormals = thumbDiff(chrome, normals);
     // The normal view is a saturated colour image: its mean is far from grey.
     const [r, g, b] = normals.mean;
-    console.log(`demo 13 diffs: chrome ${dChrome.toFixed(2)}, normals ${dNormals.toFixed(2)}; covered ${covered}; normals mean ${normals.mean.map((v) => v.toFixed(0)).join(",")}`);
+    console.log(`demo 13 diffs: chrome ${dChrome.toFixed(2)}, glass ${dGlass.toFixed(2)}, normals ${dNormals.toFixed(2)}; covered ${covered}; normals mean ${normals.mean.map((v) => v.toFixed(0)).join(",")}`);
     expect(dChrome, detail()).toBeGreaterThan(1);
+    expect(dGlass, detail()).toBeGreaterThan(1);
     expect(dNormals, detail()).toBeGreaterThan(1);
     expect(Math.max(r, g, b) - Math.min(r, g, b), detail()).toBeGreaterThan(3);
 

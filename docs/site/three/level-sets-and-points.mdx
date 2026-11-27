@@ -1,6 +1,6 @@
 ---
 title: Level sets and points
-description: VDBLevelSetMaterial traces an OpenVDB level set's surface on the sparse pool; VDBPoints draws point grids.
+description: VDBLevelSetMaterial and VDBLevelSetPhysicalMaterial trace an OpenVDB level set's surface on the sparse pool; VDBPoints draws point grids.
 nav: 56
 sourcecode: packages/vdb/src/three/level-set-material.ts
 ---
@@ -21,6 +21,43 @@ directional-light shadow maps trace too. `maxSamples` (samples per fragment) and
 See the [level sets demo](https://pmndrs.github.io/vdb/examples/src/demos/13-level-sets/index.html): four OpenVDB
 level sets, each in its own pool, traced at full resolution with an HDR sky and shadows.
 
+### Glass and clearcoat
+
+`VDBLevelSetPhysicalMaterial` is the same trace on three's `MeshPhysicalNodeMaterial`: `transmission`, `ior`,
+`thickness`, `attenuationColor` and `attenuationDistance`, `dispersion`, `clearcoat`, `sheen` and `iridescence` work on the
+traced surface. Its options and nodes are `VDBLevelSetMaterial`'s, plus three's physical parameters.
+
+{/* snippet: level-set-glass */}
+```ts
+import { Mesh } from 'three/webgpu';
+import { VDBGridNode, VDBLevelSetPhysicalMaterial, vdbProxyGeometry } from '@pmndrs/vdb/three';
+
+const grids = new VDBGridNode(renderer, pool, { profile: 'march', helpers: ['levelSet'] });
+// Three's physical material on the traced surface: transmission refracts from the hit, thickness in world units.
+const glass = new VDBLevelSetPhysicalMaterial(renderer, grids, id, {
+    color: 0xffffff,
+    roughness: 0.04,
+    transmission: 1,
+    ior: 1.5,
+    thickness: 0.2,
+    attenuationColor: 0xbfe3ff,
+    attenuationDistance: 0.8,
+});
+scene.add(new Mesh(vdbProxyGeometry(pool.info(id), { pad: 1 }), glass));
+// Lacquer instead: { clearcoat: 1, clearcoatRoughness: 0.05 } (the clearcoat uses the traced normal).
+```
+
+Transmission is three's screen-space refraction: the surface shows the frame behind it, bent by the traced normal, as
+`MeshPhysicalMaterial` glass does on a mesh. It starts the refracted ray at the traced hit, not at the proxy box (whose
+back face three's own model would read), and `thickness` is in world units. A glass surface does not see other glass
+surfaces through itself, and it casts an opaque shadow. Anisotropy needs mesh tangents and does not apply.
+
+### Quantized level sets
+
+An Fp8 or FpN level set (`vdbQuantize(image, 'fp8')` or `'fpn'` with a tolerance in world units, from
+`@pmndrs/vdb/tools`) traces like the float one: the `VDBGridNode` compiles the pool's grid types. The OpenVDB teapot
+goes from 77 MiB to 26 MiB as Fp8, and its hits move by the quantization error (about 1/85 of a voxel for Fp8).
+
 ### Shadows cost a trace per texel
 
 A mesh that casts a shadow draws into the shadow map with the same material, so the map is traced too: one
@@ -40,5 +77,55 @@ grid's `Cd` attribute when it has one. Parse the `.vdb` with `parseVdb` from `@p
 `valueType: 'ptdataidx32'` into render data with `vdbPointRenderData(grid)`, and pass that to
 `new VDBPoints(data, { size })`. The default diameter is half the mean point spacing.
 
+`vdbPointRenderData` returns plain typed arrays, so it can run in a worker. `order: 'prefix'` orders the points so
+that every prefix of k tenths of the arrays is an even subsample (`data.prefix[k]` points). A density control then
+only sets `points.pointCount`, with no new buffers. `attributes` carries other attributes in the same order, and
+`onProgress` reports the decode and the copy.
+
+{/* snippet: points-render-data */}
+```ts
+import { parseVdb, vdbPointRenderData, vdbPointRenderDataTransfer, type VdbPointDataGrid } from '@pmndrs/vdb/tools';
+
+const grid = parseVdb(bytes).grids.find((g): g is VdbPointDataGrid => g.valueType === 'ptdataidx32')!;
+const data = vdbPointRenderData(grid, {
+    order: 'prefix', // data.prefix[k]: the first k tenths are an even subsample (prefix[1] = every 10th point)
+    attributes: ['v'], // data.attributes.v.values, in the same order as data.positions
+    onProgress: ({ stage, done, total }) => postMessage({ stage, done, total }),
+});
+postMessage(data, { transfer: vdbPointRenderDataTransfer(data) });
+// In the page: new VDBPoints(data); later points.pointCount = data.prefix![1] draws 10 % of them.
+```
+
 The [points demo](https://pmndrs.github.io/vdb/examples/src/demos/14-points/index.html) decodes the grids in a worker
-and colours them by `Cd` or by speed.
+this way and colours them by `Cd` or by speed.
+
+### Streaming `.wvdb` points
+
+A `.wvdb` points grid stores its points coarse first: LOD 0 holds every 64th point (with three LODs), LOD 1 brings it
+to every 8th, and the last LOD adds the rest. `VDBPoints.fromWvdbGrid(header)` makes a `VDBPoints` sized for the
+whole grid, and `addWvdbLevel(level)` writes each level a `WvdbStreamReader` decodes. Only the new points are
+uploaded. Every point that has arrived is drawn, and the sprites are wider while the cloud is sparse.
+
+{/* snippet: points-wvdb */}
+```ts
+import { WvdbStreamReader, type WvdbPointsGridHeader, type WvdbPointsLevel } from '@pmndrs/vdb/tools';
+import { VDBPoints } from '@pmndrs/vdb/three';
+
+const reader = new WvdbStreamReader({ partialLods: true });
+const body = (await fetch(url)).body!.getReader();
+let points: VDBPoints | null = null;
+for (;;) {
+    const { done, value } = await body.read();
+    if (done) break;
+    for (const event of reader.push(value)) {
+        if (!points) {
+            // Sized for the whole grid; draws nothing until the first level arrives.
+            points = VDBPoints.fromWvdbGrid(reader.header!.grids[0] as WvdbPointsGridHeader);
+            scene.add(points);
+        }
+        // Uploads the new range, draws every point that has arrived, widens the sprites while it is sparse.
+        points.addWvdbLevel(event.levels[0] as WvdbPointsLevel);
+    }
+}
+reader.end();
+```

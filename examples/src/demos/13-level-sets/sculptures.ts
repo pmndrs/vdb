@@ -1,6 +1,7 @@
 /**
  * Demo 13's sculptures: OpenVDB level sets parsed in the page (`parseVdb`), built to NanoVDB at full resolution
- * (`buildFromVdb`), one `VDBGridPool` each, traced by `VDBLevelSetMaterial` on a proxy box. Public API only.
+ * (`buildFromVdb`), one `VDBGridPool` each, traced by `VDBLevelSetPhysicalMaterial` (three's physical material: real
+ * glass, clearcoat) on a proxy box. Public API only.
  *
  * One pool per sculpture keeps every pool under the device's storage-binding limit (the four images are 6–81 MB);
  * a material reads one `VDBGridNode`, so pools never share a shader.
@@ -9,7 +10,7 @@ import { fixtureUrl } from "../assets.js";
 import * as THREE from "three/webgpu";
 import { VDBGridPool } from "@pmndrs/vdb";
 import { buildFromVdb, parseVdb, type VdbFloatGrid } from "@pmndrs/vdb/tools";
-import { VDBGridNode, VDBLevelSetMaterial, getDevice, vdbProxyGeometry } from "@pmndrs/vdb/three";
+import { VDBGridNode, VDBLevelSetPhysicalMaterial, getDevice, vdbProxyGeometry } from "@pmndrs/vdb/three";
 import { fetchWithProgress, probe } from "../showcase-shell.js";
 
 export interface SculptureDef {
@@ -52,7 +53,7 @@ export interface SculptureStats {
 }
 
 export class Sculpture {
-  readonly mesh: THREE.Mesh<THREE.BufferGeometry, VDBLevelSetMaterial>;
+  readonly mesh: THREE.Mesh<THREE.BufferGeometry, VDBLevelSetPhysicalMaterial>;
   /** World box of the placed surface (the proxy's). */
   readonly box: THREE.Box3;
 
@@ -62,7 +63,7 @@ export class Sculpture {
     readonly grids: VDBGridNode,
     readonly gridId: number,
     readonly stats: SculptureStats,
-    readonly material: VDBLevelSetMaterial,
+    readonly material: VDBLevelSetPhysicalMaterial,
   ) {
     const info = pool.info(gridId);
     this.mesh = new THREE.Mesh(vdbProxyGeometry(info, { pad: 1 }), material);
@@ -117,7 +118,7 @@ export class Sculpture {
     pool.flush();
     await pool.settled();
     const grids = new VDBGridNode(renderer, pool, { profile: "march", helpers: ["levelSet"] });
-    const material = new VDBLevelSetMaterial(renderer, grids, id, { color: 0xd8d2c4, roughness: 0.8, metalness: 0 });
+    const material = new VDBLevelSetPhysicalMaterial(renderer, grids, id, { color: 0xd8d2c4, roughness: 0.8, metalness: 0 });
 
     const ib = pool.info(id).indexBBox;
     const dims: [number, number, number] = [ib.max[0] - ib.min[0] + 1, ib.max[1] - ib.min[1] + 1, ib.max[2] - ib.min[2] + 1];

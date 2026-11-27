@@ -206,10 +206,12 @@ function readFloatGrid(image: Uint32Array, caller = "quantize"): FloatGridView {
 
   const treeOff = GRID_SIZE;
   const rootOff = treeOff + Number(view.getBigUint64(treeOff + TREE_OFF_NODE_OFFSET_ROOT, true));
-  const background = effectiveBackground(view, rootOff);
+  // A level set keeps its root background (+band): its inactive tiles carry the sign (K3.7b). Other grids fill
+  // with the near-field value (V5).
+  const background = gridClassId === 1 ? view.getFloat32(rootOff + FLOAT_LAYOUT.rootOffBackground, true) : effectiveBackground(view, rootOff);
 
   const tiles: TileInput[] = [];
-  collectFloatTiles(view, rootOff, tiles);
+  collectFloatTiles(view, rootOff, tiles, background);
   const leaves = traverseFloatLeaves(view, rootOff);
   return { voxelSize, translation, background, gridName, gridClassId, leaves, tiles };
 }
@@ -282,15 +284,20 @@ function nodeOrigin(view: DataView, nodeOff: number, dim: number): [number, numb
  * off. They are re-emitted as tiles, so the quantized grid keeps the source
  * topology (no expansion into constant leaves).
  */
-function collectFloatTiles(view: DataView, rootOff: number, out: TileInput[]): void {
+function collectFloatTiles(view: DataView, rootOff: number, out: TileInput[], fill: number): void {
   const L = FLOAT_LAYOUT;
+  // An inactive tile whose value is not the fill (a level set's interior -band, K4.9) is kept, inactive: dropping it
+  // turned a quantized level set's inside into outside (K3.7b).
+  const keep = (value: number, active: boolean): boolean => active || value !== fill;
   const nTiles = view.getUint32(rootOff + ROOT_OFF_TABLE_SIZE, true);
   for (let t = 0; t < nTiles; t++) {
     const tileOff = rootOff + L.rootSize + t * L.rootTileSize;
     if (readI64(view, tileOff + ROOT_TILE_OFF_CHILD) !== 0) continue;
-    if (view.getUint32(tileOff + ROOT_TILE_OFF_STATE, true) === 0) continue;
+    const active = view.getUint32(tileOff + ROOT_TILE_OFF_STATE, true) !== 0;
+    const value = view.getFloat32(tileOff + L.rootTileOffValue, true);
+    if (!keep(value, active)) continue;
     const key = view.getBigUint64(tileOff + ROOT_TILE_OFF_KEY, true);
-    out.push({ origin: keyToOrigin(key), dim: 4096, value: view.getFloat32(tileOff + L.rootTileOffValue, true) });
+    out.push({ origin: keyToOrigin(key), dim: 4096, value, ...(active ? {} : { active: false }) });
   }
   for (const child of rootChildren(view, rootOff)) {
     const upperOff = rootOff + child;
@@ -302,7 +309,9 @@ function collectFloatTiles(view: DataView, rootOff: number, out: TileInput[]): v
         const lowerOrigin = nodeOrigin(view, lowerOff, 128);
         for (let m = 0; m < LOWER_TABLE_COUNT; m++) {
           if (maskBit(view, lowerOff + LOWER_OFF_CHILD_MASK, m)) continue;
-          if (!maskBit(view, lowerOff + NODE_OFF_VALUE_MASK, m)) continue;
+          const active = maskBit(view, lowerOff + NODE_OFF_VALUE_MASK, m);
+          const value = view.getFloat32(lowerOff + L.lowerOffTable + m * L.tableStride, true);
+          if (!keep(value, active)) continue;
           out.push({
             origin: [
               lowerOrigin[0] + (((m >> 8) & 15) << 3),
@@ -310,10 +319,14 @@ function collectFloatTiles(view: DataView, rootOff: number, out: TileInput[]): v
               lowerOrigin[2] + ((m & 15) << 3),
             ],
             dim: 8,
-            value: view.getFloat32(lowerOff + L.lowerOffTable + m * L.tableStride, true),
+            value,
+            ...(active ? {} : { active: false }),
           });
         }
-      } else if (maskBit(view, upperOff + NODE_OFF_VALUE_MASK, n)) {
+      } else {
+        const active = maskBit(view, upperOff + NODE_OFF_VALUE_MASK, n);
+        const value = view.getFloat32(slotOff, true);
+        if (!keep(value, active)) continue;
         out.push({
           origin: [
             upperOrigin[0] + (((n >> 10) & 31) << 7),
@@ -321,7 +334,8 @@ function collectFloatTiles(view: DataView, rootOff: number, out: TileInput[]): v
             upperOrigin[2] + ((n & 31) << 7),
           ],
           dim: 128,
-          value: view.getFloat32(slotOff, true),
+          value,
+          ...(active ? {} : { active: false }),
         });
       }
     }

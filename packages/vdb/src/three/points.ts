@@ -23,6 +23,11 @@
  * Positions are world space of the grid (the point list's own transform);
  * place them with the object's transform as any three object. The sprite sits
  * at the origin with the points in local space, so frustum culling is off.
+ *
+ * The arrays can hold more points than are drawn (`capacity` vs `pointCount`): a prefix-ordered list (tools
+ * `vdbPointRenderData(grid, { order: 'prefix' })`) thins by count alone, and `.wvdb` points stream in LOD by LOD
+ * (K3.7b): `VDBPoints.fromWvdbGrid(header)` sizes the arrays for the grid and `addWvdbLevel(level)` writes each
+ * level a `WvdbStreamReader` decodes (only the new range is uploaded) and draws the points that have arrived.
  */
 
 import * as THREE from "three";
@@ -30,6 +35,7 @@ import { InstancedBufferAttribute, PointsNodeMaterial, Sprite } from "three/webg
 import * as TSL from "three/tsl";
 import { VDBError } from "../core/errors.js";
 import { vdbPointSpriteWgsl } from "../core/surface/points.js";
+import type { WvdbPointsGrid, WvdbPointsGridHeader, WvdbPointsLevel } from "../tools/wvdb/index.js";
 import type { VDBTslNode } from "./grid-node.js";
 
 const { cameraProjectionMatrix, code, instancedBufferAttribute, materialColor, modelViewMatrix, positionGeometry, screenDPR, uniform, vec4, viewportSize, wgslFn } =
@@ -50,7 +56,7 @@ export interface VDBPointsData {
   positions: Float32Array;
   /** Linear RGB per point (multiplied by the material colour), or null. */
   colors?: Float32Array | null;
-  /** Points to draw (default `positions.length / 3`). */
+  /** Points to draw (default `positions.length / 3`); the arrays may hold more (`capacity`). */
   count?: number;
   /** Mean point spacing in world units: the default diameter is half of it. Default 1. */
   spacing?: number;
@@ -116,8 +122,6 @@ export class VDBPoints extends Sprite {
   /** Type flag: true. */
   readonly isVDBPoints = true;
   declare material: PointsNodeMaterial;
-  /** Points drawn. */
-  pointCount: number;
   /** Mean spacing of the points (world units). */
   spacing: number;
   /** World diameter of a point, or null for `spacing * 0.5`. */
@@ -128,6 +132,9 @@ export class VDBPoints extends Sprite {
   readonly positionAttribute: InstancedBufferAttribute;
   /** The instanced colour attribute (linear RGB per point), or null without colours. */
   readonly colorAttribute: InstancedBufferAttribute | null;
+  private drawn = 0;
+  /** `.wvdb` streaming: the grid's mean spacing over all its points, and the points written per LOD. */
+  private wvdb: { spacing: number; written: Map<number, number> } | null = null;
 
   /**
    * Builds the sprite from render data (tools `vdbPointRenderData`).
@@ -147,6 +154,7 @@ export class VDBPoints extends Sprite {
       throw new VDBError("VDB_BAD_OPTION", "VDBPoints: colors must hold count * 3 values.");
     }
     const { size = null, ...materialProps } = options;
+    const capacity = data.positions.length / 3;
     super(
       new PointsNodeMaterial({
         alphaMap: vdbPointDiscTexture(),
@@ -156,12 +164,11 @@ export class VDBPoints extends Sprite {
         sizeAttenuation: false,
       } as never) as never,
     );
-    this.pointCount = count;
     this.spacing = data.spacing ?? 1;
     this.size = size;
     this.pixelScale = uniform(1) as ScalarUniform;
     this.positionAttribute = new InstancedBufferAttribute(data.positions, 3);
-    this.colorAttribute = data.colors ? new InstancedBufferAttribute(data.colors, 3) : null;
+    this.colorAttribute = data.colors ? new InstancedBufferAttribute(data.colors.length === capacity * 3 ? data.colors : data.colors.subarray(0, capacity * 3), 3) : null;
     const position = instancedBufferAttribute(this.positionAttribute);
     const view = modelViewMatrix.mul(vec4(position, 1.0));
     const m = this.material as PointsNodeMaterial & Record<string, VDBTslNode>;
@@ -178,9 +185,103 @@ export class VDBPoints extends Sprite {
     });
     m.colorNode = this.colorAttribute ? vec4(instancedBufferAttribute(this.colorAttribute), 1.0).mul(materialColor) : null;
     m.needsUpdate = true;
-    (this as unknown as { count: number }).count = count;
+    this.pointCount = count;
     this.frustumCulled = false;
     this.onBeforeRender = (renderer, _scene, camera) => this.updatePixelScale(renderer as unknown as RendererSizeLike, camera);
+  }
+
+  /** Points drawn: the instance count, at most {@link capacity}. Set it to draw a prefix of the arrays. */
+  get pointCount(): number {
+    return this.drawn;
+  }
+
+  set pointCount(n: number) {
+    if (!Number.isInteger(n) || n < 0 || n > this.capacity) {
+      throw new VDBError("VDB_BAD_OPTION", `VDBPoints: pointCount ${n} must be an integer in [0, ${this.capacity}].`);
+    }
+    this.drawn = n;
+    (this as unknown as { count: number }).count = n;
+  }
+
+  /** Points the arrays hold: the most {@link pointCount} can be. */
+  get capacity(): number {
+    return this.positionAttribute.count;
+  }
+
+  /**
+   * Writes points `[first, first + n)` of the arrays (`n = positions.length / 3`) and uploads only that range at the
+   * next render. Does not change {@link pointCount}.
+   *
+   * @param first The first point to write.
+   * @param positions xyz per point.
+   * @param colors rgb per point (n * 3 values), for a `VDBPoints` made with colours; null or omitted keeps them.
+   */
+  writePoints(first: number, positions: Float32Array, colors?: Float32Array | null): void {
+    const n = positions.length / 3;
+    if (!Number.isInteger(n) || !Number.isInteger(first) || first < 0 || first + n > this.capacity) {
+      throw new VDBError("VDB_BAD_OPTION", `VDBPoints.writePoints: points [${first}, ${first + n}) do not fit the capacity ${this.capacity}.`);
+    }
+    if (colors && (!this.colorAttribute || colors.length < n * 3)) {
+      throw new VDBError("VDB_BAD_OPTION", "VDBPoints.writePoints: colors need a VDBPoints made with colours and n * 3 values.");
+    }
+    if (n === 0) return;
+    (this.positionAttribute.array as Float32Array).set(positions, first * 3);
+    this.positionAttribute.addUpdateRange(first * 3, n * 3);
+    this.positionAttribute.needsUpdate = true;
+    if (colors && this.colorAttribute) {
+      (this.colorAttribute.array as Float32Array).set(colors.subarray(0, n * 3), first * 3);
+      this.colorAttribute.addUpdateRange(first * 3, n * 3);
+      this.colorAttribute.needsUpdate = true;
+    }
+  }
+
+  /**
+   * An empty `VDBPoints` sized for a `.wvdb` points grid (K3.7b): capacity = the grid's points, colours when it has
+   * them, nothing drawn. Feed it the grid's LODs with {@link addWvdbLevel} as a `WvdbStreamReader` decodes them.
+   *
+   * @param grid The grid's header record (`reader.header.grids[i]`, once the header arrived) or a decoded grid.
+   * @param options Sprite material parameters plus `size`.
+   */
+  static fromWvdbGrid(grid: WvdbPointsGridHeader | WvdbPointsGrid, options: VDBPointsOptions = {}): VDBPoints {
+    if (!grid || (grid as { type?: string }).type !== "points" && (grid as { kind?: string }).kind !== "points") {
+      throw new VDBError("VDB_BAD_OPTION", "VDBPoints.fromWvdbGrid: grid must be a .wvdb points grid (header record or decoded grid).");
+    }
+    const count = grid.count;
+    let spacing = grid.spacing;
+    if (!(spacing !== undefined && spacing > 0)) {
+      // The bbox estimate writeWvdb uses when no spacing is recorded: the box volume shared by the points.
+      const b = grid.bbox;
+      const volume = b ? Math.abs((b[1][0] - b[0][0]) * (b[1][1] - b[0][1]) * (b[1][2] - b[0][2])) : 0;
+      spacing = count > 0 && volume > 0 ? Math.cbrt(volume / count) : 1;
+    }
+    const points = new VDBPoints(
+      { positions: new Float32Array(count * 3), colors: grid.colors ? new Float32Array(count * 3) : null, count: 0, spacing },
+      options,
+    );
+    points.wvdb = { spacing, written: new Map() };
+    return points;
+  }
+
+  /**
+   * Writes a `.wvdb` points level (a `WvdbStreamReader` event's level for this grid, complete or partial) at its
+   * `firstPoint`, uploading only the points not written before, then draws every point that has arrived in order:
+   * LOD k's points follow LODs 0..k-1, so the drawn prefix is an even subsample (every 8^(lods-1-k)-th point of the
+   * stored order). The default diameter follows: `spacing` becomes the grid's spacing times `cbrt(capacity / pointCount)`.
+   *
+   * @param level A points level of the grid this `VDBPoints` was made for ({@link fromWvdbGrid}).
+   */
+  addWvdbLevel(level: WvdbPointsLevel): void {
+    if (!this.wvdb) throw new VDBError("VDB_BAD_OPTION", "VDBPoints.addWvdbLevel: make the VDBPoints with VDBPoints.fromWvdbGrid(grid).");
+    if (level?.kind !== "points") throw new VDBError("VDB_BAD_OPTION", "VDBPoints.addWvdbLevel: level must be a .wvdb points level.");
+    const done = this.wvdb.written.get(level.lod) ?? 0;
+    const upTo = level.pointsDecoded;
+    if (upTo > done) {
+      this.writePoints(level.firstPoint + done, level.positions.subarray(done * 3, upTo * 3), level.colors ? level.colors.subarray(done * 3, upTo * 3) : null);
+      this.wvdb.written.set(level.lod, upTo);
+    }
+    // Draw the points that have arrived without a gap (the reader decodes LODs coarse first, pages in order).
+    if (level.firstPoint <= this.pointCount) this.pointCount = Math.max(this.pointCount, level.firstPoint + upTo);
+    this.spacing = this.wvdb.spacing * Math.cbrt(this.capacity / Math.max(1, this.pointCount));
   }
 
   /** The world diameter in use: `size`, or half the spacing. */

@@ -54,20 +54,7 @@ const { viewZToOrthographicDepth, viewZToPerspectiveDepth } = TSL as unknown as 
 export const VDB_LEVEL_SET_SAMPLES_CAP = 1024;
 
 /** Parameters of {@link VDBLevelSetMaterial}: three's standard material parameters plus the trace's. */
-export interface VDBLevelSetMaterialParameters extends THREE.MeshStandardMaterialParameters {
-  /**
-   * Index voxels per SDF unit. Default: `1 / voxelSize.x` from `grids.pool.info(id)` when the pool
-   * has `info` and the id is a number, else 1. A level set stores distances in its own world units,
-   * so this is 1 / its NanoVDB voxel size.
-   */
-  sdfToIndex?: number;
-  /** Trilinear samples per fragment trace (live), clamped to `[1, maxSamplesCap]`. Default 512. */
-  maxSamples?: number;
-  /** Compiled cap on {@link maxSamples}. Default {@link VDB_LEVEL_SET_SAMPLES_CAP}. */
-  maxSamplesCap?: number;
-  /** Central-difference step of the normal, in index voxels (live). Default 1. */
-  normalStep?: number;
-}
+export interface VDBLevelSetMaterialParameters extends THREE.MeshStandardMaterialParameters, VDBLevelSetTraceParameters {}
 
 type ScalarUniform = ReturnType<typeof TSL.uniform> & { value: number };
 
@@ -94,8 +81,147 @@ function surfaceCodeOf(grids: VDBGridNode): VDBTslNode {
   return c;
 }
 
-function bad(message: string): VDBError {
-  return new VDBError("VDB_BAD_OPTION", `VDBLevelSetMaterial: ${message}`);
+function bad(owner: string, message: string): VDBError {
+  return new VDBError("VDB_BAD_OPTION", `${owner}: ${message}`);
+}
+
+/** The trace a level-set material shades: its uniforms and TSL nodes (shared by the standard and physical materials). */
+export interface VDBLevelSetTrace<TGridId extends number | VDBTslNode = number> {
+  readonly grids: VDBGridNode;
+  readonly gridId: TGridId extends number ? VDBUintUniform : VDBTslNode;
+  readonly sdfToIndex: ScalarUniform;
+  readonly maxSamples: ScalarUniform;
+  readonly normalStep: ScalarUniform;
+  readonly traceSource: string;
+  readonly surfaceNode: VDBTslNode;
+  readonly traceNode: VDBTslNode;
+  readonly hitWorldNode: VDBTslNode;
+  readonly hitViewNode: VDBTslNode;
+  readonly hitMaskNode: VDBTslNode;
+  readonly normalWorldNode: VDBTslNode;
+  readonly normalViewNode: VDBTslNode;
+}
+
+/** The trace parameters of {@link VDBLevelSetMaterialParameters} (also taken by `VDBLevelSetPhysicalMaterial`). */
+export interface VDBLevelSetTraceParameters {
+  /**
+   * Index voxels per SDF unit. Default: `1 / voxelSize.x` from `grids.pool.info(id)` when the pool
+   * has `info` and the id is a number, else 1. A level set stores distances in its own world units,
+   * so this is 1 / its NanoVDB voxel size.
+   */
+  sdfToIndex?: number;
+  /** Trilinear samples per fragment trace (live), clamped to `[1, maxSamplesCap]`. Default 512. */
+  maxSamples?: number;
+  /** Compiled cap on {@link maxSamples}. Default {@link VDB_LEVEL_SET_SAMPLES_CAP}. */
+  maxSamplesCap?: number;
+  /** Central-difference step of the normal, in index voxels (live). Default 1. */
+  normalStep?: number;
+}
+
+/**
+ * Validates the inputs and builds the trace's uniforms and nodes (G13a: one setup for both level-set materials).
+ * `owner` names the class in error messages.
+ */
+export function vdbLevelSetTrace<TGridId extends number | VDBTslNode>(
+  owner: string,
+  renderer: VDBThreeRendererLike,
+  grids: VDBGridNode,
+  gridId: TGridId,
+  params: VDBLevelSetTraceParameters,
+): VDBLevelSetTrace<TGridId> {
+  const { sdfToIndex, maxSamples, maxSamplesCap, normalStep } = params;
+  if (!(grids instanceof VDBGridNode)) throw bad(owner, "grids must be a VDBGridNode.");
+  getDevice(renderer);
+  if (grids.renderer !== renderer) {
+    throw bad(owner, "grids was made for another renderer: create one VDBGridNode per renderer.");
+  }
+  if (grids.options.profile !== "march" || !grids.options.helpers?.includes("levelSet")) {
+    throw bad(owner, "grids needs profile 'march' and the 'levelSet' helper: new VDBGridNode(renderer, pool, { profile: 'march', helpers: ['levelSet'] }).");
+  }
+  if (typeof gridId === "number") {
+    if (!Number.isInteger(gridId) || gridId < 0) throw bad(owner, `gridId must be a non-negative integer, got ${gridId}.`);
+  } else if (gridId === null || typeof gridId !== "object") {
+    throw bad(owner, "gridId must be a number or a uint TSL node.");
+  }
+  const cap = maxSamplesCap ?? VDB_LEVEL_SET_SAMPLES_CAP;
+  if (!Number.isInteger(cap) || cap < 1) throw bad(owner, `maxSamplesCap must be an integer >= 1, got ${JSON.stringify(maxSamplesCap)}.`);
+  let toIndex = sdfToIndex;
+  if (toIndex === undefined) {
+    const info = typeof gridId === "number" ? (grids.pool as { info?: (id: number) => { voxelSize: readonly number[] } }).info?.(gridId) : undefined;
+    toIndex = info ? 1 / info.voxelSize[0]! : 1;
+  }
+  if (!(Number.isFinite(toIndex) && toIndex > 0)) throw bad(owner, `sdfToIndex must be a positive finite number, got ${toIndex}.`);
+
+  const id = (typeof gridId === "number" ? uniform(gridId, "uint") : gridId) as VDBLevelSetTrace<TGridId>["gridId"];
+  const toIndexUniform = uniform(toIndex) as ScalarUniform;
+  const samples = uniform(maxSamples ?? 512) as ScalarUniform;
+  const step = uniform(normalStep ?? 1) as ScalarUniform;
+  const traceSource = surfaceWgsl(cap);
+  const surfaceFn = wgslFn(traceSource, [surfaceCodeOf(grids)] as never);
+
+  // The pixel's view ray (core vdbLevelSetViewRay): from the fragment's viewport uv through the inverse
+  // projection, not from interpolated box positions, whose varying precision moves the ray by ~0.02 px on
+  // large faces (V57). Perspective from the camera; orthographic (directional-light shadow maps) from the
+  // pixel on the camera plane along the view axis.
+  const surfaceNode = Fn((builder: { camera?: { isOrthographicCamera?: boolean } }) =>
+    surfaceFn({
+      grid_id: id,
+      uv: viewportUV,
+      projection_inverse: cameraProjectionMatrixInverse,
+      camera_world: cameraWorldMatrix,
+      view_projection: cameraProjectionMatrix.mul(cameraViewMatrix),
+      orthographic: uint(builder.camera?.isOrthographicCamera === true ? 1 : 0),
+      sdf_to_index: toIndexUniform,
+      max_samples: samples,
+      normal_step: step,
+    }),
+  )
+    .once()()
+    .toVar("vdbThreeLevelSetSurfaceOut");
+  const traceNode = surfaceNode.element(0);
+  const hitWorldNode = traceNode.xyz;
+  const normalWorldNode = surfaceNode.element(1).xyz;
+  return {
+    grids,
+    gridId: id,
+    sdfToIndex: toIndexUniform,
+    maxSamples: samples,
+    normalStep: step,
+    traceSource,
+    surfaceNode,
+    traceNode,
+    hitWorldNode,
+    hitMaskNode: traceNode.w.greaterThan(0.5),
+    hitViewNode: cameraViewMatrix.mul(vec4(hitWorldNode, 1.0)).xyz.toVar("vdbLevelSetHitView"),
+    normalWorldNode,
+    normalViewNode: cameraViewMatrix.mul(vec4(normalWorldNode, 0.0)).xyz.normalize(),
+  };
+}
+
+/**
+ * Puts a trace on a node material: the back-face proxy, the hit mask, the vertex node (so `positionView` is a
+ * variable the lighting moves to the hit), the hit's depth, the received-shadow position and the normal.
+ */
+export function vdbApplyLevelSetTrace(material: THREE.Material, trace: VDBLevelSetTrace<number | VDBTslNode>): void {
+  const m = material as THREE.Material & Record<string, unknown>;
+  m.side = THREE.BackSide;
+  m.shadowSide = THREE.BackSide;
+  m.maskNode = trace.hitMaskNode;
+  // A vertexNode makes the fragment's positionView a variable, which setupLighting moves to the hit.
+  m.vertexNode = cameraProjectionMatrix.mul(modelViewMatrix.mul(vec4(positionLocal, 1.0)));
+  const hitView = trace.hitViewNode;
+  m.depthNode = Fn((builder: { camera?: { isOrthographicCamera?: boolean } }) =>
+    builder.camera?.isOrthographicCamera
+      ? viewZToOrthographicDepth(hitView.z, cameraNear, cameraFar)
+      : viewZToPerspectiveDepth(hitView.z, cameraNear, cameraFar),
+  )();
+  m.receivedShadowPositionNode = trace.hitWorldNode;
+  m.normalNode = trace.normalViewNode;
+}
+
+/** Lights read `positionView`: the shading point is the hit, not the box face (both materials' `setupLighting`). */
+export function vdbLevelSetLightingPosition(trace: VDBLevelSetTrace<number | VDBTslNode>): void {
+  positionView.assign(trace.hitViewNode).toStack();
 }
 
 /**
@@ -116,31 +242,31 @@ export class VDBLevelSetMaterial<TGridId extends number | VDBTslNode = number> e
   /** Type flag: true. */
   readonly isVDBLevelSetMaterial = true;
   /** The pool node this material reads. */
-  readonly grids: VDBGridNode;
+  declare readonly grids: VDBGridNode;
   /** The grid id: a `uint` uniform for a numeric id (`material.gridId.value = otherId`), else the caller's node. */
-  readonly gridId: TGridId extends number ? VDBUintUniform : VDBTslNode;
+  declare readonly gridId: TGridId extends number ? VDBUintUniform : VDBTslNode;
   /** Index voxels per SDF unit (live). */
-  readonly sdfToIndex: ScalarUniform;
+  declare readonly sdfToIndex: ScalarUniform;
   /** Trilinear samples per trace (live, clamped to the compiled cap). */
-  readonly maxSamples: ScalarUniform;
+  declare readonly maxSamples: ScalarUniform;
   /** Central-difference step of the normal in index voxels (live). */
-  readonly normalStep: ScalarUniform;
+  declare readonly normalStep: ScalarUniform;
   /** The entry's WGSL (for inspection and tests): calls the core's `vdbLevelSetViewRay` and `vdbLevelSetSurface`. */
-  readonly traceSource: string;
+  declare readonly traceSource: string;
   /** The packed surface (`mat4`, fragment stage): see {@link traceNode}, {@link normalWorldNode}; column 2 `.x` is the NDC depth. */
-  readonly surfaceNode: VDBTslNode;
+  declare readonly surfaceNode: VDBTslNode;
   /** `vec4(hit world position, 1)` on a hit, `vec4(0)` on a miss (fragment stage). */
-  readonly traceNode: VDBTslNode;
+  declare readonly traceNode: VDBTslNode;
   /** The hit in world space. */
-  readonly hitWorldNode: VDBTslNode;
+  declare readonly hitWorldNode: VDBTslNode;
   /** The hit in view space. */
-  readonly hitViewNode: VDBTslNode;
+  declare readonly hitViewNode: VDBTslNode;
   /** True where the ray hit the surface (the material's `maskNode`). */
-  readonly hitMaskNode: VDBTslNode;
+  declare readonly hitMaskNode: VDBTslNode;
   /** World-space unit normal at the hit. */
-  readonly normalWorldNode: VDBTslNode;
+  declare readonly normalWorldNode: VDBTslNode;
   /** View-space unit normal at the hit (the material's `normalNode`). */
-  readonly normalViewNode: VDBTslNode;
+  declare readonly normalViewNode: VDBTslNode;
 
   /**
    * @param renderer The initialized `WebGPURenderer` the pool and `grids` live on.
@@ -151,84 +277,16 @@ export class VDBLevelSetMaterial<TGridId extends number | VDBTslNode = number> e
    *   `VDB_UNSUPPORTED_DEVICE` for an uninitialized renderer.
    */
   constructor(renderer: VDBThreeRendererLike, grids: VDBGridNode, gridId: TGridId, params: VDBLevelSetMaterialParameters = {}) {
-    const { sdfToIndex, maxSamples, maxSamplesCap, normalStep, ...standard } = params;
+    const { sdfToIndex: _s, maxSamples: _m, maxSamplesCap: _c, normalStep: _n, ...standard } = params;
     super(standard);
     this.name = "VDBLevelSetMaterial";
-    if (!(grids instanceof VDBGridNode)) throw bad("grids must be a VDBGridNode.");
-    getDevice(renderer);
-    if (grids.renderer !== renderer) {
-      throw bad("grids was made for another renderer: create one VDBGridNode per renderer.");
-    }
-    if (grids.options.profile !== "march" || !grids.options.helpers?.includes("levelSet")) {
-      throw bad("grids needs profile 'march' and the 'levelSet' helper: new VDBGridNode(renderer, pool, { profile: 'march', helpers: ['levelSet'] }).");
-    }
-    if (typeof gridId === "number") {
-      if (!Number.isInteger(gridId) || gridId < 0) throw bad(`gridId must be a non-negative integer, got ${gridId}.`);
-    } else if (gridId === null || typeof gridId !== "object") {
-      throw bad("gridId must be a number or a uint TSL node.");
-    }
-    const cap = maxSamplesCap ?? VDB_LEVEL_SET_SAMPLES_CAP;
-    if (!Number.isInteger(cap) || cap < 1) throw bad(`maxSamplesCap must be an integer >= 1, got ${JSON.stringify(maxSamplesCap)}.`);
-    let toIndex = sdfToIndex;
-    if (toIndex === undefined) {
-      const info = typeof gridId === "number" ? (grids.pool as { info?: (id: number) => { voxelSize: readonly number[] } }).info?.(gridId) : undefined;
-      toIndex = info ? 1 / info.voxelSize[0]! : 1;
-    }
-    if (!(Number.isFinite(toIndex) && toIndex > 0)) throw bad(`sdfToIndex must be a positive finite number, got ${toIndex}.`);
-
-    this.grids = grids;
-    this.gridId = (typeof gridId === "number" ? uniform(gridId, "uint") : gridId) as this["gridId"];
-    this.sdfToIndex = uniform(toIndex) as ScalarUniform;
-    this.maxSamples = uniform(maxSamples ?? 512) as ScalarUniform;
-    this.normalStep = uniform(normalStep ?? 1) as ScalarUniform;
-    this.traceSource = surfaceWgsl(cap);
-
-    const surfaceFn = wgslFn(this.traceSource, [surfaceCodeOf(grids)] as never);
-
-    // The pixel's view ray (core vdbLevelSetViewRay): from the fragment's viewport uv through the inverse
-    // projection, not from interpolated box positions, whose varying precision moves the ray by ~0.02 px on
-    // large faces (V57). Perspective from the camera; orthographic (directional-light shadow maps) from the
-    // pixel on the camera plane along the view axis.
-    this.surfaceNode = Fn((builder: { camera?: { isOrthographicCamera?: boolean } }) =>
-      surfaceFn({
-        grid_id: this.gridId,
-        uv: viewportUV,
-        projection_inverse: cameraProjectionMatrixInverse,
-        camera_world: cameraWorldMatrix,
-        view_projection: cameraProjectionMatrix.mul(cameraViewMatrix),
-        orthographic: uint(builder.camera?.isOrthographicCamera === true ? 1 : 0),
-        sdf_to_index: this.sdfToIndex,
-        max_samples: this.maxSamples,
-        normal_step: this.normalStep,
-      }),
-    )
-      .once()()
-      .toVar("vdbThreeLevelSetSurfaceOut");
-    this.traceNode = this.surfaceNode.element(0);
-    this.hitWorldNode = this.traceNode.xyz;
-    this.hitMaskNode = this.traceNode.w.greaterThan(0.5);
-    this.hitViewNode = cameraViewMatrix.mul(vec4(this.hitWorldNode, 1.0)).xyz.toVar("vdbLevelSetHitView");
-    this.normalWorldNode = this.surfaceNode.element(1).xyz;
-    this.normalViewNode = cameraViewMatrix.mul(vec4(this.normalWorldNode, 0.0)).xyz.normalize();
-
-    this.side = THREE.BackSide;
-    this.shadowSide = THREE.BackSide;
-    this.maskNode = this.hitMaskNode;
-    // A vertexNode makes the fragment's positionView a variable, which setupLighting moves to the hit.
-    this.vertexNode = cameraProjectionMatrix.mul(modelViewMatrix.mul(vec4(positionLocal, 1.0)));
-    const hitView = this.hitViewNode;
-    this.depthNode = Fn((builder: { camera?: { isOrthographicCamera?: boolean } }) =>
-      builder.camera?.isOrthographicCamera
-        ? viewZToOrthographicDepth(hitView.z, cameraNear, cameraFar)
-        : viewZToPerspectiveDepth(hitView.z, cameraNear, cameraFar),
-    )();
-    this.receivedShadowPositionNode = this.hitWorldNode;
-    this.normalNode = this.normalViewNode;
+    Object.assign(this, vdbLevelSetTrace("VDBLevelSetMaterial", renderer, grids, gridId, params));
+    vdbApplyLevelSetTrace(this, this);
   }
 
   /** Lights read `positionView`: the shading point is the hit, not the box face. */
   override setupLighting(builder: Parameters<MeshStandardNodeMaterial["setupLighting"]>[0]): ReturnType<MeshStandardNodeMaterial["setupLighting"]> {
-    positionView.assign(this.hitViewNode).toStack();
+    vdbLevelSetLightingPosition(this);
     return super.setupLighting(builder);
   }
 }

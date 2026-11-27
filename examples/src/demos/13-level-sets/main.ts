@@ -1,7 +1,7 @@
 /**
  * Demo 13 · Level sets — a small sculpture gallery: the teapot, the Venus statue, the bunny and the icosahedron,
  * OpenVDB level sets parsed in the page and traced at full resolution on the sparse NanoVDB tree
- * (`VDBLevelSetMaterial`), standing on plinths, lit by an HDR environment (or a procedural studio), casting and
+ * (`VDBLevelSetPhysicalMaterial`: clay, porcelain with a clearcoat, metals, real transmissive glass), standing on plinths, lit by an HDR environment (or a procedural studio), casting and
  * receiving three.js shadows. Public API only (`@pmndrs/vdb`, `/tools`, `/three`) plus three.
  *
  * Query (with the shell's `presentation`, `still`, `panel`, `gallery`): `?model=all|icosahedron|teapot|venus|bunny`
@@ -19,8 +19,6 @@ import type { VDBTslNode } from "@pmndrs/vdb/three";
 import { GALLERY_ASSETS, MiB, PRESENTATION, createViewer, errorText, mountShowcase, params, probe } from "../showcase-shell.js";
 import { SCULPTURES, Sculpture, resolveSculpture, type SculptureDef } from "./sculptures.js";
 
-const { viewportSharedTexture, screenUV, vec3 } = TSL as unknown as Record<string, VDBTslNode>;
-
 const ui = mountShowcase({
   number: "13",
   title: "Level sets",
@@ -33,12 +31,27 @@ const state = ui.state;
 // --- Materials -------------------------------------------------------------------------------------------------
 
 type MaterialId = "clay" | "porcelain" | "bronze" | "chrome" | "glass";
-const MATERIALS: Record<MaterialId, { label: string; color: number; roughness: number; metalness: number }> = {
+interface MaterialPreset {
+  label: string;
+  color: number;
+  roughness: number;
+  metalness: number;
+  /** three's physical parameters (G13a: the traced surface takes them all). */
+  clearcoat?: number;
+  clearcoatRoughness?: number;
+  transmission?: number;
+  ior?: number;
+  /** World units (the pieces are about a metre tall). */
+  thickness?: number;
+  attenuationColor?: number;
+  attenuationDistance?: number;
+}
+const MATERIALS: Record<MaterialId, MaterialPreset> = {
   clay: { label: "matte clay", color: 0xcfc6b6, roughness: 0.85, metalness: 0 },
-  porcelain: { label: "porcelain", color: 0xf4f1ea, roughness: 0.16, metalness: 0 },
+  porcelain: { label: "glazed porcelain", color: 0xf4f1ea, roughness: 0.3, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.04 },
   bronze: { label: "polished bronze", color: 0xd9a066, roughness: 0.28, metalness: 1 },
   chrome: { label: "chrome", color: 0xf2f4f7, roughness: 0.04, metalness: 1 },
-  glass: { label: "glass (screen-space)", color: 0x000000, roughness: 0.03, metalness: 0 },
+  glass: { label: "glass", color: 0xffffff, roughness: 0.02, metalness: 0, transmission: 1, ior: 1.5, thickness: 0.35, attenuationColor: 0xcfe8f0, attenuationDistance: 0.9 },
 };
 
 // --- Environments ----------------------------------------------------------------------------------------------
@@ -212,7 +225,6 @@ async function run(): Promise<void> {
     sun.target.position.set(0, 0.8, 0);
     refreshShadows();
     state.info.env = id;
-    applyMaterial(); // the glass backdrop follows the sky
   }
 
   // --- sculptures ------------------------------------------------------------------------------------------
@@ -228,31 +240,27 @@ async function run(): Promise<void> {
 
   function applyMaterial(): void {
     const preset = MATERIALS[controls.material];
-    const glass = controls.material === "glass" && !controls.normals;
     for (const s of sculptures) {
       const m = s.material;
       m.color.setHex(preset.color);
       m.roughness = preset.roughness;
       m.metalness = preset.metalness;
-      const mode = controls.normals ? "normals" : glass ? "glass" : "lit";
+      // three's physical parameters: a change across 0 (transmission, clearcoat) rebuilds the shader by itself.
+      m.clearcoat = controls.normals ? 0 : (preset.clearcoat ?? 0);
+      m.clearcoatRoughness = preset.clearcoatRoughness ?? 0;
+      m.transmission = controls.normals ? 0 : (preset.transmission ?? 0);
+      m.ior = preset.ior ?? 1.5;
+      m.thickness = preset.thickness ?? 0;
+      m.attenuationColor.setHex(preset.attenuationColor ?? 0xffffff);
+      m.attenuationDistance = preset.attenuationDistance ?? Infinity;
+      const mode = controls.normals ? "normals" : "lit";
       if (m.userData.mode !== mode) {
         m.userData.mode = mode;
         const nodes = m as unknown as Record<string, VDBTslNode | null>;
-        if (mode === "normals") {
-          // Unlit world normals (n * 0.5 + 0.5): the trace's own gradient.
-          m.lights = false;
-          m.toneMapped = false;
-          nodes.colorNode = m.normalWorldNode.mul(0.5).add(0.5);
-          nodes.backdropNode = null;
-        } else {
-          m.lights = true;
-          m.toneMapped = true;
-          nodes.colorNode = null;
-          // Glass: the scene behind, bent by the hit's view normal and tinted; three's specular adds the reflections.
-          nodes.backdropNode = glass
-            ? (viewportSharedTexture as unknown as (uv: VDBTslNode) => VDBTslNode)(screenUV.sub(m.normalViewNode.xy.mul(0.06))).rgb.mul(vec3(0.82, 0.92, 0.95))
-            : null;
-        }
+        // Normals: unlit world normals (n * 0.5 + 0.5), the trace's own gradient.
+        m.lights = mode !== "normals";
+        m.toneMapped = mode !== "normals";
+        nodes.colorNode = mode === "normals" ? m.normalWorldNode.mul(0.5).add(0.5) : null;
         m.needsUpdate = true;
       }
     }

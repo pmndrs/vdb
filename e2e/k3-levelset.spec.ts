@@ -132,6 +132,98 @@ test("K3.7 level set: under a rotated, non-uniformly scaled instance the normals
   console.log(`[k3-levelset] sphere, anisotropic instance: analytic W^T normal mean ${t.analytic!.meanDeg.toFixed(3)}° max ${t.analytic!.maxDeg.toFixed(3)}°; twin IoU ${t.iou.toFixed(5)}`);
 });
 
+// Fail-before runs: K3_LS_MUTATE=<name> appends `&mutate=<name>` to the G13a / K3.7b queries below (each must fail).
+const MUTATE_QUERY = process.env.K3_LS_MUTATE ? `&mutate=${process.env.K3_LS_MUTATE}` : "";
+
+test("G13a physical material: transmission + clearcoat trace the same surface; the refraction starts at the hit", async ({ page }) => {
+  test.skip(!has("vdb-samples/sphere.vdb"), "fixtures/vdb-samples/sphere.vdb missing (pnpm fixtures:vdb-samples)");
+  test.setTimeout(600_000);
+  const r = await run(page, `?scene=sphere&twin=1&material=physical&refraction=1&vsStandard=1${MUTATE_QUERY}`);
+  const detail = detailOf(r);
+  expect(r.error, detail).toBeUndefined();
+  expect(r.uncaptured, detail).toEqual([]);
+  const t = r.twin!;
+  // The probe drawn by VDBLevelSetPhysicalMaterial (transmission 1, clearcoat 1): the same gates as the standard one.
+  expect(t.gpuHits, detail).toBeGreaterThan(10_000);
+  expect(t.iou, detail).toBeGreaterThanOrEqual(0.99);
+  expect(t.hitMaxVoxels, detail).toBeLessThan(0.01);
+  expect(t.normalP99Deg, detail).toBeLessThan(0.1);
+  // Mask and depth: physical (transmission on, drawn in three's transparent pass) = standard, over a cutting plane.
+  const v = r.vsStandard as { differing: number; maxDiff: number; planePixels: number };
+  expect(v.planePixels, detail).toBeGreaterThan(1_000);
+  // Only depth ties on the plane/surface intersection may differ (SwiftShader: 2 px): the physical material draws in
+  // three's transparent pass, after the plane, so an equal depth keeps the later fragment. A depth from the box
+  // (?mutate=physical-depth) differs on thousands.
+  expect(v.differing, detail).toBeLessThanOrEqual(8);
+  // The refracted backdrop uv vs refract() from the CPU twin's hit and normal (three's model starts at the box's
+  // back face instead: tens of pixels off).
+  const f = r.refraction as { pixels: number; meanPx: number; p99Px: number; maxPx: number };
+  expect(f.pixels, detail).toBeGreaterThan(5_000);
+  expect(f.p99Px, detail).toBeLessThan(0.5);
+  expect(f.maxPx, detail).toBeLessThan(1.5);
+  console.log(
+    `[k3-levelset] G13a physical: twin IoU ${t.iou.toFixed(5)}, hit max ${t.hitMaxVoxels.toExponential(2)} voxels; vs standard ${v.differing} px differ (plane ${v.planePixels} px); refraction ${f.pixels} px mean ${f.meanPx.toFixed(3)} p99 ${f.p99Px.toFixed(3)} max ${f.maxPx.toFixed(3)} px`,
+  );
+});
+
+for (const [mode, query] of [
+  ["fp8", "quantize=fp8"],
+  ["fpn", "quantize=fpn&tol=0.02"],
+] as const) {
+  test(`K3.7b level set: an ${mode} teapot traces as the CPU twin traces the same quantized image`, async ({ page }) => {
+    test.skip(!has("vdb-samples/utahteapot.vdb"), "fixtures/vdb-samples/utahteapot.vdb missing (pnpm fixtures:vdb-samples)");
+    test.setTimeout(600_000);
+    const r = await run(page, `?scene=teapot&twin=1&${query}${MUTATE_QUERY}`);
+    const detail = detailOf(r);
+    expect(r.error, detail).toBeUndefined();
+    expect(r.uncaptured, detail).toEqual([]);
+    const q = r.quantized as { mode: string; imageBytes: number; floatImageBytes: number };
+    expect(q.mode).toBe(mode);
+    expect(q.imageBytes, detail).toBeLessThan(q.floatImageBytes);
+    const t = r.twin!;
+    expect(t.gpuHits, detail).toBeGreaterThan(5_000);
+    expect(t.iou, detail).toBeGreaterThanOrEqual(0.99);
+    expect(t.hitMaxVoxels, detail).toBeLessThan(0.01);
+    expect(t.normalP99Deg, detail).toBeLessThan(0.01);
+    console.log(
+      `[k3-levelset] ${mode} teapot: ${(q.imageBytes / 1048576).toFixed(1)} MiB (float ${(q.floatImageBytes / 1048576).toFixed(1)} MiB), twin IoU ${t.iou.toFixed(5)}, hit max ${t.hitMaxVoxels.toExponential(2)} voxels, normal p99 ${t.normalP99Deg.toFixed(4)}°`,
+    );
+  });
+}
+
+test("K3.7b level set: a directional light's shadow map traces the surface (orthographic rays) onto a ground plane", async ({ page }) => {
+  test.skip(!has("vdb-samples/sphere.vdb"), "fixtures/vdb-samples/sphere.vdb missing (pnpm fixtures:vdb-samples)");
+  test.setTimeout(600_000);
+  const r = await run(page, `?scene=sphere&shadow=1${MUTATE_QUERY}`);
+  const detail = detailOf(r);
+  expect(r.error, detail).toBeUndefined();
+  expect(r.uncaptured, detail).toEqual([]);
+  save(`k3-levelset-shadow${process.env.K3_LS_MUTATE ? `-${process.env.K3_LS_MUTATE}` : ""}`, r);
+  const s = r.shadow as { planePixels: number; gpuShadow: number; cpuShadow: number; iou: number; mismatched: number; offEdge: number };
+  expect(s.cpuShadow, detail).toBeGreaterThan(1_500);
+  expect(s.iou, detail).toBeGreaterThanOrEqual(0.97);
+  // Every disagreement sits on the CPU shadow's edge (map texels and pixel centres straddle it).
+  expect(s.offEdge, detail).toBe(0);
+  console.log(`[k3-levelset] shadow map: ${s.gpuShadow} GPU / ${s.cpuShadow} CPU shadow px of ${s.planePixels}, IoU ${s.iou.toFixed(4)}, ${s.mismatched} mismatched (${s.offEdge} off the edge)`);
+});
+
+test("K3.7b points: a .wvdb points grid streamed LOD by LOD into VDBPoints draws as the whole list at each count", async ({ page }) => {
+  test.skip(!has("vdb-samples/sphere_points.vdb"), "fixtures/vdb-samples/sphere_points.vdb missing (pnpm fixtures:vdb-samples)");
+  test.setTimeout(300_000);
+  const r = await run(page, `?scene=points-wvdb${MUTATE_QUERY}`);
+  const detail = detailOf(r);
+  expect(r.error, detail).toBeUndefined();
+  expect(r.uncaptured, detail).toEqual([]);
+  const w = r.wvdb as { points: number; lods: number; events: number; drawn: number[]; identical: number; differing: number[] };
+  expect(w.points, detail).toBe(9802);
+  // LOD 0 (every 64th point), LODs 0-1 (every 8th), all: each drawn as it arrives.
+  expect(w.drawn, detail).toContain(Math.ceil(9802 / 64));
+  expect(w.drawn[w.drawn.length - 1], detail).toBe(9802);
+  expect(w.identical, detail).toBe(w.events);
+  save("k3-points-wvdb-stream", r);
+  console.log(`[k3-levelset] points-wvdb: ${w.events} events, drawn ${w.drawn.join(" → ")}, ${w.identical}/${w.events} frames identical to the whole list`);
+});
+
 test("K3.7 points: sphere_points draws every point where it projects, nothing else; deterministic", async ({ page }) => {
   test.skip(!has("vdb-samples/sphere_points.vdb"), "fixtures/vdb-samples/sphere_points.vdb missing (pnpm fixtures:vdb-samples)");
   test.setTimeout(300_000);

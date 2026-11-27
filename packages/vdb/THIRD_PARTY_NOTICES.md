@@ -196,6 +196,11 @@ THE SOFTWARE.
 a light probe) as an f64 CPU twin used to test the passes. Copyright (c) 2010-2026 three.js authors, MIT. three is a
 peer dependency and is not bundled.
 
+`src/three/level-set-physical-material.ts` ports three.js r187's screen-space refraction from
+`src/nodes/functions/PhysicalLightingModel.js` (`getVolumeTransmissionRay`, `applyIorToRoughness`,
+`getTransmissionSample`, `volumeAttenuation`, `getIBLVolumeRefraction`), started at a traced surface's hit instead of
+the mesh position (G13a). Copyright (c) 2010-2026 three.js authors, MIT.
+
 ## Wyman, Sloan and Shirley, 2013 (published formula)
 
 Blackbody emission colours (`vdbCie1931Fit`, `src/tools/frame/blackbody.ts`) use the multi-lobe piecewise Gaussian

@@ -173,9 +173,15 @@ class VdbPointDataGridImpl extends VdbGridImpl {
     this.groupNames = first ? first.groups.map((g) => g.name) : [];
   }
 
-  points(): VdbPointList {
-    this.decoded ??= decodePoints(this.pointLeaves, this.transform.matrix, {
+  points(options?: { onProgress?: (decoded: number, total: number) => void }): VdbPointList {
+    const onProgress = options?.onProgress;
+    if (this.decoded) {
+      onProgress?.(this.decoded.count, this.decoded.count);
+      return this.decoded;
+    }
+    this.decoded = decodePoints(this.pointLeaves, this.transform.matrix, {
       ...(this.pointOutputBudget !== undefined ? { maxOutputBytes: this.pointOutputBudget } : {}),
+      ...(onProgress ? { onProgress } : {}),
     });
     return this.decoded;
   }

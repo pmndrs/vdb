@@ -42,8 +42,8 @@ export type {
   VDBVec3,
 } from "./vdb/index.js";
 /** The render-ready point list of a point data grid (his `createPointData`). */
-export { vdbPointRenderData, VDB_POINTS_DEFAULT_MAX } from "./vdb/point-render-data.js";
-export type { VDBPointRenderData, VDBPointRenderDataOptions } from "./vdb/point-render-data.js";
+export { vdbPointRenderData, vdbPointRenderDataTransfer, VDB_POINTS_DEFAULT_MAX } from "./vdb/point-render-data.js";
+export type { VDBPointRenderAttribute, VDBPointRenderData, VDBPointRenderDataOptions, VDBPointRenderDataProgress } from "./vdb/point-render-data.js";
 
 /**
  * Build a NanoVDB grid image from a parsed `.vdb` grid (FLOAT, or Vec3f for

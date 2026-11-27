@@ -9,7 +9,7 @@ passes, pure-TypeScript CPU tools and a thin three.js adapter. One package, thre
 |---|---|---|
 | `@pmndrs/vdb` | the engine-free WebGPU core: `VDBGridPool`, the generated `vdb*` WGSL module (`vdbModuleWgsl`), GPU compute tools, the froxel renderer (`vdbCreateFrameRenderer`), volume sources (`vdbSparseSource`, `vdbDenseSource`), level-set and point passes, `VDBSequence` | WebGPU, no engine |
 | `@pmndrs/vdb/tools` | CPU side: `.nvdb` and `.wvdb` read/write, CPU reads (`vdbReadValueCpu`, `vdbSampleTrilinearCpu`), `.vdb` parser, NanoVDB builder, quantizer, resampler | no |
-| `@pmndrs/vdb/three` | the three.js adapter: `VDBGridNode` (a pool in three's node system), `VDBVolumeMaterial`, `VDBFrameVolume` / `VDBFrameRenderer` (the core's froxel renderer on three's device), `VDBLevelSetMaterial`, `VDBPoints`, compute utilities | `three` (optional peer, `>=0.187.0 <0.188.0`) |
+| `@pmndrs/vdb/three` | the three.js adapter: `VDBGridNode` (a pool in three's node system), `VDBVolumeMaterial`, `VDBFrameVolume` / `VDBFrameRenderer` (the core's froxel renderer on three's device), `VDBLevelSetMaterial` / `VDBLevelSetPhysicalMaterial`, `VDBPoints`, compute utilities | `three` (optional peer, `>=0.187.0 <0.188.0`) |
 | `@pmndrs/vdb/pnanovdb.wgsl` | the raw WGSL text (use `?raw` in Vite) | no |
 
 ```sh
@@ -435,8 +435,10 @@ three's device: `VDBFrameRenderer` is a thin adapter (`frameRenderer.core` is th
 
 ### Level sets and points
 
-`VDBLevelSetMaterial` sphere-traces a level-set grid as a lit mesh surface (three's lights, shadows and depth).
-`VDBPoints` draws a `.vdb` point grid (`vdbPointRenderData`) as instanced sprites.
+`VDBLevelSetMaterial` sphere-traces a level-set grid as a lit mesh surface (three's lights, shadows and depth);
+`VDBLevelSetPhysicalMaterial` is the same trace on three's physical material (transmissive glass, clearcoat).
+`VDBPoints` draws a `.vdb` point grid (`vdbPointRenderData`) as instanced sprites, and streams `.wvdb` points LOD by
+LOD (`VDBPoints.fromWvdbGrid`, `addWvdbLevel`).
 
 ### `.wvdb`
 

@@ -34,6 +34,7 @@ import {
   levelSetNormal,
   parseVdb,
   vdbPointRenderData,
+  vdbQuantize,
   type VdbPointDataGrid,
   type VdbPointList,
 } from "../../src/tools/internal.js";
@@ -166,6 +167,67 @@ describe("levelSetHit (twin of vdbLevelSetHit)", () => {
         expect(Math.abs(slow.t - fast.t)).toBeLessThan(1e-3);
         expect(slow.samples).toBeGreaterThanOrEqual(fast.samples);
       }
+    }
+  });
+});
+
+describe("K3.7b: quantized level sets (Fp8, FpN) through the tracer twin", () => {
+  // Fp8 leaves: per-leaf quantum (max - min) / 255 over a +-3-voxel band, so a value is off by <= 6 / 510 voxels;
+  // FpN at a tolerance of 0.02 voxels. Tiles and the background stay f32, so the HDDA skip is unchanged.
+  const FP8 = vdbQuantize(SPHERE, "fp8");
+  const FPN = vdbQuantize(SPHERE, "fpn", 0.02 * VOXEL);
+  const TORUS_FP8 = vdbQuantize(TORUS, "fp8");
+
+  it("quantized images are smaller than the float one", () => {
+    expect(FP8.byteLength).toBeLessThan(SPHERE.byteLength);
+    expect(FPN.byteLength).toBeLessThan(SPHERE.byteLength);
+  });
+
+  for (const [name, image, centre] of [
+    ["sphere fp8", FP8, C],
+    ["sphere fpn", FPN, C],
+    ["torus fp8", TORUS_FP8, [0, 0, 0] as V3],
+  ] as const) {
+    it(`${name}: the twin finds the brute-force oracle's crossing of the same quantized field`, () => {
+      let hits = 0;
+      let maxDt = 0;
+      for (const { o, d } of rays(800, centre, 60, 50, 13)) {
+        const twin = levelSetHit(image, o, d, [0, 1e30], { sdfToIndex: 1 / VOXEL });
+        const ref = levelSetHitReference(image, o, d, [0, 1e30]);
+        expect(twin.hit, JSON.stringify({ o, d, twin, ref })).toBe(ref.hit);
+        if (!twin.hit) continue;
+        hits++;
+        maxDt = Math.max(maxDt, Math.abs(twin.t - ref.t));
+      }
+      expect(hits).toBeGreaterThan(200);
+      expect(maxDt).toBeLessThan(1e-3);
+    });
+  }
+
+  it("fp8 / fpn sphere: hits stay on radius R within the quantization error, normals radial, hits near the float ones", () => {
+    for (const [image, bound] of [
+      [FP8, 0.02 + 6 / 510],
+      [FPN, 0.02 + 0.02],
+    ] as const) {
+      let maxR = 0;
+      let maxA = 0;
+      let maxVsFloat = 0;
+      let flagsDiffer = 0;
+      for (const { o, d } of rays(500, C, 60, 30, 11)) {
+        const h = levelSetHit(image, o, d, [0, 1e30], { sdfToIndex: 1 / VOXEL });
+        const f = levelSetHit(SPHERE, o, d, [0, 1e30], { sdfToIndex: 1 / VOXEL });
+        if (h.hit !== f.hit) flagsDiffer++;
+        if (!h.hit) continue;
+        const p: V3 = [o[0] + d[0] * h.t, o[1] + d[1] * h.t, o[2] + d[2] * h.t];
+        maxR = Math.max(maxR, Math.abs(Math.hypot(p[0] - C[0], p[1] - C[1], p[2] - C[2]) - R));
+        maxA = Math.max(maxA, angleDeg(levelSetNormal(image, p, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]), [p[0] - C[0], p[1] - C[1], p[2] - C[2]]));
+        if (f.hit) maxVsFloat = Math.max(maxVsFloat, Math.abs(h.t - f.t));
+      }
+      // Grazing rays may flip: a crossing within the error of tangency.
+      expect(flagsDiffer).toBeLessThanOrEqual(2);
+      expect(maxR).toBeLessThan(bound);
+      expect(maxA).toBeLessThan(2);
+      expect(maxVsFloat).toBeLessThan(0.5);
     }
   });
 });
