@@ -120,7 +120,7 @@ binding; +8 B per voxel; spectral: per channel, 9 values). Test: the V128 groups
 hemisphere light). k6-scene turns `spectral` on; the reference (`k6-reference ?case=scene`) renders each channel as a grey
 medium (that channel's extinction × (λ/550)^−α and both lobes' g × (λ/550)^−exponent, clamped ±0.99, as the renderer),
 each to convergence, and publishes `transmittanceRgb`; the report composites and inverts his sRGB blend with each channel's
-alpha and prints per-channel bias for spectral groups (V165). No kernel change, so no new twin.
+alpha and prints per-channel bias for spectral groups (V173). No kernel change, so no new twin.
 
 | row (vs SS / vs MS) | bunny-spectral | bunny-spectral-hemi |
 |---|---|---|
@@ -179,7 +179,7 @@ copied in) with the default and with `K6_FRAMES_QUERY=ao=0`: every one of the 8 
 
 ## DIVERGES
 
-V163 (`ambientProbe` deleted), V164 (`shadowResolutionMax`), V165 (spectral reference as three grey renders); V128 updated
+V171 (`ambientProbe` deleted), V172 (`shadowResolutionMax`), V173 (spectral reference as three grey renders); V128 updated
 with the evidence (K6.Q1c).
 
 ## Owner questions
