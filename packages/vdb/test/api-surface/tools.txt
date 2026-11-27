@@ -10,6 +10,7 @@ type NvdbStreamGrid
 value NvdbStreamReader
 type NvdbStreamReaderOptions
 type NvdbStreamSource
+type ParseVdbOptions
 type ReadWvdbHeaderOptions
 type ReadWvdbOptions
 type VDBAtlasFilter
@@ -60,6 +61,7 @@ type VdbFile
 type VdbFloatGrid
 value VdbFormatError
 type VdbGrid
+type VdbGridDescriptor
 type VdbLeaf
 type VdbPointAttributeArray
 type VdbPointAttributeInfo

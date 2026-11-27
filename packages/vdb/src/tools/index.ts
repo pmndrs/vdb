@@ -24,10 +24,12 @@ export type { VDBToolsErrorCode } from "./errors.js";
  */
 export { parseVdb } from "./vdb/index.js";
 export type {
+  ParseVdbOptions,
   VdbBBox,
   VdbFile,
   VdbFloatGrid,
   VdbGrid,
+  VdbGridDescriptor,
   VdbLeaf,
   VdbPointAttributeArray,
   VdbPointAttributeInfo,

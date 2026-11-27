@@ -67,6 +67,12 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 
 ### Added
 
+- `@pmndrs/vdb/tools`: `parseVdb(buffer, { select })` lists a `.vdb`'s grids without decoding them and decodes only
+  the ones you pick. `VdbFile.descriptors` (`VdbGridDescriptor`: name, grid type, on-disk value type, class, compression
+  flags, transform, index bounding box and an `unsupported` reason) covers every grid; with `select`, a grid the parser
+  cannot read is reported there instead of thrown, and `select: () => false` is a listing pass that decompresses
+  nothing. Without `select`, `parseVdb` behaves as in 0.1.
+
 - Core (0.2.0, K6): the frame renderer `vdbCreateFrameRenderer` (`VDBFrameRenderer`: `addVolume`, `update`, `render`,
   `prepare`, `outputs`, `mlp`) with its input and output types; `vdbSparseSource` (one source per pool);
   `vdbFrameIntegrateWgsl` / `vdbFrameIntegrateEntries` (the composite in a host pass, `{ spectral }`),

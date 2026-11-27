@@ -1,10 +1,12 @@
 export { parseVdb } from "./parse.js";
+export type { ParseVdbOptions } from "./parse.js";
 export { VdbFormatError, VDBUnsupportedError } from "./errors.js";
 export type {
   VdbBBox,
   VdbFile,
   VdbFloatGrid,
   VdbGrid,
+  VdbGridDescriptor,
   VdbLeaf,
   VdbPointAttributeArray,
   VdbPointAttributeInfo,

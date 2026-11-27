@@ -174,7 +174,7 @@ The drop-in-a-file pipeline, trimmed from
 import { parseVdb, buildFromVdbDetailed, vdbInspect } from "@pmndrs/vdb/tools";
 
 const buffer = await fetch("/fixtures/vdb-samples/utahteapot.vdb").then((r) => r.arrayBuffer());
-const vdbFile = parseVdb(buffer); // { fileVersion, grids: VdbGrid[] }
+const vdbFile = parseVdb(buffer); // { fileVersion, grids: VdbGrid[], descriptors: VdbGridDescriptor[] }
 
 const built = buildFromVdbDetailed(vdbFile.grids[0]!); // streams leaves, no dense allocation
 const report = vdbInspect(built.image);
@@ -190,7 +190,7 @@ the NanoVDB `Map`.
 
 | Function | What it does |
 |---|---|
-| `parseVdb(buffer)` | Reads a `.vdb` container (file version 225 or older): float, half (as float), vec3 and point grids, 5-4-3 tree, uncompressed, zlib or Blosc, active tiles |
+| `parseVdb(buffer, { select }?)` | Reads a `.vdb` container (file version 225 or older): float, half (as float), vec3 and point grids, 5-4-3 tree, uncompressed, zlib or Blosc, active tiles. `select(descriptor)` picks which grids to decode; `descriptors` lists every grid, an unsupported one reported rather than thrown |
 | `vdbBuildFromDense` / `vdbBuildFromDenseDetailed` | Dense `Float32Array` -> NanoVDB FLOAT grid image |
 | `vdbBuildFromLeavesDetailed` | Lower-level: build from an already-leaf-shaped source (what `buildFromVdb` and `vdbQuantize` are built on) |
 | `buildFromVdb` / `buildFromVdbDetailed` | Parsed `.vdb` grid -> NanoVDB FLOAT grid image, leaf-streamed |
