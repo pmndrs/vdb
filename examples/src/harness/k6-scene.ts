@@ -129,6 +129,8 @@ async function main(): Promise<void> {
   if (params.has("msLevels")) cs.multiScaleLevels = Number(params.get("msLevels"));
   // K6.3a `?msSigma=paper`: the σ = 2^k levels (an internal core setting, VDBFrameInternalSettings)
   if (params.has("msSigma")) Object.assign(cs, { multiScaleSigma: params.get("msSigma") === "paper" ? "paper" : "his" });
+  // K6.Na `?mlpRuntime=packed`: the packed MLP evaluator of 'neural' / 'mlp' (an internal core setting)
+  if (params.has("mlpRuntime")) Object.assign(cs, { mlpRuntime: params.get("mlpRuntime") === "packed" ? "packed" : "generic" });
   if (params.has("ao")) cs.ambientOcclusion = params.get("ao") === "1";
   if (params.has("aoPairs")) cs.ambientOcclusionPairs = Number(params.get("aoPairs"));
   if (params.has("aoSteps")) cs.ambientOcclusionSteps = Number(params.get("aoSteps"));

@@ -19,9 +19,9 @@
  */
 
 import { vdbCreateMultiScaleMips, vdbFrameMultiScaleParams, VDB_FRAME_MULTI_SCALE_PARAMS_BYTES, type VDBMultiScaleMips } from "../compute/multi-scale.js";
-import { vdbFrameMlpCheck, vdbFrameMlpMipSizes, vdbFrameMlpShape, VDB_FRAME_MLP_MAX_LAYERS, type VDBFrameMlp } from "../../tools/frame/mlp.js";
+import { vdbFrameMlpCheck, vdbFrameMlpMipSizes, vdbFrameMlpPack, vdbFrameMlpPackedShape, vdbFrameMlpShape, VDB_FRAME_MLP_MAX_LAYERS, type VDBFrameMlp } from "../../tools/frame/mlp.js";
 import { vdbFrameMultiScaleLevelOffset, type VDBFrameMultiScaleEdge } from "../../tools/frame/multi-scale.js";
-import { GRID_MIP_BINDINGS, TRANSMITTANCE_MLP_BINDINGS, TRANSMITTANCE_MULTI_SCALE_BINDINGS, type VDBFrameScatteringKernel } from "./wgsl/lighting.js";
+import { GRID_MIP_BINDINGS, TRANSMITTANCE_MLP_BINDINGS, TRANSMITTANCE_MULTI_SCALE_BINDINGS, vdbFrameScatteringIsMlp, type VDBFrameScatteringKernel } from "./wgsl/lighting.js";
 import { vdbFrameGridMipSpec } from "./kernels.js";
 import { computePipeline } from "./pipelines.js";
 import { BUFFER_USAGE, TEXTURE_USAGE, VDBRetireQueue } from "./resources.js";
@@ -57,6 +57,8 @@ export class VDBFrameScattering {
   #mlp: VDBFrameMlp | null = null;
   #mlpValid = false;
   #mlpVersion = 0;
+  /** K6.Na: the evaluator the uploaded weights are laid out for (`mlpRuntime`). */
+  #mlpPacked = false;
   #weights: GPUBuffer | null = null;
   #shape: GPUBuffer | null = null;
   #mips: GPUTexture | null = null;
@@ -86,8 +88,11 @@ export class VDBFrameScattering {
     if (settings.spectral) return "none";
     if (mode === "multi-scale") return "multi-scale";
     if (mode !== "neural" && mode !== "mlp") return "none";
-    if (mlp !== this.#mlp) {
+    // K6.Na: `mlpRuntime: 'packed'` runs the same network on the packed evaluator (its own weight layout)
+    const packed = (settings as VDBFrameInternalSettings).mlpRuntime === "packed";
+    if (mlp !== this.#mlp || packed !== this.#mlpPacked) {
       this.#mlp = mlp;
+      this.#mlpPacked = packed;
       const problem = mlp ? vdbFrameMlpCheck(mlp) : null;
       this.#mlpValid = !!mlp && !problem;
       this.#mlpVersion++;
@@ -96,7 +101,7 @@ export class VDBFrameScattering {
       if (!mlp) this.#warn("mlp-none", `multipleScattering '${mode}' has no network (mlp is null); the light slots use 1D diffusion (true).`);
       else if (problem) this.#warn(`mlp-shape-${this.#mlpVersion}`, `the mlp ${mlp.name ?? ""} does not fit the evaluator (${problem}); using 1D diffusion.`);
     }
-    return this.#mlpValid ? "mlp" : "none";
+    return this.#mlpValid ? (packed ? "mlp-packed" : "mlp") : "none";
   }
 
   /**
@@ -105,13 +110,15 @@ export class VDBFrameScattering {
    * mips when the grid moved.
    */
   plan(kind: VDBFrameScatteringKernel, settings: VDBFrameSettings, grid: VDBFrameScatteringGrid, multipleScattering: number): VDBFrameScatteringPlan {
-    if (kind === "mlp") {
+    if (vdbFrameScatteringIsMlp(kind)) {
       const mlp = this.#mlp!;
       if (!this.#weights) {
-        this.#weights = this.#device.createBuffer({ label: `${this.#label} mlp weights`, size: Math.max(16, mlp.weights.byteLength), usage: BUFFER_USAGE.STORAGE | BUFFER_USAGE.COPY_DST });
-        this.#device.queue.writeBuffer(this.#weights, 0, mlp.weights.buffer as ArrayBuffer, mlp.weights.byteOffset, mlp.weights.byteLength);
+        // K6.Na: 'mlp-packed' uploads the packed layout (and vec4 offsets in the shape); 'mlp' the flat weights
+        const weights = kind === "mlp-packed" ? vdbFrameMlpPack(mlp) : mlp.weights;
+        this.#weights = this.#device.createBuffer({ label: `${this.#label} mlp weights`, size: Math.max(16, weights.byteLength), usage: BUFFER_USAGE.STORAGE | BUFFER_USAGE.COPY_DST });
+        this.#device.queue.writeBuffer(this.#weights, 0, weights.buffer as ArrayBuffer, weights.byteOffset, weights.byteLength);
         this.#shape ??= this.#device.createBuffer({ label: `${this.#label} mlp shape`, size: MLP_SHAPE_BYTES, usage: BUFFER_USAGE.UNIFORM | BUFFER_USAGE.COPY_DST });
-        this.#device.queue.writeBuffer(this.#shape, 0, vdbFrameMlpShape(mlp).buffer as ArrayBuffer);
+        this.#device.queue.writeBuffer(this.#shape, 0, (kind === "mlp-packed" ? vdbFrameMlpPackedShape(mlp) : vdbFrameMlpShape(mlp)).buffer as ArrayBuffer);
       }
       if (!this.#mips || this.#mipsResolution !== grid.resolution) {
         this.#retire.retire(this.#mips);
@@ -127,7 +134,7 @@ export class VDBFrameScattering {
         this.#mipsResolution = grid.resolution;
         this.#mipsDrawn = -1;
       }
-      return { kind, signature: ["mlp", this.#mlpVersion, this.#mips] };
+      return { kind, signature: [kind, this.#mlpVersion, this.#mips] };
     }
     if (kind === "multi-scale") {
       const levels = Math.min(8, Math.max(2, Math.round(settings.multiScaleLevels)));
@@ -167,7 +174,7 @@ export class VDBFrameScattering {
 
   /** `'mlp'`: whether the feature mips must be drawn for the grid at `gridVersion`. */
   mipsStale(kind: VDBFrameScatteringKernel, gridVersion: number): boolean {
-    if (kind === "mlp") return this.#mipsDrawn !== gridVersion;
+    if (vdbFrameScatteringIsMlp(kind)) return this.#mipsDrawn !== gridVersion;
     if (kind === "multi-scale") return this.#msDrawn !== gridVersion;
     return false;
   }
@@ -208,7 +215,7 @@ export class VDBFrameScattering {
   /** The transmittance kernel's group 2 for `kind` (null for `'none'`). */
   group2(kind: VDBFrameScatteringKernel, layout: GPUBindGroupLayout | undefined): GPUBindGroup | null {
     if (!layout) return null;
-    if (kind === "mlp") {
+    if (vdbFrameScatteringIsMlp(kind)) {
       const m = TRANSMITTANCE_MLP_BINDINGS;
       return this.#device.createBindGroup({
         label: `${this.#label} transmittance mlp group 2`,

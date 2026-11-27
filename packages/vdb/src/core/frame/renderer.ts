@@ -75,7 +75,7 @@ import { computePipeline, prepareCompute, prepareRender, renderPipeline } from "
 import { BUFFER_USAGE, createFroxelTexture, VDBRetireQueue } from "./resources.js";
 import { VDB_FRAME_DEFAULT_LIMITS, vdbFrameFitGridResolution, vdbFrameStackTargets } from "./limits.js";
 import { VDBFrameScattering } from "./scattering.js";
-import type { VDBFrameScatteringKernel } from "./wgsl/lighting.js";
+import { vdbFrameScatteringIsMlp, type VDBFrameScatteringKernel } from "./wgsl/lighting.js";
 import { vdbFrameMieLutWords } from "../../tools/frame/mie.js";
 import { vdbFrameScatteringOctaves } from "../../tools/frame/index.js";
 import { VDB_FRAME_AMBIENT_MAX_PAIRS, vdbFrameAmbientDirections } from "../../tools/frame/ambient.js";
@@ -418,7 +418,7 @@ class FrameRenderer implements VDBFrameRenderer {
       // K6.3: the transmittance variant of the scattered-light term ('mlp' also its feature mips)
       const scattering = spectral ? "none" : this.#scattering.kind(this.settings, this.mlp);
       jobs.push(prepareCompute(this.device, vdbFrameTransmittanceSpec({ scattering, spectral })), prepareCompute(this.device, vdbFrameEnvironmentGridSpec({ spectral })));
-      if (scattering === "mlp") jobs.push(prepareCompute(this.device, vdbFrameGridMipSpec({ first: true })), prepareCompute(this.device, vdbFrameGridMipSpec({ first: false })));
+      if (vdbFrameScatteringIsMlp(scattering)) jobs.push(prepareCompute(this.device, vdbFrameGridMipSpec({ first: true })), prepareCompute(this.device, vdbFrameGridMipSpec({ first: false })));
     }
     for (const spec of this.#env.specs(["equirect", "cube"])) jobs.push(prepareCompute(this.device, spec));
     if (this.settings.castShadows) jobs.push(prepareCompute(this.device, vdbFrameVolumeShadowSpec({ spectral })));
@@ -697,7 +697,7 @@ class FrameRenderer implements VDBFrameRenderer {
     if (grid?.drawTransmittance && grid.count > 0) {
       const kind = grid.scattering;
       const version = this.#gridDraws;
-      if (kind === "mlp" && this.#scattering.mipsStale(kind, version)) this.#scattering.recordMips(pass, group0, this.#grid!.shadow, version);
+      if (vdbFrameScatteringIsMlp(kind) && this.#scattering.mipsStale(kind, version)) this.#scattering.recordMips(pass, group0, this.#grid!.shadow, version);
       if (kind === "multi-scale" && this.#scattering.mipsStale(kind, version)) {
         pass.end();
         this.#scattering.recordMultiScale(encoder, this.#grid!.shadow, this.#grid!.shadowLayout.origins[grid.count - 1]!, version);

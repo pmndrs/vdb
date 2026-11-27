@@ -337,8 +337,17 @@ export {
   vdbFrameMlpOffsets,
   vdbFrameMlpSampleLevel,
   vdbFrameMlpShape,
+  // K6.Na: the packed layout (pmndrs/denoiser's layer packing, one tap) of the core's `mlpRuntime: 'packed'`
+  vdbFrameMlpPack,
+  vdbFrameMlpPackedLayerVectors,
+  vdbFrameMlpPackedOffsets,
+  vdbFrameMlpPackedShape,
+  vdbFrameMlpForwardPacked,
 } from "./frame/mlp.js";
 export type { VDBFrameMlp, VDBFrameMlpLayer } from "./frame/mlp.js";
+// K6.Na: the network in the pmndrs neural tooling's weight container (OIDN `.tza` v2, pmndrs/denoiser `parseTZA`)
+export { vdbTzaRead, vdbTzaWrite, vdbFrameMlpToTza, vdbFrameMlpFromTza } from "./frame/mlp-tza.js";
+export type { VDBTzaTensor } from "./frame/mlp-tza.js";
 export {
   VDB_FRAME_MULTI_SCALE_MAX_LEVELS,
   VDB_FRAME_MULTI_SCALE_DEFAULT_LEVELS,

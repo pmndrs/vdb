@@ -283,7 +283,8 @@ const MS_PARAM = params.get("ms");
 const MS_MODE: VDBFrameMultipleScatteringMode = MS_PARAM === null || MS_PARAM === "1" ? true : MS_PARAM === "0" ? false : (MS_PARAM as VDBFrameMultipleScatteringMode);
 /** Octave settings of `?ms=octaves` (off the defaults so a swapped term shows). */
 const OCTAVE_SETTINGS = { scatteringOctaves: 3, scatteringOctaveExtinction: 0.6, scatteringOctaveContribution: 0.45, scatteringOctavePhase: 0.7 };
-const MS_SETTINGS = { multipleScattering: MS_MODE, ...OCTAVE_SETTINGS, multiScaleEdge: (params.get("edge") ?? "zero") as "zero" | "clamp", multiScaleLevels: Number(params.get("levels") ?? 6), multiScaleSigma: (params.get("sigma") === "paper" ? "paper" : "his") as "his" | "paper" };
+const MS_SETTINGS = { multipleScattering: MS_MODE, ...OCTAVE_SETTINGS, multiScaleEdge: (params.get("edge") ?? "zero") as "zero" | "clamp", multiScaleLevels: Number(params.get("levels") ?? 6), multiScaleSigma: (params.get("sigma") === "paper" ? "paper" : "his") as "his" | "paper", mlpRuntime: (params.get("mlpRuntime") === "packed" ? "packed" : "generic") as "generic" | "packed" };
+// K6.Na `?mlpRuntime=packed`: the packed MLP evaluator (pmndrs/denoiser's layer layout); the twin is the same f64 forward
 const MS_OCTAVES = vdbFrameScatteringOctaves(MS_SETTINGS) as VDBFrameVec4;
 /** K6.5b `?occluders=1`: synthetic host depth maps for the directional, point and spot probe lights (frame and gather probes). */
 const OCCLUDERS = params.get("occluders") === "1";
@@ -746,6 +747,8 @@ const WGSL_PATCHES: Record<string, [string, string]> = {
   "wgsl-composite-ortho": ["let orthographic = (vdbFrame.flags.z & 2u) != 0u;", "let orthographic = false;"],
   "wgsl-composite-reversed": ["let reversed = (vdbFrame.flags.z & 1u) != 0u;", "let reversed = false;"],
   "wgsl-composite-depth": ["textureLoad(vdbFrameSceneDepth, pixel, 0)", "textureLoad(vdbFrameSceneDepth, pixel + vec2i(1, 0), 0)"],
+  // K6.Na, the packed MLP evaluator (?mlpRuntime=packed): each input chunk's lanes turned before its mat4x4
+  "wgsl-mlp-packed": ["vdbFrameMlpWeights[at + 3u]) * a[k];", "vdbFrameMlpWeights[at + 3u]) * a[k].yzwx;"],
 };
 
 /** Installs the `?mutate=wgsl-*` patch; the returned check throws when it matched no module. */
@@ -3001,6 +3004,8 @@ async function probeCompile(device: GPUDevice): Promise<void> {
     vdbFrameTransmittanceSpec(),
     // K6.3: the scattered-light variants and the 'mlp' feature mips
     vdbFrameTransmittanceSpec({ scattering: "mlp" }),
+    // K6.Na: the packed MLP evaluator
+    vdbFrameTransmittanceSpec({ scattering: "mlp-packed" }),
     vdbFrameTransmittanceSpec({ scattering: "multi-scale" }),
     vdbFrameGridMipSpec({ first: true }),
     vdbFrameGridMipSpec({ first: false }),

@@ -112,6 +112,8 @@ function allSpecs(): { compute: VDBComputeSpec[]; render: VDBRenderSpec[] } {
   }
   compute.push(vdbFrameTransmittanceSpec(), vdbFrameResolveSpec({ temporal: false }), vdbFrameResolveSpec({ temporal: true }));
   // K6.3: the transmittance's scattered-light variants and the 'mlp' feature mips
+  // K6.Na: the packed MLP evaluator (mlpRuntime: 'packed')
+  compute.push(vdbFrameTransmittanceSpec({ scattering: "mlp-packed" }));
   compute.push(vdbFrameTransmittanceSpec({ scattering: "mlp" }), vdbFrameTransmittanceSpec({ scattering: "multi-scale" }), vdbFrameGridMipSpec({ first: true }), vdbFrameGridMipSpec({ first: false }));
   // K6.2b: the environment kernels (source-free)
   compute.push(vdbFrameEnvPrefilterSpec("equirect"), vdbFrameEnvPrefilterSpec("cube"), vdbFrameEnvBlurSpec(), vdbFrameEnvReduceSpec(), vdbFrameEnvironmentGridSpec());

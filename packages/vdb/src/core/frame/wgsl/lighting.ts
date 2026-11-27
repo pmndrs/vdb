@@ -14,6 +14,9 @@
 // (FrameGridMipMaterial L10–66, frameNeuralChunks.js L14–129) run as a generic MLP evaluator (shapes as uniforms,
 // weights in a storage buffer); K7.3's 'multi-scale' lookup (mjurczyk 4e2d46f). Spectral waits for K6.4. CPU twins:
 // tools/frame (grid.ts, stack.ts, mlp.ts, multi-scale.ts). Divergences: DIVERGES.md.
+// Portions derived from pmndrs/denoiser (MIT, Copyright (c) 2024 Dennis Smolek), commit 3ad5e98:
+//   packages/denoiser-wgsl/src/conv.ts (the mat4x4-per-chunk weight layout and the mat4x4 * vec4 layer math) in the
+//   K6.Na packed MLP evaluator (MLP_PACKED_*), the one-tap case, plain ReLU, one storage buffer (DIVERGES K6.Na rows).
 
 /**
  * The 'frame' lighting kernels of the core renderer (K6.2):
@@ -182,7 +185,10 @@ ${store}
  * covers single scattering, 1D diffusion, 'two-sided' and 'octaves' (uniforms); `'mlp'` and `'multi-scale'` bind their
  * resources in group 2 (the kernel is source-free: the MLP weights are its one storage buffer, D10).
  */
-export type VDBFrameScatteringKernel = "none" | "mlp" | "multi-scale";
+export type VDBFrameScatteringKernel = "none" | "mlp" | "mlp-packed" | "multi-scale";
+
+/** K6.Na: whether a scattered-light kernel runs the MLP (either evaluator: `'mlp'` generic, `'mlp-packed'`). */
+export const vdbFrameScatteringIsMlp = (kind: VDBFrameScatteringKernel): kind is "mlp" | "mlp-packed" => kind === "mlp" || kind === "mlp-packed";
 
 /** K6.3: group-2 bindings of the transmittance kernel's `'mlp'` and `'multi-scale'` variants. */
 export const TRANSMITTANCE_MLP_BINDINGS = { weights: 0, shape: 1, mips: 2 } as const;
@@ -198,17 +204,20 @@ export const VDB_FRAME_MLP_MAX_WIDTH = 64;
  * depth) and √(absorption / extinction) of level 1. Level 0 is the last shadow grid cascade, level k ≥ 1 the box mip
  * k − 1 of `vdbFrameNeuralMips` (the last mip past the chain). The shape is a uniform, the weights a storage buffer.
  */
-const MLP_WGSL = `struct VdbFrameMlp {
+const MLP_STRUCT_WGSL = `struct VdbFrameMlp {
   // layer count, feature levels, output (0 linear, 1 exp(min(o, 4))), input count
   info: vec4u,
   // per layer: inputs, outputs, activation (0 linear, 1 ReLU), weight offset (outputs x inputs row-major, then the biases)
   layers: array<vec4u, ${VDB_FRAME_MLP_MAX_LAYERS}>,
 };
-@group(2) @binding(${TRANSMITTANCE_MLP_BINDINGS.weights}) var<storage, read> vdbFrameMlpWeights: array<f32>;
-@group(2) @binding(${TRANSMITTANCE_MLP_BINDINGS.shape}) var<uniform> vdbFrameMlp: VdbFrameMlp;
+`;
+const MLP_WEIGHTS_WGSL = `@group(2) @binding(${TRANSMITTANCE_MLP_BINDINGS.weights}) var<storage, read> vdbFrameMlpWeights: array<f32>;
+`;
+const MLP_BINDINGS_WGSL = `@group(2) @binding(${TRANSMITTANCE_MLP_BINDINGS.shape}) var<uniform> vdbFrameMlp: VdbFrameMlp;
 @group(2) @binding(${TRANSMITTANCE_MLP_BINDINGS.mips}) var vdbFrameNeuralMips: texture_3d<f32>;
 
-// The forward pass: each layer's outputs from the last one's (two ${VDB_FRAME_MLP_MAX_WIDTH}-wide locals), then the output transform
+`;
+const MLP_FORWARD_WGSL = `// The forward pass: each layer's outputs from the last one's (two ${VDB_FRAME_MLP_MAX_WIDTH}-wide locals), then the output transform
 fn vdbFrameMlpForward(input: array<f32, ${VDB_FRAME_MLP_MAX_WIDTH}>) -> f32 {
   var a = input;
   var b: array<f32, ${VDB_FRAME_MLP_MAX_WIDTH}>;
@@ -231,7 +240,8 @@ fn vdbFrameMlpForward(input: array<f32, ${VDB_FRAME_MLP_MAX_WIDTH}>) -> f32 {
   return select(a[0], exp(min(a[0], 4.0)), vdbFrameMlp.info.z == 1u);
 }
 
-// sampleLevel: (extinction, absorption) of feature level k at a world position, 0 outside the last cascade
+`;
+const MLP_FEATURES_WGSL = `// sampleLevel: (extinction, absorption) of feature level k at a world position, 0 outside the last cascade
 fn vdbFrameNeuralSample(level: u32, world: vec3f) -> vec2f {
   let cascade = u32(vdbFrame.gridLayout.x) - 1u;
   let uvw = vdbFrameGridUvw(cascade, world);
@@ -282,6 +292,46 @@ fn vdbFrameMlpLight(world: vec3f, direction: vec3f, opticalDepth: f32, local: ar
   return vdbFrameMlpForward(input);
 }
 `;
+const MLP_WGSL = `${MLP_STRUCT_WGSL}${MLP_WEIGHTS_WGSL}${MLP_BINDINGS_WGSL}${MLP_FORWARD_WGSL}${MLP_FEATURES_WGSL}`;
+
+/**
+ * K6.Na `mlpRuntime: 'packed'`: the same network in the layer layout of the pmndrs neural tooling (pmndrs/denoiser
+ * `denoiser-wgsl` conv.ts: a mat4x4 per output group and input chunk, `mat4x4 * vec4` per step, vec4 activations; here
+ * the 1 x 1 case, `tools/frame/mlp.ts` `vdbFrameMlpPack`). The weights stay the kernel's one storage buffer (D10): per
+ * layer its mat4x4s as 4 vec4 columns, then its bias groups; the shape uniform's offsets count vec4s. ReLU is plain
+ * max(x, 0) (denoiser's convs clamp at 6). Padded lanes hold zero weights, so they stay 0.
+ */
+const MLP_PACKED_WEIGHTS_WGSL = `@group(2) @binding(${TRANSMITTANCE_MLP_BINDINGS.weights}) var<storage, read> vdbFrameMlpWeights: array<vec4f>;
+`;
+const MLP_PACKED_FORWARD_WGSL = `// The forward pass (packed): per output group the bias plus mat4x4(chunk) * input chunk, then the activation
+fn vdbFrameMlpForward(input: array<f32, ${VDB_FRAME_MLP_MAX_WIDTH}>) -> f32 {
+  var a: array<vec4f, ${VDB_FRAME_MLP_MAX_WIDTH / 4}>;
+  for (var k = 0u; k < ${VDB_FRAME_MLP_MAX_WIDTH / 4}u; k++) {
+    a[k] = vec4f(input[4u * k], input[4u * k + 1u], input[4u * k + 2u], input[4u * k + 3u]);
+  }
+  var b: array<vec4f, ${VDB_FRAME_MLP_MAX_WIDTH / 4}>;
+  let count = min(vdbFrameMlp.info.x, ${VDB_FRAME_MLP_MAX_LAYERS}u);
+  for (var l = 0u; l < count; l++) {
+    let shape = vdbFrameMlp.layers[l];
+    let n4 = (min(shape.x, ${VDB_FRAME_MLP_MAX_WIDTH}u) + 3u) / 4u;
+    let m4 = (min(shape.y, ${VDB_FRAME_MLP_MAX_WIDTH}u) + 3u) / 4u;
+    let bias = shape.w + 4u * m4 * n4;
+    for (var o = 0u; o < m4; o++) {
+      var s = vdbFrameMlpWeights[bias + o];
+      let row = shape.w + 4u * o * n4;
+      for (var k = 0u; k < n4; k++) {
+        let at = row + 4u * k;
+        s += mat4x4f(vdbFrameMlpWeights[at], vdbFrameMlpWeights[at + 1u], vdbFrameMlpWeights[at + 2u], vdbFrameMlpWeights[at + 3u]) * a[k];
+      }
+      b[o] = select(s, max(s, vec4f(0.0)), shape.z == 1u);
+    }
+    a = b;
+  }
+  return select(a[0].x, exp(min(a[0].x, 4.0)), vdbFrameMlp.info.z == 1u);
+}
+
+`;
+const MLP_PACKED_WGSL = `${MLP_STRUCT_WGSL}${MLP_PACKED_WEIGHTS_WGSL}${MLP_BINDINGS_WGSL}${MLP_PACKED_FORWARD_WGSL}${MLP_FEATURES_WGSL}`;
 
 /** K6.3: the box mip kernels of the `'mlp'` feature levels (his grid mip pass, design §3.3 `gridMips`). */
 export const GRID_MIP_BINDINGS = { source: 0, out: 1 } as const;
@@ -523,15 +573,17 @@ export function vdbFrameTransmittanceWgsl(o: { scattering?: VDBFrameScatteringKe
   const extra =
     scattering === "mlp"
       ? MLP_WGSL
-      : scattering === "multi-scale"
+      : scattering === "mlp-packed"
+        ? MLP_PACKED_WGSL
+        : scattering === "multi-scale"
         ? `${vdbFrameMultiScaleWgsl({ baseChannels: [0, 1], mipChannels: 2 })}
 @group(2) @binding(${msb.params}) var<uniform> vdbFrameMsParams: VdbFrameMultiScale;
 @group(2) @binding(${msb.mips}) var vdbFrameMsMips: texture_3d<f32>;
 `
         : "";
-  const local = scattering === "mlp" ? `    let local = vdbFrameMlpLocal(world);\n` : "";
+  const local = vdbFrameScatteringIsMlp(scattering) ? `    let local = vdbFrameMlpLocal(world);\n` : "";
   const slotTerm =
-    scattering === "mlp"
+    vdbFrameScatteringIsMlp(scattering)
       ? `      // 'mlp' (experimental; his 'neural'): total = direct + the network's scattered light
       results[i].y = results[i].x + vdbFrameMlpLight(world, s.xyz, opticalDepths[i], local);\n`
       : scattering === "multi-scale"

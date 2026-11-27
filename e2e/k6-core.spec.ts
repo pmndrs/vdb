@@ -222,6 +222,14 @@ const K63_PROBES: { name: string; query: string; keys: K63Key[]; mutations: Reco
     mutations: { "mlp-mip": "mipStats", "mlp-weights": "transmittanceStats", "mlp-depth": "transmittanceStats" },
   },
   { name: "frame, 'neural' (= 'mlp'), sparse, two groups", query: "?probe=frame&ms=neural&source=sparse&groups=2", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "mlp-weights": "transmittanceStats" } },
+  // K6.Na: the packed MLP evaluator (pmndrs/denoiser's layer layout, `mlpRuntime: 'packed'`) against the same f64 twin
+  {
+    name: "frame, 'mlp' packed evaluator (K6.Na)",
+    query: "?probe=frame&ms=mlp&mlpRuntime=packed",
+    keys: ["gridStats", "mipStats", "transmittanceStats", "stats"],
+    mutations: { "mlp-weights": "transmittanceStats", "wgsl-mlp-packed": "transmittanceStats" },
+  },
+  { name: "frame, 'neural' packed evaluator, sparse, two groups (K6.Na)", query: "?probe=frame&ms=neural&mlpRuntime=packed&source=sparse&groups=2", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "wgsl-mlp-packed": "transmittanceStats" } },
   { name: "frame, 'multi-scale' (edge zero)", query: "?probe=frame&ms=multi-scale", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "ms-edge": "mipStats", "ms-levels": "transmittanceStats" } },
   { name: "frame, 'multi-scale' (edge clamp, 4 levels)", query: "?probe=frame&ms=multi-scale&edge=clamp&levels=4", keys: ["gridStats", "mipStats", "transmittanceStats", "stats"], mutations: { "ms-edge": "mipStats" } },
   // K6.3a: the paper's wider levels (`multiScaleSigma: 'paper'`: level k reads mip k + 1, σ ≈ 2^k voxels; one more mip)
