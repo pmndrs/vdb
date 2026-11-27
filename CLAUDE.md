@@ -436,9 +436,9 @@ From v1; details in docs/archive/handoffs/.
   with the setting on, not constant 1.
 - The report's `his` groups render through `k3-frame`, the scene groups through `k6-scene`: a `--query` core setting
   must be parsed by both pages (K6.Q1 added `?ao=` to each).
-- Push with `git push` (main tracks the `pmndrs` remote, `pmndrs/vdb`), never `git push origin`: `origin` is the old
-  `DennisSmolek/WebVDB`, which has no Pages site, so its Pages run fails and `pmndrs/vdb` never gets the commit.
-  Watch runs with `--repo pmndrs/vdb` (`gh` has no default repo here).
+- Push with `git push` (main tracks the `pmndrs` remote, `pmndrs/vdb`; the checkout has no `origin` since 2026-11-27).
+  An older clone or worktree may still have `origin` = the old `DennisSmolek/WebVDB` (being archived; no Pages site):
+  never push there. Watch runs with `--repo pmndrs/vdb` (`gh` has no default repo here).
 - The spectral kernels (K6.4) have their own copies of the ambient / probe / hemisphere terms: a change to one lighting
   term must be made in both the grey and the spectral WGSL (and both twins). K6.Q1a: with `ambientOcclusion` the
   spectral group 0's sky entry HOLDS the visibilities (V up, V down of each channel) instead of the sky totals, so a
