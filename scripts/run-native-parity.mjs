@@ -402,7 +402,7 @@ function compareVec3(native, ours) {
     worstAveStddev: worst,
     sameLength: nb.length === ob.length,
     differingBytes: regions,
-    // ave / stddev: native GridStats accumulates f64 Welford, we f64 sums (V163), and native itself
+    // ave / stddev: native GridStats accumulates f64 Welford, we f64 sums (V174), and native itself
     // differs by build: <= 8 ulp from the macOS cache build, <= 32 from the Linux image. Bytes outside
     // the stats, the checksum and the version must be equal.
     passed: missing === 0 && valueMismatches === 0 && minMaxMismatches === 0 && aveUlps <= 64 && regions.other === 0,
