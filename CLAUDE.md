@@ -646,3 +646,17 @@ From v1; details in docs/archive/handoffs/.
   keep it within `capacity` (the arrays may hold more points than are drawn).
 - A shadow-map oracle on a finite ground plane must stop at the plane's edge: beyond it the view shows the clear colour,
   which a "dark = shadowed" test reads as shadow (K3.7b's first run: IoU 0.56).
+- K6.Na: `mlpRuntime: 'packed'` (internal setting) runs 'neural' / 'mlp' on the packed evaluator (pmndrs/denoiser's layer
+  layout, the kernel key `'mlp-packed'`); test every MLP branch with `vdbFrameScatteringIsMlp(kind)`, not `kind === "mlp"`.
+  Its weights buffer holds `vdbFrameMlpPack` data and the shape's offsets count vec4s (`vdbFrameMlpPackedShape`): a probe that
+  uploads flat weights to it reads garbage. Harnesses take `?mlpRuntime=packed` (k6-core, k3-frame, k6-scene); the WGSL
+  mutation is `wgsl-mlp-packed`.
+- pmndrs/denoiser's runtimes cannot run our MLP as they are (K6-Na handoff §1): `NetworkRuntime` is an OIDN image contract,
+  `denoiser-wgsl` has 3 × 3 convs with relu6 only (relu6 changes 98 % of our outputs) and its `run()` submits its own encoder.
+  Its `.tza` container (`parseTZA`) is generic: `vdbFrameMlpToTza` / `vdbFrameMlpFromTza` (tools internals), and
+  `scripts/k6/neural/to-tza.mjs` after `pnpm build`. The `@pmndrs/denoiser-*` packages are private (unpublished).
+- `frame-mlp-packed.test.ts` cross-checks our `.tza` against the sibling's own `parseTZA` when a denoiser checkout is found
+  (`PMNDRS_DENOISER_DIR`, or `Denoiser` beside the main checkout); without one that test is skipped, not failed.
+- K6.Na: reference caches (`reference-*.json`) copied from older scratchpad runs did not match this tree's reference queries,
+  so `--reuse` re-rendered all 32 (16 groups). Budget for a fresh set unless the run that made the
+  cache is from the same tree; the second run of a pair (e.g. an A/B with `--query`) reuses them.
