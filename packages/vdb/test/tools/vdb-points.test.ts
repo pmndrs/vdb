@@ -215,6 +215,22 @@ describe.each(VARIANTS)("point data grid (%s)", (_, over) => {
   });
 });
 
+describe("G14a: points({ onProgress })", () => {
+  it("reports each leaf's end against the total, then once with the total when the list is cached", () => {
+    const grid = parseVdb(writeSyntheticPoints(spec({ mode: "plain" }))).grids[0]! as VdbPointDataGrid;
+    const seen: [number, number][] = [];
+    const list = grid.points({ onProgress: (done, total) => seen.push([done, total]) });
+    expect(seen.length).toBe(LEAF_POINTS.length);
+    expect(seen.every(([, total]) => total === 10)).toBe(true);
+    expect(seen.map(([done]) => done)).toEqual([...seen.map(([done]) => done)].sort((a, b) => a - b));
+    expect(seen[seen.length - 1]).toEqual([10, 10]);
+    const again: [number, number][] = [];
+    expect(grid.points({ onProgress: (done, total) => again.push([done, total]) })).toBe(list);
+    expect(again).toEqual([[10, 10]]);
+    expect(grid.points()).toBe(list);
+  });
+});
+
 describe("unpackUnitVec (QuantizedUnitVec::unpack)", () => {
   it("decodes the axes and signs OpenVDB's pack() produces", () => {
     const out = new Float32Array(3);

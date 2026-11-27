@@ -795,6 +795,8 @@ export interface DecodePointsOptions {
    * Default: unlimited.
    */
   maxOutputBytes?: number;
+  /** Called after each leaf with the points decoded so far and the total (G14a). */
+  onProgress?: (decoded: number, total: number) => void;
 }
 
 /**
@@ -927,7 +929,9 @@ export function decodePoints(
     }
 
     base += leafCount;
+    options.onProgress?.(base, count);
   }
+  if (leaves.length === 0) options.onProgress?.(0, 0);
 
   return { count, positions, attributes, attributeShapes, groups, skipped };
 }

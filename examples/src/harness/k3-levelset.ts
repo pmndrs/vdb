@@ -37,9 +37,10 @@
  */
 import * as THREE from "three";
 import { installWgslPatch, type VDBWgslPatches } from "./wgsl-patch.js";
-import { Mesh, WebGPURenderer } from "three/webgpu";
+import { Mesh, PhysicalLightingModel, WebGPURenderer } from "three/webgpu";
+import * as TSL from "three/tsl";
 import { VDBGridPool } from "@pmndrs/vdb";
-import { VDBGridNode, VDBLevelSetMaterial, VDBPoints, vdbProxyGeometry, type VDBTslNode } from "@pmndrs/vdb/three";
+import { VDBGridNode, VDBLevelSetMaterial, VDBLevelSetPhysicalMaterial, VDBPoints, vdbProxyGeometry, type VDBTslNode } from "@pmndrs/vdb/three";
 import {
   buildFromVdb,
   levelSetHit,
@@ -50,6 +51,12 @@ import {
   levelSetViewRay,
   parseVdb,
   vdbPointRenderData,
+  vdbQuantize,
+  readWvdb,
+  WvdbStreamReader,
+  writeWvdb,
+  type WvdbPointsGrid,
+  type WvdbPointsLevel,
   vdbSrgbOetf,
   type VdbGrid,
   type VdbPointDataGrid,
@@ -108,6 +115,16 @@ interface Result {
   vsThree?: { coreHits: number; threeHits: number; iou: number; hitMaxVoxels: number; normalMaxDeg: number };
   sprite?: { compared: number; maxUlp: number; over: number; bound: number; first?: unknown };
   pixelScale?: { core: number; three: number };
+  /** K3.7b `?quantize=`: the image's leaf encoding and size (the twin then traces the same quantized image). */
+  quantized?: { mode: string; tolerance?: number; imageBytes: number; floatImageBytes: number };
+  /** G13a `&refraction=1`: GPU refracted backdrop uv vs the CPU twin's hit + normal through refract(), in pixels. */
+  refraction?: { pixels: number; meanPx: number; p99Px: number; maxPx: number };
+  /** G13a `&vsStandard=1`: physical (transmission on) vs standard material, same emissive, a plane cutting the surface. */
+  vsStandard?: { pixels: number; differing: number; maxDiff: number; planePixels: number };
+  /** K3.7b `&shadow=1`: a directional light's shadow of the level set on a ground plane vs the CPU twin's shadow rays. */
+  shadow?: { planePixels: number; gpuShadow: number; cpuShadow: number; iou: number; mismatched: number; offEdge: number };
+  /** K3.7b `?scene=points-wvdb`: per stream event, the streamed VDBPoints vs one built from the whole list at the same count. */
+  wvdb?: { points: number; lods: number; events: number; drawn: number[]; identical: number; differing: number[] };
   warnings: string[];
   uncaptured: string[];
 }
@@ -127,7 +144,7 @@ const MANIFEST = params.get("manifest") ?? "/fixtures/k3-reference/75e7345/manif
 
 interface SceneDef {
   name: string;
-  kind: "levelset" | "points" | "points-color" | "sprite";
+  kind: "levelset" | "points" | "points-color" | "points-wvdb" | "sprite";
   file: string;
   output: "probe" | "normals" | "shaded" | "points";
   width: number;
@@ -144,6 +161,7 @@ const MODELS: Record<string, string> = {
 const E2E: Record<string, SceneDef> = {
   ...Object.fromEntries(Object.entries(MODELS).map(([k, file]) => [k, { name: k, kind: "levelset", file, output: "probe", width: 384, height: 216, parityExpected: false } as SceneDef])),
   points: { name: "points", kind: "points", file: "/fixtures/vdb-samples/sphere_points.vdb", output: "points", width: 384, height: 216, parityExpected: false },
+  "points-wvdb": { name: "points-wvdb", kind: "points-wvdb", file: "/fixtures/vdb-samples/sphere_points.vdb", output: "points", width: 384, height: 216, parityExpected: false },
   "points-color": { name: "points-color", kind: "points-color", file: "", output: "points", width: 128, height: 128, parityExpected: false },
   "sprite-probe": { name: "sprite-probe", kind: "sprite", file: "", output: "probe", width: 1, height: 1, parityExpected: false },
 };
@@ -165,11 +183,20 @@ const TIMING = Number(params.get("timing") ?? 0);
 const BACKEND: "three" | "core" = params.get("backend") === "core" ? "core" : "three";
 const MUTATE = params.get("mutate") ?? "none";
 const VS_THREE = params.get("vsThree") === "1";
+/** G13a: `?material=physical` draws every level-set material as VDBLevelSetPhysicalMaterial (transmission and clearcoat on). */
+const PHYSICAL = params.get("material") === "physical";
+/** G13a `&refraction=1`: glass thickness (world units) and ior of the refraction check. */
+const THICKNESS = Number(params.get("thickness") ?? 20);
+const IOR = Number(params.get("ior") ?? 1.5);
+/** K3.7b `?quantize=fp8|fpn|fp4|fp16|half` (`&tol=` for fpn, in voxels; default 0.02). */
+const QUANTIZE = params.get("quantize") as null | "fp4" | "fp8" | "fp16" | "fpn" | "half";
 const ORTHO = params.get("ortho") === "1";
 
 /** K6.10b `?mutate=wgsl-*`: the pass's WGSL patched before it compiles (wgsl-patch.ts). */
 const WGSL_PATCHES: VDBWgslPatches = {
   "wgsl-ls-ortho": ["vdbLsFrame.cameraWorld, vdbLsFrame.flags.x != 0u)", "vdbLsFrame.cameraWorld, false)"],
+  // K3.7b: VDBLevelSetMaterial ignores the orthographic flag (shadow maps would trace perspective rays).
+  "wgsl-three-ortho": ["vdbLevelSetViewRay(uv, projection_inverse, camera_world, orthographic != 0u)", "vdbLevelSetViewRay(uv, projection_inverse, camera_world, false)"],
 };
 
 /**
@@ -355,7 +382,14 @@ async function levelSetScene(renderer: WebGPURenderer, device: GPUDevice): Promi
   const file = await fetchVdb(params.get("file") ?? def!.file);
   const grid = file.grids.find((g: VdbGrid) => g.valueType === "float");
   if (!grid) throw new Error(`${def!.file} has no float grid`);
-  const image = buildFromVdb(grid);
+  const floatImage = buildFromVdb(grid);
+  let image = floatImage;
+  if (QUANTIZE) {
+    const tolVoxels = Number(params.get("tol") ?? 0.02);
+    const tolerance = QUANTIZE === "fpn" ? tolVoxels * grid.transform.voxelSize[0]! : undefined;
+    image = vdbQuantize(floatImage, QUANTIZE, tolerance);
+    result.quantized = { mode: QUANTIZE, ...(tolerance !== undefined ? { tolerance } : {}), imageBytes: image.byteLength, floatImageBytes: floatImage.byteLength };
+  }
   const pool = await VDBGridPool.create(device, { label: "k3-levelset" });
   const id = pool.add(image);
   let info = pool.info(id);
@@ -385,14 +419,18 @@ async function levelSetScene(renderer: WebGPURenderer, device: GPUDevice): Promi
     ...(params.get("normalStep") ? { normalStep: Number(params.get("normalStep")) } : {}),
   };
   const geometry = vdbProxyGeometry(info, { pad: 1 });
+  // G13a: `?material=physical` draws through VDBLevelSetPhysicalMaterial with transmission and clearcoat on.
+  const physicalExtra = { transmission: 1, clearcoat: 1, clearcoatRoughness: 0.2, ior: IOR, thickness: THICKNESS };
+  const makeMaterial = (p: Record<string, unknown>): VDBLevelSetMaterial | VDBLevelSetPhysicalMaterial =>
+    PHYSICAL ? new VDBLevelSetPhysicalMaterial(renderer, grids, id, { ...physicalExtra, ...p }) : new VDBLevelSetMaterial(renderer, grids, id, p);
 
   // Unlit output: no light in their scene, so a lit three material's outgoing light is 0 + the emissive term.
-  const unlit = (color: (m: VDBLevelSetMaterial) => VDBTslNode) => {
-    const m = new VDBLevelSetMaterial(renderer, grids, id, { ...extra, color: 0x000000, toneMapped: false });
+  const unlit = (color: (m: VDBLevelSetMaterial | VDBLevelSetPhysicalMaterial) => VDBTslNode) => {
+    const m = makeMaterial({ ...extra, color: 0x000000, toneMapped: false });
     m.emissiveNode = color(m);
     return m;
   };
-  const shaded = new VDBLevelSetMaterial(renderer, grids, id, { color: 0xffffff, roughness: 0.5, ...extra });
+  const shaded = makeMaterial({ color: 0xffffff, roughness: 0.5, ...extra });
 
   const lit = new THREE.Scene();
   lit.background = HIS_BACKGROUND.clone();
@@ -436,6 +474,13 @@ async function levelSetScene(renderer: WebGPURenderer, device: GPUDevice): Promi
     const gpuHit = await readFloat(renderer, float);
     for (let i = 0; i < gpuHit.length; i += 4) for (let c = 0; c < 3; c++) gpuHit[i + c] = gpuHit[i + c]! - HIT_OFFSET;
     result.twin = compareTwin(image, info, camera, gpuNormal, gpuHit, shaded.sdfToIndex.value, objectToWorld);
+    if (params.get("refraction") === "1") result.refraction = await refractionCheck(renderer, grids, id, geometry, camera);
+  }
+  if (params.get("vsStandard") === "1") result.vsStandard = await vsStandardCheck(renderer, grids, id, geometry, camera, info);
+  if (params.get("shadow") === "1") {
+    const { stats, picture } = await shadowCheck(renderer, grids, id, geometry, camera, image, info);
+    result.shadow = stats;
+    display = picture;
   }
 
   if (TIMING > 0) {
@@ -634,6 +679,7 @@ function compareTwin(
   const cpuMask = new Uint8Array(W * H);
   const cpuNormal = new Float32Array(W * H * 3);
   const cpuHit = new Float32Array(W * H * 3);
+  lastTwin = { gpuMask, cpuMask, cpuNormal, cpuHit };
   let samples = 0;
   // World units per index voxel (his placement scales the grid uniformly).
   const worldPerVoxel = info.voxelSize[0]! * objectToWorld.getMaxScaleOnAxis();
@@ -752,6 +798,348 @@ function compareTwin(
     stats.analytic = { meanDeg: gpuHits ? sum / gpuHits : 0, maxDeg: max, radiusSpreadVoxels: rMax - rMin };
   }
   return stats;
+}
+
+/** The last `compareTwin`'s per-pixel arrays (the G13a refraction check reads the CPU hits and normals). */
+let lastTwin: { gpuMask: Uint8Array; cpuMask: Uint8Array; cpuNormal: Float32Array; cpuHit: Float32Array } | null = null;
+
+/** GLSL `refract(i, n, eta)` (unit `i`, `n`); zero on total internal reflection. */
+function refract(i: THREE.Vector3, n: THREE.Vector3, eta: number): THREE.Vector3 {
+  const d = n.dot(i);
+  const k = 1 - eta * eta * (1 - d * d);
+  if (k < 0) return new THREE.Vector3();
+  return i.clone().multiplyScalar(eta).sub(n.clone().multiplyScalar(eta * d + Math.sqrt(k)));
+}
+
+/**
+ * G13a: glass over a backdrop whose colour is its own screen uv, `(u, v, 1)`. A smooth white dielectric with
+ * transmission 1 and no lights outputs `(1 - F) · backdrop(uv')`, so `(R / B, G / B)` is the uv the refraction
+ * sampled. The oracle: the CPU twin's hit and normal, `refract(-v, n, 1 / ior)` times `thickness` from the hit,
+ * projected (three's model, from the hit). `?mutate=refract-three` uses three's stock lighting model, which
+ * starts the refracted ray at the proxy's back face.
+ */
+async function refractionCheck(renderer: WebGPURenderer, grids: VDBGridNode, id: number, geometry: THREE.BufferGeometry, camera: THREE.Camera): Promise<NonNullable<Result["refraction"]>> {
+  if (!lastTwin) throw new Error("refraction=1 needs twin=1");
+  const { screenUV, vec3 } = TSL as unknown as Record<string, VDBTslNode>;
+  const glass = new VDBLevelSetPhysicalMaterial(renderer, grids, id, { color: 0xffffff, metalness: 0, roughness: 0, transmission: 1, ior: IOR, thickness: THICKNESS, toneMapped: false });
+  if (MUTATE === "refract-three") {
+    const g = glass as unknown as Record<string, boolean> & { setupLightingModel: () => unknown };
+    g.setupLightingModel = () => new PhysicalLightingModel(g.useClearcoat, g.useSheen, g.useIridescence, g.useAnisotropy, g.useTransmission, g.useDispersion, g.useRetroreflection, g.useDiffuseRoughness);
+  }
+  const scene = new THREE.Scene();
+  (scene as unknown as { backgroundNode: VDBTslNode }).backgroundNode = vec3(screenUV.x, screenUV.y, 1.0);
+  scene.add(new Mesh(geometry, glass));
+  // three r187 skips a lit material's lighting (and so the transmission backdrop) in a scene without lights: a dark
+  // ambient light turns it on and adds nothing.
+  scene.add(new THREE.AmbientLight(0xffffff, 0));
+  const half = new THREE.RenderTarget(W, H, { type: THREE.HalfFloatType, depthBuffer: true, samples: 0 });
+  await renderTo(renderer, scene, camera, half);
+  const rgba = await readHalf(renderer, half);
+  const { gpuMask, cpuMask, cpuNormal, cpuHit } = lastTwin;
+  const inside = erode(erode(gpuMask.map((v, i) => v & cpuMask[i]!)));
+  const eye = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  const errors: number[] = [];
+  const rejected = { outside: 0, dark: 0, offScreen: 0 };
+  const c = (H >> 1) * W + (W >> 1);
+  (result as unknown as Record<string, unknown>).refractionDebug = { centre: [...rgba.subarray(c * 4, c * 4 + 4)], corner: [...rgba.subarray(0, 4)], rejected };
+  for (let i = 0; i < W * H; i++) {
+    if (!inside[i]) {
+      rejected.outside++;
+      continue;
+    }
+    const b = rgba[i * 4 + 2]!;
+    if (!(b > 0.3)) {
+      rejected.dark++;
+      continue;
+    }
+    const hit = new THREE.Vector3(cpuHit[i * 3]!, cpuHit[i * 3 + 1]!, cpuHit[i * 3 + 2]!);
+    const n = new THREE.Vector3(cpuNormal[i * 3]!, cpuNormal[i * 3 + 1]!, cpuNormal[i * 3 + 2]!).normalize();
+    const v = eye.clone().sub(hit).normalize();
+    const r = refract(v.clone().negate(), n, 1 / IOR).normalize().multiplyScalar(THICKNESS);
+    const q = project(camera, hit.add(r));
+    if (q.x < 0.02 * W || q.x > 0.98 * W || q.y < 0.02 * H || q.y > 0.98 * H) {
+      rejected.offScreen++;
+      continue;
+    }
+    const gx = (rgba[i * 4]! / b) * W;
+    const gy = (rgba[i * 4 + 1]! / b) * H;
+    errors.push(Math.hypot(gx - q.x, gy - q.y));
+  }
+  errors.sort((a, b) => a - b);
+  return {
+    pixels: errors.length,
+    meanPx: errors.length ? errors.reduce((s, e) => s + e, 0) / errors.length : 0,
+    p99Px: errors.length ? errors[Math.min(errors.length - 1, Math.floor(errors.length * 0.99))]! : 0,
+    maxPx: errors.length ? errors[errors.length - 1]! : 0,
+  };
+}
+
+/**
+ * G13a: the physical material (transmission and clearcoat on, black, so neither adds light) and the standard one
+ * draw the same emissive normal image over a plane through the surface's centre: the mask and the depth (the
+ * plane hides the far half) must match. `?mutate=physical-depth` drops the physical material's depth node.
+ */
+async function vsStandardCheck(
+  renderer: WebGPURenderer,
+  grids: VDBGridNode,
+  id: number,
+  geometry: THREE.BufferGeometry,
+  camera: THREE.Camera,
+  info: { worldBBox: { min: readonly number[]; max: readonly number[] } },
+): Promise<NonNullable<Result["vsStandard"]>> {
+  const centre = new THREE.Vector3(...(info.worldBBox.min as V3)).add(new THREE.Vector3(...(info.worldBBox.max as V3))).multiplyScalar(0.5);
+  const eye = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+  const render = async (m: VDBLevelSetMaterial | VDBLevelSetPhysicalMaterial): Promise<Float32Array> => {
+    m.emissiveNode = m.normalWorldNode.mul(0.5).add(0.5);
+    const scene = new THREE.Scene();
+    scene.add(new Mesh(geometry, m));
+    // A light that adds nothing: three r187 skips a lit material's lighting (transmission included) without one.
+    scene.add(new THREE.AmbientLight(0xffffff, 0));
+    // A plane through the centre, facing the camera, a little turned: it hides part of the surface.
+    const plane = new Mesh(new THREE.PlaneGeometry(1000, 1000, 16, 16), new THREE.MeshBasicMaterial({ color: 0xff0000, side: THREE.DoubleSide }));
+    plane.position.copy(centre);
+    plane.lookAt(eye);
+    plane.rotateY(0.5);
+    scene.add(plane);
+    const half = new THREE.RenderTarget(W, H, { type: THREE.HalfFloatType, depthBuffer: true, samples: 0 });
+    renderer.setClearColor(0x000000, 0);
+    await renderTo(renderer, scene, camera, half);
+    return readHalf(renderer, half);
+  };
+  const standard = await render(new VDBLevelSetMaterial(renderer, grids, id, { color: 0x000000, toneMapped: false }));
+  const physical = new VDBLevelSetPhysicalMaterial(renderer, grids, id, { color: 0x000000, toneMapped: false, transmission: 1, clearcoat: 1, ior: IOR, thickness: THICKNESS });
+  if (MUTATE === "physical-depth") (physical as unknown as { depthNode: unknown }).depthNode = null;
+  const other = await render(physical);
+  let differing = 0;
+  let maxDiff = 0;
+  let planePixels = 0;
+  const diffs: unknown[] = [];
+  (result as unknown as Record<string, unknown>).vsStandardDiffs = diffs;
+  for (let i = 0; i < W * H; i++) {
+    let d = 0;
+    for (let c = 0; c < 4; c++) d = Math.max(d, Math.abs(standard[i * 4 + c]! - other[i * 4 + c]!));
+    if (d > 1e-3) {
+      differing++;
+      if (differing <= 8) diffs.push({ x: i % W, y: Math.floor(i / W), standard: [...standard.subarray(i * 4, i * 4 + 4)], physical: [...other.subarray(i * 4, i * 4 + 4)] });
+    }
+    maxDiff = Math.max(maxDiff, d);
+    if (standard[i * 4]! > 0.99 && standard[i * 4 + 1]! < 0.01 && standard[i * 4 + 2]! < 0.01) planePixels++;
+  }
+  return { pixels: W * H, differing, maxDiff, planePixels };
+}
+
+/**
+ * K3.7b: a directional light (orthographic shadow camera, basic shadow map) casts the level set's shadow on a lit
+ * ground plane below it. Oracle per pixel: the view ray's plane point P is shadowed when the CPU twin's trace from P
+ * toward the light hits the level set. Pixels where the view ray meets the surface first (dilated by a pixel) are
+ * skipped. `?mutate=wgsl-three-ortho` makes the shadow pass trace perspective rays.
+ */
+async function shadowCheck(
+  renderer: WebGPURenderer,
+  grids: VDBGridNode,
+  id: number,
+  geometry: THREE.BufferGeometry,
+  camera: THREE.Camera,
+  image: Uint32Array,
+  info: { worldToIndex: Float64Array; worldBBox: { min: readonly number[]; max: readonly number[] } },
+): Promise<{ stats: NonNullable<Result["shadow"]>; picture: Uint8Array }> {
+  const lo = new THREE.Vector3(...(info.worldBBox.min as V3));
+  const hi = new THREE.Vector3(...(info.worldBBox.max as V3));
+  const centre = lo.clone().add(hi).multiplyScalar(0.5);
+  const radius = hi.clone().sub(lo).length() / 2;
+  const planeY = lo.y - 0.2 * (hi.y - lo.y);
+  const toLight = new THREE.Vector3(0.45, 1, 0.3).normalize();
+  const scene = new THREE.Scene();
+  const caster = new Mesh(geometry, new VDBLevelSetMaterial(renderer, grids, id, { color: 0xffffff, roughness: 1 }));
+  caster.castShadow = true;
+  scene.add(caster);
+  // A subdivided receiver (SwiftShader varyings over a large triangle are ~1e-4 off).
+  const plane = new Mesh(new THREE.PlaneGeometry(radius * 12, radius * 12, 64, 64), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, metalness: 0 }));
+  plane.rotation.x = -Math.PI / 2;
+  plane.position.set(centre.x, planeY, centre.z);
+  plane.receiveShadow = true;
+  scene.add(plane);
+  const sun = new THREE.DirectionalLight(0xffffff, Math.PI);
+  sun.position.copy(centre).addScaledVector(toLight, radius * 6);
+  sun.target.position.copy(centre);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.bias = -0.0005;
+  sun.shadow.normalBias = 0;
+  Object.assign(sun.shadow.camera, { left: -radius * 2.5, right: radius * 2.5, top: radius * 2.5, bottom: -radius * 2.5, near: radius, far: radius * 14 });
+  sun.shadow.camera.updateProjectionMatrix();
+  scene.add(sun, sun.target);
+  // A view from above and in front, looking down at the plane under the object.
+  const view = new THREE.PerspectiveCamera(50, W / H, radius * 0.05, radius * 40);
+  view.position.copy(centre).add(new THREE.Vector3(-0.4, 1.6, 2.6).multiplyScalar(radius));
+  view.lookAt(centre.x + toLight.x * -radius, planeY, centre.z + toLight.z * -radius);
+  view.updateMatrixWorld(true);
+  void camera;
+  const shadowMap = renderer.shadowMap as unknown as { enabled: boolean; type: THREE.ShadowMapType };
+  shadowMap.enabled = true;
+  shadowMap.type = THREE.BasicShadowMap;
+  const half = new THREE.RenderTarget(W, H, { type: THREE.HalfFloatType, depthBuffer: true, samples: 0 });
+  renderer.setClearColor(0x000000, 1);
+  await renderTo(renderer, scene, view, half);
+  await renderTo(renderer, scene, view, half);
+  const rgba = await readHalf(renderer, half);
+  shadowMap.enabled = false;
+
+  // CPU: the plane point of each pixel's ray, unless the surface is in front; shadowed if the twin trace toward the light hits.
+  const lit = toLight.y; // Lambert: π · (1/π) · cos
+  const w2i = info.worldToIndex;
+  const toIndexScale = caster.material.sdfToIndex.value;
+  const surfaceFront = new Uint8Array(W * H);
+  const planeMask = new Uint8Array(W * H);
+  const cpu = new Uint8Array(W * H);
+  const di = affine(w2i, [toLight.x, toLight.y, toLight.z], 0);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      const { o, d } = pixelRay(view, x, y);
+      if (!(d[1] < 0)) continue;
+      const tp = (planeY - o[1]) / d[1];
+      // The plane is finite (12 radii a side): beyond it the view shows the clear colour.
+      const px = o[0] + d[0] * tp - centre.x;
+      const pz = o[2] + d[2] * tp - centre.z;
+      if (Math.abs(px) > radius * 5.9 || Math.abs(pz) > radius * 5.9) continue;
+      const front = levelSetHit(image, affine(w2i, o, 1), affine(w2i, d, 0), [0, 1e30], { sdfToIndex: toIndexScale, maxSamples: 4096 });
+      if (front.hit && front.t < tp) {
+        surfaceFront[i] = 1;
+        continue;
+      }
+      planeMask[i] = 1;
+      const p = [o[0] + d[0] * tp, o[1] + d[1] * tp, o[2] + d[2] * tp];
+      const s = levelSetHit(image, affine(w2i, p, 1), di, [0, 1e30], { sdfToIndex: toIndexScale, maxSamples: 4096 });
+      cpu[i] = s.hit ? 1 : 0;
+    }
+  }
+  // Skip a pixel around the surface's silhouette; judge the shadow where the plane shows.
+  const skip = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      let any = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx;
+        const yy = y + dy;
+        if (xx >= 0 && yy >= 0 && xx < W && yy < H) any |= surfaceFront[yy * W + xx]!;
+      }
+      skip[y * W + x] = any;
+    }
+  }
+  let planePixels = 0;
+  let gpuShadow = 0;
+  let cpuShadow = 0;
+  let both = 0;
+  let union = 0;
+  let mismatched = 0;
+  let offEdge = 0;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (!planeMask[i] || skip[i]) continue;
+      planePixels++;
+      const g = rgba[i * 4]! < 0.5 * lit ? 1 : 0;
+      const c = cpu[i]!;
+      gpuShadow += g;
+      cpuShadow += c;
+      if (g || c) union++;
+      if (g && c) both++;
+      if (g === c) continue;
+      mismatched++;
+      // A mismatch must sit on the CPU shadow's edge: a 4-neighbour of the other state.
+      let edge = false;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const xx = x + dx;
+        const yy = y + dy;
+        if (xx >= 0 && yy >= 0 && xx < W && yy < H && planeMask[yy * W + xx] && cpu[yy * W + xx] !== c) edge = true;
+      }
+      if (!edge) offEdge++;
+    }
+  }
+  // The picture: red = GPU shadow, green = CPU shadow (yellow where both agree), blue = the plane's light, white = surface.
+  const picture = new Uint8Array(W * H * 4);
+  for (let i = 0; i < W * H; i++) {
+    const g = planeMask[i] && rgba[i * 4]! < 0.5 * lit ? 255 : 0;
+    picture.set([g, cpu[i] ? 255 : 0, planeMask[i] ? toByte(rgba[i * 4]!) : surfaceFront[i] ? 255 : 0, 255], i * 4);
+    if (surfaceFront[i]) picture.set([255, 255, 255, 255], i * 4);
+  }
+  return { stats: { planePixels, gpuShadow, cpuShadow, iou: union ? both / union : 1, mismatched, offEdge }, picture };
+}
+
+/**
+ * K3.7b: `sphere_points.vdb` written as a 3-LOD `.wvdb` in the page, streamed in 4 KiB pushes through
+ * `WvdbStreamReader` into `VDBPoints.fromWvdbGrid` / `addWvdbLevel`, rendered after every event (so each event's
+ * range is uploaded on its own). Each frame must equal a `VDBPoints` built at once from the whole coarse-first list,
+ * drawing the same count at the same spacing. `?mutate=wvdb-range-0` uploads each write's range at offset 0 (a wrong
+ * partial upload).
+ */
+async function pointsWvdbScene(renderer: WebGPURenderer): Promise<Uint8Array> {
+  const file = await fetchVdb(params.get("file") ?? def!.file);
+  const grid = file.grids.find((g: VdbGrid) => g.valueType === "ptdataidx32") as VdbPointDataGrid | undefined;
+  if (!grid) throw new Error(`${def!.file} has no point data grid`);
+  const data = vdbPointRenderData(grid);
+  const { bytes } = writeWvdb([{ type: "points", name: "points", positions: data.positions, colors: data.colors, spacing: data.spacing }], { lods: 3 });
+  const full = readWvdb(bytes).grids[0] as WvdbPointsGrid;
+  const all = { positions: new Float32Array(full.count * 3), colors: full.colors ? new Float32Array(full.count * 3) : null };
+  for (const l of full.levels) {
+    all.positions.set(l.positions, l.firstPoint * 3);
+    if (l.colors) all.colors!.set(l.colors, l.firstPoint * 3);
+  }
+  const box = worldBox(grid.indexBBox!.min, grid.indexBBox!.max, grid.transform.matrix);
+  const placement = hisPlacement(box.min, box.max);
+  const camera = hisCamera(null);
+  const place = (p: VDBPoints): VDBPoints => {
+    p.matrixAutoUpdate = false;
+    p.matrix.copy(placement);
+    (p.material as unknown as { toneMapped: boolean }).toneMapped = false;
+    return p;
+  };
+  const reference = place(new VDBPoints({ positions: all.positions, colors: all.colors, spacing: full.spacing ?? 1 }));
+  const refScene = new THREE.Scene();
+  refScene.add(reference);
+  const streamScene = new THREE.Scene();
+  const half = new THREE.RenderTarget(W, H, { type: THREE.HalfFloatType, depthBuffer: true, samples: 0 });
+  renderer.setClearColor(0x000000, 1);
+  const frame = async (scene: THREE.Scene): Promise<Uint8Array> => {
+    scene.updateMatrixWorld(true);
+    await renderTo(renderer, scene, camera, half);
+    return toDisplay(await readHalf(renderer, half));
+  };
+  const reader = new WvdbStreamReader({ partialLods: true });
+  let points: VDBPoints | null = null;
+  const stats = { points: full.count, lods: full.levels.length, events: 0, drawn: [] as number[], identical: 0, differing: [] as number[] };
+  let last: Uint8Array = new Uint8Array(0);
+  for (let at = 0; at < bytes.length; at += 4096) {
+    for (const e of reader.push(bytes.subarray(at, Math.min(bytes.length, at + 4096)))) {
+      if (!points) {
+        points = place(VDBPoints.fromWvdbGrid(reader.header!.grids[0] as never));
+        if (MUTATE === "wvdb-range-0") {
+          for (const attr of [points.positionAttribute, points.colorAttribute]) {
+            if (!attr) continue;
+            const add = attr.addUpdateRange.bind(attr);
+            attr.addUpdateRange = (_start: number, count: number) => add(0, count);
+          }
+        }
+        streamScene.add(points);
+      }
+      points.addWvdbLevel(e.levels[0] as WvdbPointsLevel);
+      stats.events++;
+      stats.drawn.push(points.pointCount);
+      const streamed = await frame(streamScene);
+      reference.pointCount = points.pointCount;
+      reference.spacing = points.spacing;
+      const expected = await frame(refScene);
+      let differ = 0;
+      for (let i = 0; i < streamed.length; i += 4) if (streamed[i] !== expected[i] || streamed[i + 1] !== expected[i + 1] || streamed[i + 2] !== expected[i + 2]) differ++;
+      if (differ === 0) stats.identical++;
+      stats.differing.push(differ);
+      last = streamed;
+    }
+  }
+  reader.end();
+  result.wvdb = stats;
+  return last;
 }
 
 /** Projects a world point to (x, y) pixel coordinates (top row 0) and view depth. */
@@ -939,7 +1327,8 @@ async function main(): Promise<void> {
     return;
   }
   const checkWgslPatch = installWgslPatch(device, WGSL_PATCHES, MUTATE);
-  const display = def.kind === "levelset" ? await levelSetScene(renderer, device) : await pointsScene(renderer, device);
+  const display =
+    def.kind === "levelset" ? await levelSetScene(renderer, device) : def.kind === "points-wvdb" ? await pointsWvdbScene(renderer) : await pointsScene(renderer, device);
   checkWgslPatch();
   result.width = W;
   result.height = H;

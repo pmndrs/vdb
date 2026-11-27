@@ -30,8 +30,10 @@ type VDBGridStatsCpuResult
 type VDBGridTransformInput
 type VDBInspectReport
 type VDBLeafCodec
+type VDBPointRenderAttribute
 type VDBPointRenderData
 type VDBPointRenderDataOptions
+type VDBPointRenderDataProgress
 type VDBQuantizeMode
 type VDBQuantizeOptions
 type VDBReadResult
@@ -150,6 +152,7 @@ value vdbGridStatsCpu
 value vdbHalfToFloat
 value vdbInspect
 value vdbPointRenderData
+value vdbPointRenderDataTransfer
 value vdbQuantize
 value vdbQuantizeDetailed
 value vdbReadValueCpu

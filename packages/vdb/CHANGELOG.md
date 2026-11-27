@@ -75,7 +75,16 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
   (widens a Half grid exactly; Half → Float → Half is the identity), `vdbCollapseGrid(half)` (stays Half),
   `transformLeafValues(half, fn)` (results rounded to the nearest binary16) and core `vdbApplyValueTransform` on a Half
   pool grid. They threw `VDB_UNSUPPORTED_GRID_TYPE` before.
-
+- Three (G13a): `VDBLevelSetPhysicalMaterial`, the level-set trace on three's `MeshPhysicalNodeMaterial`: transmission
+  (real glass, refracted from the traced hit, `thickness` in world units), `ior`, attenuation, dispersion, clearcoat (on
+  the traced normal), sheen, iridescence. Same options, nodes and validation as `VDBLevelSetMaterial`.
+- Tools (G14a): `vdbPointRenderData` takes `attributes` (other point attributes, e.g. `['v']`, in the output order),
+  `order: 'prefix'` (every prefix of k tenths is an even subsample: `prefix[k]` points) and `onProgress` (decode per
+  leaf, then the copy), and returns `bounds`. `vdbPointRenderDataTransfer(data)` lists the buffers for a worker's
+  `postMessage`. `VdbPointDataGrid.points({ onProgress })` reports the decode per leaf.
+- Three (K3.7b): `.wvdb` points LOD streaming into `VDBPoints`: `VDBPoints.fromWvdbGrid(header)` and
+  `addWvdbLevel(level)` (uploads only the new range, draws the points that have arrived). `VDBPoints` gains `capacity`,
+  `writePoints(first, positions, colors?)`, and `pointCount` now sets the drawn instance count.
 - `@pmndrs/vdb/tools`: `parseVdb(buffer, { select })` lists a `.vdb`'s grids without decoding them and decodes only
   the ones you pick. `VdbFile.descriptors` (`VdbGridDescriptor`: name, grid type, on-disk value type, class, compression
   flags, transform, index bounding box and an `unsupported` reason) covers every grid; with `select`, a grid the parser
@@ -150,6 +159,10 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
   `castShadow` light when its node changes, which the light needs when the core makes a new probe stack.
 
 ### Fixed
+
+- Tools (K3.7b): `vdbQuantize` kept no inactive tiles, so a quantized (Fp8, FpN, …) level set's interior read as the
+  background and traced in the wrong place. Inactive tiles whose value differs from the fill are kept, and a level set
+  keeps its root background.
 
 - Three (K6.8b): changing a `VDBFrameEmissionLight`'s `resolution` mid-run left plain lit materials (`MeshLambertMaterial`,
   `MeshStandardMaterial`) bound to the retired, destroyed probe stack ("Destroyed texture … used in a submit", and a wrong

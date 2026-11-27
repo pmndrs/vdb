@@ -2,7 +2,7 @@
  * Demo 14 · Points — OpenVDB point data grids decoded by our own parser in a worker and drawn as one instanced
  * sprite (`VDBPoints`): the 9.5 M-point waterfall (`waterfall_points.vdb`, 157 MB, Cd / v / id) and the light
  * `sphere_points.vdb`. Colour by `Cd`, by speed `|v|`, by height or one colour; point size; density 10 / 50 / 100 %
- * (a prefix of the worker's subsample order, so a change is only an instance count). Public API only.
+ * (a prefix of `vdbPointRenderData`'s prefix order, so a change is only `VDBPoints.pointCount`). Public API only.
  *
  * Query (with the shell's `presentation`, `still`, `panel`, `gallery`): `?model=sphere|waterfall`,
  * `?color=cd|velocity|height|uniform`, `?density=10|50|100`, `?size=<multiplier>`, `?glow=1`, `?view=x,y,z` (camera direction).
@@ -80,8 +80,8 @@ function decode(url: string, progress: (text: string, f: number | null) => void)
       if (m.type === "progress") {
         if (m.stage === "download") progress(`downloading ${(m.received / 1048576).toFixed(0)}${m.total ? ` / ${(m.total / 1048576).toFixed(0)}` : ""} MB…`, m.total ? m.received / m.total : null);
         else if (m.stage === "parse") progress(`parsing the .vdb (our parser, in a worker) · ${secs()}`, null);
-        else if (m.stage === "decode") progress(`decoding ${(m.count ?? 0).toLocaleString()} points + attributes · ${secs()}`, null);
-        else progress(`ordering for subsampling · ${secs()}`, null);
+        else if (m.stage === "decode") progress(`decoding ${m.total.toLocaleString()} points + attributes · ${secs()}`, m.total ? m.done / m.total : null);
+        else progress(`ordering for subsampling · ${secs()}`, m.total ? m.done / m.total : null);
       } else if (m.type === "done") {
         worker.terminate();
         resolve(m.result);
@@ -132,19 +132,20 @@ async function run(): Promise<void> {
   let loaded: Loaded | null = null;
   const cache = new Map<string, DecodedPoints>();
 
-  const hasMode = (data: DecodedPoints, mode: ColorMode): boolean => (mode === "cd" ? !!data.cd : mode === "velocity" ? !!data.speed : true);
+  const hasMode = (data: DecodedPoints, mode: ColorMode): boolean => (mode === "cd" ? !!data.data.colors : mode === "velocity" ? !!data.speed : true);
 
   function writeColors(l: Loaded, mode: ColorMode): void {
-    const { data, colors } = l;
+    const { data: decoded, colors } = l;
+    const data = decoded.data;
     const n = data.count;
-    if (mode === "cd" && data.cd) colors.set(data.cd);
-    else if (mode === "velocity" && data.speed) {
-      const [lo, hi] = data.speedRange;
+    if (mode === "cd" && data.colors) colors.set(data.colors);
+    else if (mode === "velocity" && decoded.speed) {
+      const [lo, hi] = decoded.speedRange;
       const k = 1 / (hi - lo);
-      for (let i = 0; i < n; i++) ramp(SPEED_RAMP, (data.speed[i]! - lo) * k, colors, i * 3);
+      for (let i = 0; i < n; i++) ramp(SPEED_RAMP, (decoded.speed[i]! - lo) * k, colors, i * 3);
     } else if (mode === "height") {
-      const y0 = data.bounds.min[1];
-      const k = 1 / Math.max(1e-9, data.bounds.max[1] - y0);
+      const y0 = data.bounds?.min[1] ?? 0;
+      const k = 1 / Math.max(1e-9, (data.bounds?.max[1] ?? 1) - y0);
       for (let i = 0; i < n; i++) ramp(HEIGHT_RAMP, (data.positions[i * 3 + 1]! - y0) * k, colors, i * 3);
     } else {
       for (let i = 0; i < n; i++) colors.set(UNIFORM, i * 3);
@@ -155,11 +156,11 @@ async function run(): Promise<void> {
 
   /** Instance count and point diameter for the density; size multiplies the default (half the spacing). */
   function applyDensity(l: Loaded): void {
-    const { prefix, spacing } = l.data;
-    const count = controls.density === "10" ? prefix.p10 : controls.density === "50" ? prefix.p50 : prefix.p100;
+    const { prefix, spacing, count: all } = l.data.data;
+    // prefix[k]: the first k tenths of the prefix order (prefix[1] every 10th point, prefix[5] every 2nd).
+    const count = controls.density === "10" ? prefix![1]! : controls.density === "50" ? prefix![5]! : all;
     l.points.pointCount = count;
-    (l.points as unknown as { count: number }).count = count;
-    const fraction = count / Math.max(1, prefix.p100);
+    const fraction = count / Math.max(1, all);
     l.points.size = spacing * Math.cbrt(1 / fraction) * 0.5 * controls.size;
     state.info.drawn = count;
     state.info.density = controls.density;
@@ -181,8 +182,8 @@ async function run(): Promise<void> {
   function setBlurb(def: ModelDef, data: DecodedPoints): void {
     const text =
       def.id === "waterfall"
-        ? `all ${(data.count / 1e6).toFixed(1)} million waterfall particles with their colour and velocity attributes`
-        : `the ${data.count.toLocaleString("en-US")} points of the OpenVDB sphere_points sample${data.attributes.length ? ` with their ${data.attributes.join(", ")} attributes` : ""}`;
+        ? `all ${(data.data.count / 1e6).toFixed(1)} million waterfall particles with their colour and velocity attributes`
+        : `the ${data.data.count.toLocaleString("en-US")} points of the OpenVDB sphere_points sample${data.attributes.length ? ` with their ${data.attributes.join(", ")} attributes` : ""}`;
     const p = ui.card.querySelector("p");
     if (p) p.textContent = `OpenVDB point grids decoded by our own parser, off the main thread and drawn as one instanced sprite: ${text}.`;
   }
@@ -204,11 +205,12 @@ async function run(): Promise<void> {
       loaded.points.dispose();
       loaded = null;
     }
-    const colors = new Float32Array(data.count * 3);
-    const points = new VDBPoints({ positions: data.positions, colors, count: data.count, spacing: data.spacing });
+    const render = data.data;
+    const colors = new Float32Array(render.count * 3);
+    const points = new VDBPoints({ positions: render.positions, colors, count: render.count, spacing: render.spacing });
     // Stand the cloud's box on the floor of the view: longest side `def.size`, centred.
-    const min = new THREE.Vector3(...data.bounds.min);
-    const max = new THREE.Vector3(...data.bounds.max);
+    const min = new THREE.Vector3(...(render.bounds?.min ?? [0, 0, 0]));
+    const max = new THREE.Vector3(...(render.bounds?.max ?? [1, 1, 1]));
     const size = max.clone().sub(min);
     const s = def.size / Math.max(size.x, size.y, size.z);
     points.scale.setScalar(s);
@@ -217,7 +219,7 @@ async function run(): Promise<void> {
     group.add(points);
     content.add(group);
     loaded = { def, data, points, colors, group };
-    const mode = controls.color && hasMode(data, controls.color) ? controls.color : data.cd ? "cd" : "height";
+    const mode = controls.color && hasMode(data, controls.color) ? controls.color : render.colors ? "cd" : "height";
     controls.color = mode;
     colorRow.options(colorOptions(data));
     colorRow.set(mode);
@@ -229,8 +231,9 @@ async function run(): Promise<void> {
     const dist = (radius / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2))) * (def.id === "sphere" ? 0.82 : 0.6);
     // Aim at the cloud's centroid (the 10% prefix is an even sample), not its box centre: a waterfall's box is mostly air.
     const centroid = new THREE.Vector3();
-    for (let i = 0; i < data.prefix.p10; i++) centroid.add(new THREE.Vector3(data.positions[i * 3], data.positions[i * 3 + 1], data.positions[i * 3 + 2]));
-    centroid.divideScalar(Math.max(1, data.prefix.p10)).applyMatrix4(points.matrixWorld.compose(points.position, points.quaternion, points.scale));
+    const p10 = render.prefix![1]!;
+    for (let i = 0; i < p10; i++) centroid.add(new THREE.Vector3(render.positions[i * 3], render.positions[i * 3 + 1], render.positions[i * 3 + 2]));
+    centroid.divideScalar(Math.max(1, p10)).applyMatrix4(points.matrixWorld.compose(points.position, points.quaternion, points.scale));
     centroid.multiplyScalar(0.5); // halfway between the box centre (the origin) and the centroid
     orbit.target.copy(centroid);
     const dir = new THREE.Vector3(...((params.get("view") ?? "-0.6,0.25,1").split(",").map(Number) as [number, number, number]));
@@ -239,7 +242,7 @@ async function run(): Promise<void> {
     viewer.motion.rebase();
     ui.status("");
     setBlurb(def, data);
-    state.info.count = data.count;
+    state.info.count = render.count;
     state.info.attributes = data.attributes;
     state.loading = false;
     const from = state.frames;
@@ -285,9 +288,9 @@ async function run(): Promise<void> {
     if (!loaded) return "decoding…";
     const d = loaded.data;
     const drawn = loaded.points.pointCount;
-    const gpu = d.count * 24;
+    const gpu = d.data.count * 24;
     return (
-      `${d.count.toLocaleString()} points (${d.attributes.join(", ") || "positions only"}) · drawing ${drawn.toLocaleString()}\n` +
+      `${d.data.count.toLocaleString()} points (${d.attributes.join(", ") || "positions only"}) · drawing ${drawn.toLocaleString()}\n` +
       `${MiB(d.fileBytes)} .vdb → parsed ${(d.ms.parse / 1000).toFixed(1)} s, decoded ${(d.ms.decode / 1000).toFixed(1)} s · ${MiB(gpu)} on the GPU`
     );
   });

@@ -632,3 +632,17 @@ From v1; details in docs/archive/handoffs/.
   A scheduled workflow runs from the default branch, so merging `upstream-watch.yml` to main turns it on.
 - THIRD_PARTY.md and `packages/vdb/THIRD_PARTY_NOTICES.md` are checked by `test/third-party.test.ts`: deleting or adding a
   file with a "Portions derived from mjurczyk/openvdb (MIT)" header means editing both lists in the same commit.
+- three r187's `PhysicalLightingModel` refracts (transmission) from `positionWorld` and `modelWorldMatrix`: on a
+  traced proxy that is the box's back face, not the surface (4 px off on the K3.7 sphere). `VDBLevelSetPhysicalMaterial`
+  swaps in `VDBLevelSetPhysicalLightingModel` (three's `start` with transmission off, then its refraction from the hit,
+  ported); a three upgrade that changes `getIBLVolumeRefraction` needs the port redone (G13a, V165).
+- three r187 skips ALL lighting of a lit material when the scene has no light, transmission's backdrop included: a probe
+  that checks a physical term needs a light (`new AmbientLight(0xffffff, 0)` adds nothing and turns it on).
+- A transmissive material draws in three's transparent pass (after the opaques): where its depth TIES an opaque's (an
+  intersection curve) the later fragment wins, so an opaque-vs-transmissive image A/B differs on a few pixels there.
+- `vdbQuantize` before K3.7b dropped inactive tiles: a quantized level set's interior (`-band` tiles) read as the
+  background and traced wrong (V168). Quantize a level set only with a build that keeps them (now the default).
+- `VDBPoints.pointCount` is an accessor that sets three's instance `count` (G14a): set `pointCount`, never `count`, and
+  keep it within `capacity` (the arrays may hold more points than are drawn).
+- A shadow-map oracle on a finite ground plane must stop at the plane's edge: beyond it the view shows the clear colour,
+  which a "dark = shadowed" test reads as shadow (K3.7b's first run: IoU 0.56).

@@ -197,8 +197,11 @@ export interface VdbPointDataGrid extends VdbGridBase<number> {
   attributes: VdbPointAttributeInfo[];
   /** Group names, from the descriptor. */
   groupNames: string[];
-  /** Decodes every leaf's attribute arrays (cached after the first call). */
-  points(): VdbPointList;
+  /**
+   * Decodes every leaf's attribute arrays (cached after the first call).
+   * @param options `onProgress(decoded, total)` after each leaf (G14a); once with `(total, total)` when cached.
+   */
+  points(options?: { onProgress?: (decoded: number, total: number) => void }): VdbPointList;
 }
 
 /** Any grid {@link parseVdb} returns, discriminated by `valueType`. */

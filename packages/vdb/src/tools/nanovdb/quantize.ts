@@ -230,10 +230,12 @@ function readFloatGrid(image: Uint32Array, caller = "quantize"): FloatGridView {
 
   const treeOff = GRID_SIZE;
   const rootOff = treeOff + Number(view.getBigUint64(treeOff + TREE_OFF_NODE_OFFSET_ROOT, true));
-  const background = effectiveBackground(view, rootOff, fmt);
+  // A level set keeps its root background (+band): its inactive tiles carry the sign (K3.7b). Other grids fill
+  // with the near-field value (V5).
+  const background = gridClassId === 1 ? fmt.read(view, rootOff + fmt.L.rootOffBackground) : effectiveBackground(view, rootOff, fmt);
 
   const tiles: TileInput[] = [];
-  collectFloatTiles(view, rootOff, tiles, fmt);
+  collectFloatTiles(view, rootOff, tiles, fmt, background);
   const leaves = traverseFloatLeaves(view, rootOff, fmt);
   return { half: fmt === HALF_SOURCE, voxelSize, translation, background, gridName, gridClassId, leaves, tiles };
 }
@@ -306,15 +308,20 @@ function nodeOrigin(view: DataView, nodeOff: number, dim: number): [number, numb
  * off. They are re-emitted as tiles, so the quantized grid keeps the source
  * topology (no expansion into constant leaves).
  */
-function collectFloatTiles(view: DataView, rootOff: number, out: TileInput[], fmt: SourceFormat): void {
+function collectFloatTiles(view: DataView, rootOff: number, out: TileInput[], fmt: SourceFormat, fill: number): void {
   const L = fmt.L;
+  // An inactive tile whose value is not the fill (a level set's interior -band, K4.9) is kept, inactive: dropping it
+  // turned a quantized level set's inside into outside (K3.7b).
+  const keep = (value: number, active: boolean): boolean => active || value !== fill;
   const nTiles = view.getUint32(rootOff + ROOT_OFF_TABLE_SIZE, true);
   for (let t = 0; t < nTiles; t++) {
     const tileOff = rootOff + L.rootSize + t * L.rootTileSize;
     if (readI64(view, tileOff + ROOT_TILE_OFF_CHILD) !== 0) continue;
-    if (view.getUint32(tileOff + ROOT_TILE_OFF_STATE, true) === 0) continue;
+    const active = view.getUint32(tileOff + ROOT_TILE_OFF_STATE, true) !== 0;
+    const value = fmt.read(view, tileOff + L.rootTileOffValue);
+    if (!keep(value, active)) continue;
     const key = view.getBigUint64(tileOff + ROOT_TILE_OFF_KEY, true);
-    out.push({ origin: keyToOrigin(key), dim: 4096, value: fmt.read(view, tileOff + L.rootTileOffValue) });
+    out.push({ origin: keyToOrigin(key), dim: 4096, value, ...(active ? {} : { active: false }) });
   }
   for (const child of rootChildren(view, rootOff)) {
     const upperOff = rootOff + child;
@@ -326,7 +333,9 @@ function collectFloatTiles(view: DataView, rootOff: number, out: TileInput[], fm
         const lowerOrigin = nodeOrigin(view, lowerOff, 128);
         for (let m = 0; m < LOWER_TABLE_COUNT; m++) {
           if (maskBit(view, lowerOff + LOWER_OFF_CHILD_MASK, m)) continue;
-          if (!maskBit(view, lowerOff + NODE_OFF_VALUE_MASK, m)) continue;
+          const active = maskBit(view, lowerOff + NODE_OFF_VALUE_MASK, m);
+          const value = fmt.read(view, lowerOff + L.lowerOffTable + m * L.tableStride);
+          if (!keep(value, active)) continue;
           out.push({
             origin: [
               lowerOrigin[0] + (((m >> 8) & 15) << 3),
@@ -334,10 +343,14 @@ function collectFloatTiles(view: DataView, rootOff: number, out: TileInput[], fm
               lowerOrigin[2] + ((m & 15) << 3),
             ],
             dim: 8,
-            value: fmt.read(view, lowerOff + L.lowerOffTable + m * L.tableStride),
+            value,
+            ...(active ? {} : { active: false }),
           });
         }
-      } else if (maskBit(view, upperOff + NODE_OFF_VALUE_MASK, n)) {
+      } else {
+        const active = maskBit(view, upperOff + NODE_OFF_VALUE_MASK, n);
+        const value = fmt.read(view, slotOff);
+        if (!keep(value, active)) continue;
         out.push({
           origin: [
             upperOrigin[0] + (((n >> 10) & 31) << 7),
@@ -345,7 +358,8 @@ function collectFloatTiles(view: DataView, rootOff: number, out: TileInput[], fm
             upperOrigin[2] + ((n & 31) << 7),
           ],
           dim: 128,
-          value: fmt.read(view, slotOff),
+          value,
+          ...(active ? {} : { active: false }),
         });
       }
     }
