@@ -119,7 +119,9 @@ export type TwinMutation =
   // K6.10a: WGSL patches of the kernel under test (k6-core.ts WGSL_PATCHES), not twin terms: the twin stays exact
   | "wgsl-gather-extinction"
   | "wgsl-gather-phase"
-  | "wgsl-resolve-order";
+  | "wgsl-resolve-order"
+  // K6.Na: the packed MLP evaluator's input chunk turned (WGSL patch)
+  | "wgsl-mlp-packed";
 
 /** The source as the twin reads it: the `vdbSrc*` functions on the CPU (uvw already offset and wrapped). */
 export interface TwinSampler {

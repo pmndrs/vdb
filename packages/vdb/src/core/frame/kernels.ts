@@ -24,6 +24,7 @@ import {
   vdbFrameGridMipWgsl,
   vdbFrameLightingGatherWgsl,
   vdbFrameTransmittanceWgsl,
+  vdbFrameScatteringIsMlp,
   type VDBFrameScatteringKernel,
 } from "./wgsl/lighting.js";
 import { RESOLVE_BINDINGS, vdbFrameResolveWgsl, type VDBFrameResolveOptions } from "./wgsl/resolve.js";
@@ -194,7 +195,8 @@ export function vdbFrameTransmittanceSpec(o: { scattering?: VDBFrameScatteringKe
       ],
     },
   ];
-  if (scattering === "mlp") {
+  // K6.Na: the packed evaluator binds the same group 2 (its weights a vec4 array in the one storage buffer)
+  if (vdbFrameScatteringIsMlp(scattering)) {
     const m = TRANSMITTANCE_MLP_BINDINGS;
     groups.push({
       entries: [

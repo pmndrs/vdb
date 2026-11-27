@@ -156,6 +156,11 @@
       "min": 5744,
       "gz": 2051
     },
+    "vdb frame transmittance (mlp-packed)": {
+      "raw": 24285,
+      "min": 15581,
+      "gz": 4809
+    },
     "vdb frame transmittance (mlp)": {
       "raw": 23983,
       "min": 15351,

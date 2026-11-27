@@ -176,6 +176,13 @@ export interface VDBFrameInternalSettings extends VDBFrameSettings {
    * 0), the weight isotropic in-scattering gives each hemisphere. An A/B setting (K6.Q1a handoff).
    */
   ambientProbe: "irradiance" | "radiance";
+  /**
+   * K6.Na: the evaluator of `'neural'` / `'mlp'` (EXPERIMENTAL). `'generic'` (default, K6.3): scalar loops over a flat
+   * weight array. `'packed'`: the layer layout of the pmndrs neural tooling (pmndrs/denoiser `denoiser-wgsl`: mat4x4 per
+   * output group and input chunk, `mat4x4f * vec4f`, vec4 activations), the same network to f32 rounding. An A/B setting
+   * (K6-Na handoff); DECISIONS changes only after the A/B.
+   */
+  mlpRuntime: "generic" | "packed";
 }
 
 /** His v0.26 defaults (`FrameRenderer.js` L191–246, as `VDBFrameRenderer.settings`), plus `occlusion: true` and the K6.Q1 ambient occlusion (on since D35). */
@@ -227,6 +234,7 @@ export function vdbFrameDefaultInternalSettings(): VDBFrameInternalSettings {
     multiScaleEdge: "zero",
     multiScaleSigma: "his",
     ambientProbe: "irradiance",
+    mlpRuntime: "generic",
     occlusion: true,
     ambientOcclusion: true,
     ambientOcclusionPairs: 4,

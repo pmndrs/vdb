@@ -188,3 +188,104 @@ export function vdbFrameMlpInputs(sample: (level: number, world: Vec3) => Vec2, 
   input[3 * levels] = Math.log(opticalDepth + 1);
   return input;
 }
+
+// --- K6.Na: the packed layout (pmndrs/denoiser `denoiser-wgsl` conv.ts `packWeights` / `packBias`, one tap) -------------
+// Portions derived from pmndrs/denoiser (MIT, Copyright (c) 2024 Dennis Smolek), commit 3ad5e98:
+//   packages/denoiser-wgsl/src/conv.ts `packWeights` (mat4x4 per (output group, input chunk, tap), column j = input
+//   channel j of the chunk, row i = output channel 4 × group + i; padded channels zero) and `packBias` (vec4 groups).
+// Changes: a dense layer is its 1 × 1 case (one tap, no second source); every layer of the network goes into one
+// `array<vec4f>` (each mat4x4 as its 4 columns, then the layer's bias groups), so the kernel keeps one storage buffer (D10).
+
+/** vec4s of one packed layer: ⌈outputs / 4⌉ × ⌈inputs / 4⌉ mat4x4 (4 vec4 each), then ⌈outputs / 4⌉ bias vec4s. */
+export function vdbFrameMlpPackedLayerVectors(l: Pick<VDBFrameMlpLayer, "inputs" | "outputs">): number {
+  const out4 = Math.ceil(l.outputs / 4);
+  return out4 * Math.ceil(l.inputs / 4) * 4 + out4;
+}
+
+/** The vec4 offset of each packed layer (its matrices; the bias groups follow at offset + 4 ⌈out/4⌉ ⌈in/4⌉). */
+export function vdbFrameMlpPackedOffsets(mlp: Pick<VDBFrameMlp, "layers">): number[] {
+  const offsets: number[] = [];
+  let at = 0;
+  for (const l of mlp.layers) {
+    offsets.push(at);
+    at += vdbFrameMlpPackedLayerVectors(l);
+  }
+  return offsets;
+}
+
+/**
+ * K6.Na: the weights in the packed layout the core's `mlpRuntime: 'packed'` evaluator reads (`array<vec4f>`): per layer,
+ * for each output group o and input chunk k the mat4x4 M[o, k] (column j = input 4k + j, row i = output 4o + i,
+ * column-major: element (i, j) at 4j + i), then the biases padded to vec4. Padded inputs and outputs are zero, so a
+ * padded output is 0 through ReLU or linear and the next layer's padded inputs read 0.
+ */
+export function vdbFrameMlpPack(mlp: VDBFrameMlp): Float32Array {
+  const offsets = vdbFrameMlpOffsets(mlp);
+  const packed = vdbFrameMlpPackedOffsets(mlp);
+  const last = mlp.layers[mlp.layers.length - 1]!;
+  const out = new Float32Array((packed[packed.length - 1]! + vdbFrameMlpPackedLayerVectors(last)) * 4);
+  mlp.layers.forEach((l, li) => {
+    const w = offsets[li]!;
+    const in4 = Math.ceil(l.inputs / 4);
+    const out4 = Math.ceil(l.outputs / 4);
+    const base = packed[li]! * 4;
+    for (let o = 0; o < out4; o++) {
+      for (let k = 0; k < in4; k++) {
+        const m = base + (o * in4 + k) * 16;
+        for (let j = 0; j < 4; j++) {
+          const input = 4 * k + j;
+          if (input >= l.inputs) continue;
+          for (let i = 0; i < 4; i++) {
+            const output = 4 * o + i;
+            if (output >= l.outputs) continue;
+            out[m + 4 * j + i] = mlp.weights[w + output * l.inputs + input]!;
+          }
+        }
+      }
+    }
+    const bias = base + out4 * in4 * 16;
+    for (let j = 0; j < l.outputs; j++) out[bias + j] = mlp.weights[w + l.outputs * l.inputs + j]!;
+  });
+  return out;
+}
+
+/** The shape uniform of the packed evaluator: as {@link vdbFrameMlpShape}, with each layer's offset in vec4s. */
+export function vdbFrameMlpPackedShape(mlp: VDBFrameMlp): Uint32Array {
+  const u = vdbFrameMlpShape(mlp);
+  vdbFrameMlpPackedOffsets(mlp).forEach((offset, i) => {
+    u[7 + 4 * i] = offset;
+  });
+  return u;
+}
+
+/**
+ * The packed evaluator's forward pass (f64) on {@link vdbFrameMlpPack} data and the shape: per output group the bias
+ * plus M[o, k] · x[k] over the input chunks, then the activation. A check that the packing loses nothing: it equals
+ * {@link vdbFrameMlpForward} on the unpacked network (the oracle of both evaluators).
+ */
+export function vdbFrameMlpForwardPacked(packed: ArrayLike<number>, shape: ArrayLike<number>, inputs: ArrayLike<number>): number {
+  const count = shape[0]!;
+  let x = Array.from({ length: Math.ceil(inputs.length / 4) * 4 }, (_, i) => inputs[i] ?? 0);
+  for (let l = 0; l < count; l++) {
+    const n = shape[4 + 4 * l]!;
+    const m = shape[5 + 4 * l]!;
+    const relu = shape[6 + 4 * l] === 1;
+    const at = shape[7 + 4 * l]! * 4;
+    const in4 = Math.ceil(n / 4);
+    const out4 = Math.ceil(m / 4);
+    const next = new Array<number>(out4 * 4).fill(0);
+    for (let o = 0; o < out4; o++) {
+      const bias = at + (out4 * in4 * 4 + o) * 4;
+      for (let i = 0; i < 4; i++) {
+        let s = packed[bias + i]!;
+        for (let k = 0; k < in4; k++) {
+          const mat = at + (o * in4 + k) * 16;
+          for (let j = 0; j < 4; j++) s += packed[mat + 4 * j + i]! * (x[4 * k + j] ?? 0);
+        }
+        next[4 * o + i] = relu ? Math.max(s, 0) : s;
+      }
+    }
+    x = next;
+  }
+  return shape[2] === 1 ? Math.exp(Math.min(x[0]!, 4)) : x[0]!;
+}

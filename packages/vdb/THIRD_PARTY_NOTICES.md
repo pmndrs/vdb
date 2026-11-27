@@ -136,6 +136,34 @@ CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFT
 DEALINGS IN THE SOFTWARE.
 ```
 
+## pmndrs/denoiser (MIT)
+
+`src/tools/frame/mlp-tza.ts` reads and writes the `.tza` v2 weight container after `denoiser-core`'s `parseTZA`
+(`packages/denoiser-core/src/tza.ts`), and `src/tools/frame/mlp.ts` (`vdbFrameMlpPack`) lays a dense layer out as
+`denoiser-wgsl`'s `packWeights` / `packBias` do (`packages/denoiser-wgsl/src/conv.ts`, the one-tap case); the core's packed
+MLP evaluator (`src/core/frame/wgsl/lighting.ts`, `mlpRuntime: 'packed'`) follows its `mat4x4 * vec4` layer math. Commit
+`3ad5e98` of https://github.com/pmndrs/denoiser.
+
+```
+MIT License
+
+Copyright (c) 2024 Dennis Smolek
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and
+to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of
+the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
 ## Blosc: BloscLZ decoder and LZ4 frame writer (BSD-3-Clause), FastLZ (MIT)
 
 The BloscLZ stream decoder in `src/tools/vdb/blosclz.ts` (reads Blosc frames written with the BloscLZ codec, such as
