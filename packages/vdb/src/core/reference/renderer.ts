@@ -78,7 +78,18 @@ export interface VDBReferenceRendererOptions {
   label?: string;
   /** Tests: patch the WGSL before it compiles (the fail-before mutations, `VDB_REFERENCE_MUTATIONS`). */
   wgslPatch?: (wgsl: string) => string;
+  /**
+   * Issue #2: how sigma reads the density. 'trilinear' (default): `vdbSrcDensity` (eight taps on a sparse source).
+   * 'stochastic': ONE voxel picked with probability equal to its trilinear weight (`vdbSrcDensityStochastic`, three
+   * more draws per sigma lookup in the shared stream; the CPU twin's `densityFilter`). Unbiased for a cutoff of 0:
+   * delta and ratio tracking are linear in sigma and the cell majorants bound the 2x2x2 support. Compiled in, so a
+   * setting of the kernel, not of the scene.
+   */
+  densityFilter?: VDBReferenceDensityFilter;
 }
+
+/** Issue #2: the reference kernel's density reconstruction (see {@link VDBReferenceRendererOptions.densityFilter}). */
+export type VDBReferenceDensityFilter = "trilinear" | "stochastic";
 
 /** The reference renderer (internal). */
 export interface VDBReferenceRenderer {
@@ -266,7 +277,8 @@ export function vdbReferencePackUniforms(scene: VDBReferenceScene, settingsIn: V
 }
 
 /** The composed WGSL of a reference kernel over `source` (module + source + kernel). */
-export function vdbReferenceWgsl(source: VDBReferenceSource): string {
+export function vdbReferenceWgsl(source: VDBReferenceSource, o: { densityFilter?: VDBReferenceDensityFilter } = {}): string {
+  const stochastic = (o.densityFilter ?? "trilinear") === "stochastic";
   const slot = VDB_REFERENCE_SOURCE_SLOT;
   const module = typeof source.moduleWgsl === "function" ? source.moduleWgsl(slot) : "";
   const kernel = vdbReferenceKernelWgsl({
@@ -275,8 +287,9 @@ export function vdbReferenceWgsl(source: VDBReferenceSource): string {
     maxHemispheres: VDB_REFERENCE_MAX_HEMISPHERES,
     maxSteps: VDB_REFERENCE_MAX_STEPS,
     ratioRr: VDB_REFERENCE_RATIO_RR,
+    stochastic,
   });
-  return `${module}\n${source.wgsl({ slot, profile: "sample" })}\n${kernel}`;
+  return `${module}\n${source.wgsl({ slot, profile: "sample", ...(stochastic ? { stochastic } : {}) })}\n${kernel}`;
 }
 
 class ReferenceRenderer implements VDBReferenceRenderer {
@@ -476,7 +489,11 @@ export async function vdbCreateReferenceRenderer(device: GPUDevice, o: VDBRefere
   if (!(o.width >= 1 && o.height >= 1 && Number.isInteger(o.width) && Number.isInteger(o.height))) {
     throw new VDBError("VDB_BAD_OPTION", `vdbCreateReferenceRenderer: width and height must be positive integers, got ${o.width}x${o.height}`);
   }
-  let wgsl = vdbReferenceWgsl(o.source);
+  const densityFilter = o.densityFilter ?? "trilinear";
+  if (densityFilter !== "trilinear" && densityFilter !== "stochastic") {
+    throw new VDBError("VDB_BAD_OPTION", `vdbCreateReferenceRenderer: densityFilter must be 'trilinear' or 'stochastic', got ${JSON.stringify(densityFilter)}`);
+  }
+  let wgsl = vdbReferenceWgsl(o.source, { densityFilter });
   if (o.wgslPatch) wgsl = o.wgslPatch(wgsl);
   const label = o.label ?? "vdb reference";
   device.pushErrorScope("validation");

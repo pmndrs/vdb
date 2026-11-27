@@ -7,6 +7,8 @@
  *   dual-lobe phase, RGB albedo) against the quadrature, and the white furnace (albedo 1, uniform environment). Each
  *   case compares per pixel and channel within k·σ (σ from the batch means) plus an unbiasedness check of the image.
  *   `?mutate=<name>` patches the WGSL (`VDB_REFERENCE_MUTATIONS`); some case must fail.
+ * - Every mode: `?density=stochastic` (issue #2) builds the kernel with the stochastic density (one voxel per lookup)
+ *   and runs the CPU twin with it too.
  * - `twin`: the GPU kernel against its CPU twin (`vdbReferenceRenderCpu`, the same random stream): the committed CC0
  *   cloud through `vdbDenseSource` (perspective camera, sun + point light, hemisphere + ambient environment,
  *   dual-lobe phase, multiple scattering), and synthetic grids through `vdbSparseSource` (two overlapping
@@ -133,6 +135,8 @@ declare global {
 const params = new URLSearchParams(location.search);
 const MODE = params.get("case") ?? "analytic";
 const MUTATE = params.get("mutate");
+/** Issue #2: `?density=stochastic` compiles the kernel with the stochastic density (one voxel per lookup); the CPU twin follows. */
+const DENSITY = params.get("density") === "stochastic" ? "stochastic" : "trilinear";
 const K = 4.5;
 
 const root = document.getElementById("demo-root")!;
@@ -209,7 +213,7 @@ interface GpuJob {
 }
 
 async function makeRenderer(device: GPUDevice, job: GpuJob, patch?: (w: string) => string) {
-  return vdbCreateReferenceRenderer(device, { source: job.source, width: job.width, height: job.height, label: "k6-reference", ...(patch ? { wgslPatch: patch } : {}) });
+  return vdbCreateReferenceRenderer(device, { source: job.source, width: job.width, height: job.height, label: "k6-reference", densityFilter: DENSITY, ...(patch ? { wgslPatch: patch } : {}) });
 }
 
 async function renderGpu(device: GPUDevice, ref: Awaited<ReturnType<typeof makeRenderer>>, job: GpuJob, scene: VDBReferenceScene, settings: Settings, batches: number, chunk = 8): Promise<VDBReferenceAccum> {
@@ -452,7 +456,7 @@ async function twinDense(device: GPUDevice): Promise<void> {
     result.determinism = { identical, values: gpu.sum.length };
     log(`determinism: ${JSON.stringify(result.determinism)}`, identical ? "ok" : "fail");
   }
-  const cpu = vdbReferenceRenderCpu(scene, [vdbReferenceDenseMediumCpu(volume)], { ...settings, width: W, height: H }, { batches });
+  const cpu = vdbReferenceRenderCpu(scene, [vdbReferenceDenseMediumCpu(volume)], { ...settings, width: W, height: H }, { batches, densityFilter: DENSITY });
   const r = checkTwin("dense cloud (sun + point + hemisphere + ambient, dual-lobe, MS)", gpu, cpu, settings.spp!);
   result.twins.push(r);
   log(`${r.name}: ${JSON.stringify(r)}`, r.passes ? "ok" : "fail");
@@ -546,7 +550,7 @@ async function twinSparse(device: GPUDevice): Promise<void> {
   const ref = await makeRenderer(device, job, patchOf(MUTATE));
   const gpu = await renderGpu(device, ref, job, scene, settings, batches);
   const media: VDBReferenceMediumCpu[] = [vdbReferenceSparseMediumCpu(cpuOf(plain, false)), vdbReferenceSparseMediumCpu(cpuOf(plain, false)), vdbReferenceSparseMediumCpu(cpuOf(rich, true))];
-  const cpu = vdbReferenceRenderCpu(scene, media, { ...settings, width: W, height: H }, { batches });
+  const cpu = vdbReferenceRenderCpu(scene, media, { ...settings, width: W, height: H }, { batches, densityFilter: DENSITY });
   const r = checkTwin("sparse (3 volumes, 2 overlapping; mask, RGB albedo, emission; spot + sun; equirect)", gpu, cpu, settings.spp!);
   result.twins.push(r);
   log(`${r.name}: ${JSON.stringify(r)}`, r.passes ? "ok" : "fail");
@@ -645,7 +649,7 @@ async function twinFeatures(device: GPUDevice): Promise<void> {
   const gpu = await renderGpu(device, ref, job, scene, settings, batches);
   const cpuOf = (emission: boolean): VDBSparseVolumeCpu => ({ lod: "none", density: { image: S, box: plain.indexBox }, ...(emission ? { emission: { image: E, box: box(ids.e) } } : {}) });
   const media: VDBReferenceMediumCpu[] = [vdbReferenceSparseMediumCpu(cpuOf(false)), vdbReferenceSparseMediumCpu(cpuOf(true))];
-  const cpu = vdbReferenceRenderCpu(scene, media, { ...settings, width: W, height: H }, { batches });
+  const cpu = vdbReferenceRenderCpu(scene, media, { ...settings, width: W, height: H }, { batches, densityFilter: DENSITY });
   const stats = vdbReferenceMajorantGridStats(majorants);
   const r = checkTwin(`features${phaseVariant ? " (phase variant)" : ""} (majorant grid ${majorants.dims.join("x")}, ${(stats.empty * 100).toFixed(0)} % empty; Mie RGB + 3-lobe table; blackbody; point falloff + spot; SH probe)`, gpu, cpu, settings.spp!);
   result.twins.push(r);
@@ -770,6 +774,7 @@ async function publishReference(device: GPUDevice, job: GpuJob, scene: VDBRefere
   const { mean, stderr } = vdbReferenceStatistics(run.accum);
   result.report = {
     ...extra,
+    density: DENSITY,
     width: job.width,
     height: job.height,
     batches: run.accum.batches,
@@ -886,7 +891,9 @@ async function sceneReport(device: GPUDevice): Promise<void> {
     if (!info.hasStats) result.warnings.push(`${def.asset}: the grid has no node stats; the majorant grid is not a bound`);
     if (info.background !== 0) result.warnings.push(`${def.asset}: background ${info.background} ≠ 0 (the majorant grid assumes 0)`);
     k6SparseBox(asset, info);
-    const source = vdbSparseSource(pool, { lod: "none", normalize: "none", maxVolumes: 1, label: "k6-reference scene" });
+    // `?fast=0`: level 0 through vdbSample (8 descents) instead of vdbSampleFast (the issue #2 A/B baselines).
+    const fastTrilinear = params.get("fast") !== "0";
+    const source = vdbSparseSource(pool, { lod: "none", normalize: "none", maxVolumes: 1, fastTrilinear, label: "k6-reference scene" });
     const slot = source.volume({ density: id }, { image: asset.image, stats: asset.stats, bbox: asset.bbox });
     v = slot.v;
     majorantGrid = vdbReferenceMajorantGridSparse(asset.image, slot.indexBox, { cellVoxels: 8 });

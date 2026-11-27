@@ -277,6 +277,12 @@ fn vdbSrcLodLevels(v: u32) -> f32 {
   return ${this.#textures.density?.mip ? "vdbSrcLevelCount(textureDimensions(vdbSrcDensityMap))" : "0.0"};
 }
 `);
+    if (o.stochastic) {
+      // Issue #2: hardware trilinear is already one fetch; the stochastic form is the deterministic one.
+      lines.push(`fn vdbSrcDensityStochastic(v: u32, uvw: vec3f, lod: f32, xi: vec3f) -> f32 {
+  return vdbSrcDensity(v, uvw, lod);
+}`);
+    }
     if (o.profile === "march") {
       // Dense: no empty-space structure; the march steps everywhere (R1 §4.2).
       lines.push(`fn vdbSrcSkipEmpty(v: u32, o: vec3f, d: vec3f, t0: f32, t1: f32) -> f32 {

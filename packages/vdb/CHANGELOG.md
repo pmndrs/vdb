@@ -72,7 +72,11 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
   flags, transform, index bounding box and an `unsupported` reason) covers every grid; with `select`, a grid the parser
   cannot read is reported there instead of thrown, and `select: () => false` is a listing pass that decompresses
   nothing. Without `select`, `parseVdb` behaves as in 0.1.
-
+- Core (issue #2): `VDBVolumeSourceWgslOptions.stochastic` asks a volume source for
+  `vdbSrcDensityStochastic(v, uvw, lod, xi)`, the level-0 density from ONE voxel picked with probability equal to its
+  trilinear weight (stochastic texture filtering; its mean over uniform `xi` is `vdbSrcDensity`). A sparse source
+  reads one tree value instead of eight; a dense source returns its trilinear sample. Off by default (module bytes
+  unchanged).
 - Core (0.2.0, K6): the frame renderer `vdbCreateFrameRenderer` (`VDBFrameRenderer`: `addVolume`, `update`, `render`,
   `prepare`, `outputs`, `mlp`) with its input and output types; `vdbSparseSource` (one source per pool);
   `vdbFrameIntegrateWgsl` / `vdbFrameIntegrateEntries` (the composite in a host pass, `{ spectral }`),

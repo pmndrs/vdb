@@ -44,6 +44,15 @@ export interface VDBVolumeSourceWgslOptions {
   readonly profile: "sample" | "march";
   /** Turn channels the source has off (compiled to constants). Channels it lacks are always constants. */
   readonly channels?: Partial<VDBVolumeChannels>;
+  /**
+   * Issue #2 (stochastic texture filtering, Pharr et al. 2024): also emit
+   * `fn vdbSrcDensityStochastic(v: u32, uvw: vec3f, lod: f32, xi: vec3f) -> f32`, the density at lod 0 from ONE
+   * voxel picked with probability equal to its trilinear weight (per axis: the upper voxel when `xi.axis < frac`);
+   * its expectation over uniform `xi` is `vdbSrcDensity(v, uvw, 0)`. A sparse source reads one tree value instead of
+   * eight; a dense source returns `vdbSrcDensity` (its trilinear is already one hardware fetch). `lod` > 0 falls back
+   * to `vdbSrcDensity`. Default false (not emitted).
+   */
+  readonly stochastic?: boolean;
 }
 
 /**
