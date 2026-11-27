@@ -34,11 +34,11 @@ The MDX in `docs/site` already follows the pmndrs/docs conventions (`title`, `de
 `<Intro>`). pmndrs libraries build with `npx @pmndrs/docs@4 build <mdx> out --format website` (the reusable
 workflow `pmndrs/docs/.github/workflows/build.yml@v4`) and host on GitHub Pages at `https://pmndrs.github.io/<repo>`.
 
-- [ ] Pages workflow `.github/workflows/pages.yml`, triggered on push to `main` and by hand. It builds the docs
+- [x] Pages workflow `.github/workflows/pages.yml`, triggered on push to `main` and by hand. It builds the docs
       (`mdx: docs/site`, `libname: vdb`, `home_redirect: /getting-started/introduction`, `github`) and the examples
       (§4) into one Pages artifact, then deploys with `actions/deploy-pages`. It needs its own build job, not the
-      reusable workflow alone: that uploads the docs as the whole site, and a repo gets one Pages site. Written, not yet run
-      on GitHub; its examples steps need the asset release (§4, owner). **[agent]**
+      reusable workflow alone: that uploads the docs as the whole site, and a repo gets one Pages site. Deploys on every
+      push to `main` since 2026-11-24; the examples steps since the asset release (2026-11-26). **[agent]**
 - [x] Every page builds and renders (19 pages, no console errors or broken links, `llms-full.txt` emitted; checked 2026-11-20). Check locally with `npx @pmndrs/docs@4 build docs/site out --format website`
       and click through the nav; fix any component pmndrs/docs doesn't have. **[agent]**
 - [ ] Icon and logo for the docs header (`icon`, `logo` inputs). **[owner]** picks them.
@@ -98,9 +98,10 @@ with `fixtureUrl("wdas/x.nvdb")` (`examples/src/demos/assets.ts`): Vite `BASE_UR
 ### 5. Licences and credits
 
 - [x] `THIRD_PARTY.md` and `packages/vdb/THIRD_PARTY_NOTICES.md` current (vendored WGSL, NanoVDB, mjurczyk
-      port, neural weights credit, Wyman CMF fit). Checked 2026-11-24 against the source headers; added three.js
+      port, neural trainer credit (his weights are no longer shipped, D36), Wyman CMF fit). Checked 2026-11-24 against the source headers; added three.js
       `getShIrradianceAt` (MIT, CPU twin), `@webgpu/types` (BSD-3-Clause), and two files to the shipped list. **[agent]** checks.
-- [ ] mjurczyk outreach: his LICENSE file, the neural weights' training data, the CIE table. Not blocking: his
+- [ ] mjurczyk outreach: his LICENSE file and the CIE table (his neural weights are no longer shipped, D36, so their
+      training data is no longer a question). Not blocking: his
       package metadata declares MIT and we credit him. **[owner]**
 
 ### 6. npm

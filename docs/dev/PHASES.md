@@ -153,12 +153,13 @@ reference for parser coverage.
 decode exactly per the spec; a `.wvdb` we write loads in his `WVDBLoader`; and the first paint of a streamed
 `.nvdb` is no larger than his 14 KiB smoke preview.
 
-## K5 — Release 0.1 🟨
+## K5 — Release 0.1 ✅
 
 `@pmndrs/vdb@0.1.0` published 2026-11-24 (manual first publish from 5328b27, tag `v0.1.0`; trusted publishing set up
 for later releases). Docs live at https://pmndrs.github.io/vdb/ since 2026-11-24 (Pages deploys on every push to
-`main`), linked both ways with the examples (K5.7 close-out). **Remaining for the exit gate:** the examples live, which
-needs the owner's asset release (`examples-assets-v1`, RELEASING §4). K5.3 cloud-system showcase moves to after 0.1.
+`main`), linked both ways with the examples (K5.7 close-out). Exit gate met 2026-11-26: the examples are live at
+https://pmndrs.github.io/vdb/examples/ (asset release `examples-assets-v1`, RELEASING §4). K5.3 cloud-system showcase moves
+to after 0.1; the owner's release steps left (docs icon, docs.pmnd.rs PR, gallery licences, announce) are in RELEASING.
 
 - Docs in pmndrs/docs MDX format, with compiled snippets (`docs:check`, as in bvh).
 - Examples for raw WebGPU and three.js, plus the owner's cloud system as the showcase consumer.
@@ -166,12 +167,13 @@ needs the owner's asset release (`examples-assets-v1`, RELEASING §4). K5.3 clou
 
 **Exit gate:** `@pmndrs/vdb@0.1.0` published from `pmndrs/vdb`, with docs live and the examples linked.
 
-## K6 — Renderer in the core (pure WebGPU) 🟨
+## K6 — Renderer in the core (pure WebGPU) ✅
 
 **Status 2026-11-26:** K6.0–K6.8 done (K6.1–K6.7, K6.9, K6.R/R1, K6.Q1, K6.3a, K7.1, K7.3): the core renders 'volume' and
 'frame' lighting, environment, shadows both ways, emission, every multiple-scattering mode, spectral media and shadowed
-ambient; `./three` is a thin adapter (TSL passes deleted) and the 0.2.0 API is in. Open: the owner's defaults
-(multiple scattering, `ambientOcclusion`), K6.10 (gate review), follow-ups K6.4a, K6.Q1a, K6.8a, K6.R2.
+ambient; `./three` is a thin adapter (TSL passes deleted) and the 0.2.0 API is in. **2026-11-27:** exit gate met (K6.10
+gate review); the owner's defaults are set ('neural' with our K6.N weights, `ambientOcclusion` on: D35, D36); K6.4a,
+K6.Q1a, K6.8a, K6.11, K6.11a, K6.S done. Open follow-ups: K6.Q1b, K6.R2, K6.11b, K6.Na, K6.Sa.
 Timing A/Bs are deferred to K6.T (no quiet machine); nothing in K6 gates on speed.
 
 The froxel renderer, level-set tracer and points live in `./three` as TSL today. K6 moves them into the engine-free
@@ -246,4 +248,4 @@ promotion into a K phase.
 | R7 | Bindless and texture-table grids, once a portable WebGPU feature exists | ⬜ | pathtracer |
 | R8 | PicoVDB: re-evaluate on the D16 triggers | — | — |
 | R9 | Retest the v1 sandbox workarounds on hardware | ✅ 2026-07-12: direct presentation, stock 3D texture and no-shim lanes pass (`pnpm hardware:perf`) | K2 |
-| R10 | Bring mjurczyk into the project: outreach, the `.nvdb` loader PR offer (and a nudge to add the LICENSE file) | ⬜ owner | K3 |
+| R10 | Bring mjurczyk into the project: outreach, the `.nvdb` loader PR offer (and a nudge to add the LICENSE file). His neural weights are no longer shipped (D36) | ⬜ owner | K3 |

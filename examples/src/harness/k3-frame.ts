@@ -636,12 +636,36 @@ async function loadManifest(name: string): Promise<ManifestScenario | null> {
   }
 }
 
+// V159 (K6.11a, D36): 'neural' runs our K6.N weights, not his, so his captures of these 'neural' scenes differ on purpose
+// (35–46 dB, was 52–63). They report as INFO; the 14 are the ones that went from PASS to FAIL (handoff K6-11a.md).
+const V159_WHY = "'neural' multiple scattering runs our K6.N weights, not his (DIVERGES V159)";
+const V159_SCENES = new Set([
+  "step4-default-neural-dir-isolated",
+  "step4-frame-phase-dual-lobe-dir-isolated",
+  "step4-frame-phase-dual-lobe-back-g-high-dir-isolated",
+  "step4-frame-phase-dual-lobe-back-weight-high-dir-isolated",
+  "step4-frame-phase-g-exponent-dir-isolated",
+  "step4-frame-phase-g-low-dir-isolated",
+  "step4-frame-phase-isotropic-dir-isolated",
+  "step4-frame-phase-lorenz-mie-dir-isolated",
+  "step4-frame-phase-lorenz-mie-rgb-dir-isolated",
+  "step6-cast-shadow-dir-isolated",
+  "step6-cast-shadow-obstacle-dir-isolated",
+  "step6-cast-shadow-obstacle-cascades-4-dir-isolated",
+  "step6-cast-shadow-obstacle-coarse-dir-isolated",
+  "step6-cast-shadow-two-bunnies-dir-isolated",
+]);
+
 async function main(): Promise<void> {
   root.textContent = "";
   if (!def) throw new Error(`unknown ?scene=${SCENE}; known: smoke, ${Object.keys(HIS_SCENES).join(", ")}`);
   result.scene = def.name;
   result.parityExpected = def.parityExpected;
   if (def.why) result.parityNote = def.why;
+  if (result.parityExpected && V159_SCENES.has(def.name)) {
+    result.parityExpected = false;
+    result.parityNote = V159_WHY;
+  }
   const warn = console.warn.bind(console);
   console.warn = (...a: unknown[]) => {
     result.warnings.push(a.map(String).join(" "));
