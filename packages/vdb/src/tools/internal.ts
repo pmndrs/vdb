@@ -159,6 +159,7 @@ export {
   vdbPyramidToHalf,
   vdbSparseLodLevelsCpu,
   vdbSparseDensityCpu,
+  vdbSparseDensityStochasticCpu,
   vdbSparseMaskCpu,
   vdbSparseAlbedoCpu,
   vdbSparseEmissionCpu,

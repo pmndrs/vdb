@@ -103,6 +103,8 @@ export interface SparseWgslConfig {
   readonly clamp01: boolean;
   readonly skipEmpty: boolean;
   readonly maxVolumes: number;
+  /** Issue #2: emit `vdbSrcDensityStochastic` (one level-0 voxel per call). */
+  readonly stochastic?: boolean;
 }
 
 /** Bindings after the pool's (which is at `slot.firstBinding`, declared by the VDB module). */
@@ -269,7 +271,37 @@ fn vdbSrcDensity(v: u32, uvw: vec3f, lod: f32) -> f32 {
     let g = ${R}.ids.x;
     let p = vdbSrcSamplePos(${R}.densityMin.xyz, ${R}.densitySize.xyz, uvw);
 ${density}
+}`);
+  if (c.stochastic) {
+    // Issue #2 (Pharr et al. 2024, stochastic trilinear): one voxel of the 2x2x2 cell, the upper one per axis with
+    // probability frac (its trilinear weight), read with ONE tree lookup. Like vdbSample in the source's module
+    // (outside 'background') it reads the tree everywhere; the sample position is clamped to the box anyway.
+    const read = c.cacheAccessor
+      ? `    if vdbSrcAccGrid != g {
+        vdbSrcAcc = vdbAccessorInit(g);
+        vdbSrcAccGrid = g;
+    }
+    var a = vdbSrcAcc;
+    let value = vdbReadValue(&a, ijk);
+    vdbSrcAcc = a;
+    return value;`
+      : `    var a = vdbAccessorInit(g);
+    return vdbReadValue(&a, ijk);`;
+    out.push(`fn vdbSrcVoxel0(g: u32, ijk: vec3i) -> f32 {
+${read}
 }
+fn vdbSrcDensityStochastic(v: u32, uvw: vec3f, lod: f32, xi: vec3f) -> f32 {
+    if lod > 0.0 {
+        return vdbSrcDensity(v, uvw, lod);
+    }
+    let g = ${R}.ids.x;
+    let p = vdbSrcSamplePos(${R}.densityMin.xyz, ${R}.densitySize.xyz, uvw);
+    let b = floor(p);
+    let ijk = vec3i(b) + select(vec3i(0), vec3i(1), xi < p - b);
+    return ${norm("vdbSrcVoxel0(g, ijk)")};
+}`);
+  }
+  out.push(`
 fn vdbSrcMask(v: u32, uvw: vec3f, lod: f32) -> f32 {
 ${
   mask

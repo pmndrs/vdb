@@ -776,7 +776,7 @@ class SparseSource implements VDBSparseSource {
     const slot = checkSlot(o.slot, "wgsl");
     if (o.profile !== "sample" && o.profile !== "march") throw bad(`wgsl: profile must be 'sample' or 'march', got ${JSON.stringify(o.profile)}.`);
     const on = (k: keyof VDBVolumeChannels) => this.#channels[k] && o.channels?.[k] !== false;
-    return { ...this.#wgslBase, slot, profile: o.profile, channels: { mask: on("mask"), albedo: on("albedo"), emission: on("emission") } };
+    return { ...this.#wgslBase, slot, profile: o.profile, channels: { mask: on("mask"), albedo: on("albedo"), emission: on("emission") }, stochastic: o.stochastic === true };
   }
 
   wgsl(o: VDBVolumeSourceWgslOptions): string {

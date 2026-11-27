@@ -16,7 +16,9 @@
  * piece is Σ σᵢ · majorantᵢ of the volumes covering it, so empty gaps cost no steps. A volume with a majorant grid
  * (K6.R1) splits its interval at its cells' faces and uses each cell's bound (a 0 cell is skipped without draws). Each tentative step draws 1
  * number (free flight); delta tracking draws 1 more to accept or reject; ratio tracking draws 1 when it plays
- * Russian roulette (T < {@link VDB_REFERENCE_RATIO_RR}: survive ½, × 2).
+ * Russian roulette (T < {@link VDB_REFERENCE_RATIO_RR}: survive ½, × 2). Issue #2: with `densityFilter: 'stochastic'`
+ * every σ lookup (each volume covering the tentative collision, in volume order, after the free-flight draw) first
+ * draws 3 numbers (xi x, y, z) and reads one voxel ({@link VDBReferenceMediumCpu.densityStochastic}).
  *
  * Output per sample: (L.r, L.g, L.b, T): L the radiance scattered or emitted toward the camera by the media (the
  * background behind is NOT in L: composite `L + T · background`).
@@ -48,6 +50,12 @@ import { vdbRefColorTableAt, vdbRefMajorantCell, vdbRefPhaseTableEval, vdbRefPha
 export interface VDBReferenceMediumCpu {
   /** density × mask (before the cutoff). */
   density(uvw: readonly number[]): number;
+  /**
+   * Issue #2: density × mask with the density from ONE voxel picked by `xi` ∈ [0, 1)³ with probability equal to its
+   * trilinear weight (twin of `vdbSrcDensityStochastic`); its mean over `xi` is {@link density}. Default:
+   * {@link density} (the dense source: hardware trilinear is one fetch).
+   */
+  densityStochastic?(uvw: readonly number[], xi: readonly number[]): number;
   /** The albedo channel in [0, 1] (default (1, 1, 1)). */
   albedo?(uvw: readonly number[]): VDBRefVec3;
   /** The emission channel value (default 0). */
@@ -70,6 +78,8 @@ export interface VDBReferenceCpuOptions {
   pixels?: readonly (readonly [number, number])[];
   /** A deliberate break (tests). */
   mutate?: VDBReferenceMutation;
+  /** Issue #2: the GPU kernel's `densityFilter` (`'stochastic'`: 3 draws per σ lookup). Default 'trilinear'. */
+  densityFilter?: "trilinear" | "stochastic";
 }
 
 /** Accumulated per-pixel sums of batch means: `sum` and `sumSq` (RGBA = L.rgb, T), `batches` of them. */
@@ -249,12 +259,23 @@ interface Tracker {
   vols: PreparedVolume[];
   stats: VDBReferenceCpuStats;
   mutate: VDBReferenceMutation | undefined;
+  stochastic: boolean;
 }
 
-/** Sample the medium of volume `v` at world `x`: σt (after the cutoff), checked against the piece's majorant. */
-function sigmaAt(v: PreparedVolume, x: readonly number[], stats: VDBReferenceCpuStats): number {
+/**
+ * Sample the medium of volume `v` at world `x`: σt (after the cutoff), checked against the piece's majorant. With
+ * `rng` (the stochastic density filter) it draws xi first.
+ */
+function sigmaAt(v: PreparedVolume, x: readonly number[], stats: VDBReferenceCpuStats, rng: VDBRefRng | null): number {
   const l = vdbRefTransformPoint(v.worldToLocal, x);
-  const value = v.medium.density([l[0] + 0.5, l[1] + 0.5, l[2] + 0.5]);
+  const uvw = [l[0] + 0.5, l[1] + 0.5, l[2] + 0.5];
+  let value: number;
+  if (rng) {
+    const xi = [rng.next(), rng.next(), rng.next()];
+    value = v.medium.densityStochastic ? v.medium.densityStochastic(uvw, xi) : v.medium.density(uvw);
+  } else {
+    value = v.medium.density(uvw);
+  }
   const s = value > v.cutoff ? value : 0;
   if (s * v.sigma > v.maj * (1 + 1e-6)) stats.majorantViolations++;
   return s * v.sigma;
@@ -315,7 +336,7 @@ function track(tr: Tracker, rng: VDBRefRng, o: readonly number[], d: readonly nu
     let sum = 0;
     for (let i = 0; i < vols.length; i++) {
       const v = vols[i]!;
-      sig[i] = v.t0 <= t && t < v.t1 ? sigmaAt(v, x, tr.stats) : 0;
+      sig[i] = v.t0 <= t && t < v.t1 ? sigmaAt(v, x, tr.stats, tr.stochastic ? rng : null) : 0;
       sum += sig[i]!;
     }
     if (!ratio) {
@@ -411,9 +432,10 @@ export function vdbReferenceSampleCpu(
   sampleIndex: number,
   stats: VDBReferenceCpuStats,
   mutate?: VDBReferenceMutation,
+  densityFilter: "trilinear" | "stochastic" = "trilinear",
 ): [number, number, number, number] {
   const rng = vdbRefRng(settings.seed, sampleIndex, py * settings.width + px);
-  const tr: Tracker = { vols, stats, mutate };
+  const tr: Tracker = { vols, stats, mutate, stochastic: densityFilter === "stochastic" };
   let jx = 0.5;
   let jy = 0.5;
   if (settings.pixelFilter === "box") {
@@ -519,7 +541,7 @@ export function vdbReferenceRenderCpu(
     for (let b = first; b < first + batches; b++) {
       const m = [0, 0, 0, 0];
       for (let s = 0; s < spp; s++) {
-        const r = vdbReferenceSampleCpu(scene, vols, settings, px, py, b * spp + s, stats, o.mutate);
+        const r = vdbReferenceSampleCpu(scene, vols, settings, px, py, b * spp + s, stats, o.mutate, o.densityFilter);
         for (let c = 0; c < 4; c++) m[c] = m[c]! + r[c]!;
       }
       for (let c = 0; c < 4; c++) {

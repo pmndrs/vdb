@@ -252,6 +252,25 @@ describe("the sparse WGSL", () => {
     }
   });
 
+  it("issue #2: emits vdbSrcDensityStochastic only on request (one tree read), the rest unchanged", () => {
+    pool.add(makeImage({ gridType: 1, bboxMin: [0, 0, 0], bboxMax: [15, 15, 15] }));
+    const s2 = { group: 2, firstBinding: 0 };
+    for (const cacheAccessor of [true, false]) {
+      const source = vdbSparseSource(pool, { lod: "node-average", types: ["float"], cacheAccessor });
+      const plain = source.wgsl({ slot: s2, profile: "sample" });
+      expect(source.wgsl({ slot: s2, profile: "sample", stochastic: false })).toBe(plain);
+      expect(plain).not.toContain("Stochastic");
+      const sto = source.wgsl({ slot: s2, profile: "sample", stochastic: true });
+      expect(sto).toContain("fn vdbSrcDensityStochastic(v: u32, uvw: vec3f, lod: f32, xi: vec3f) -> f32");
+      const fn = sto.slice(sto.indexOf("fn vdbSrcVoxel0"), sto.indexOf("fn vdbSrcDensityStochastic"));
+      expect(fn.match(/vdbReadValue\(/g)?.length, "one tree read").toBe(1);
+      expect(fn).not.toMatch(/vdbSample/);
+      expect(sto.replace(/fn vdbSrcVoxel0[\s\S]*?\n}\nfn vdbSrcDensityStochastic[\s\S]*?\n}\n/, "")).toBe(plain);
+      expect(wgslNameProblems(source.moduleWgsl(s2) + sto)).toEqual([]);
+      source.dispose();
+    }
+  });
+
   it("asks for the module the K3.2 source needs", () => {
     const a = vdbSparseSource(pool, { lod: "node-average" }).module;
     expect([a.profile, [...a.helpers]]).toEqual(["march", ["cellBoundTrilinear", "hddaCellEnd", "nodeAverage", "fastTrilinear"]]);
