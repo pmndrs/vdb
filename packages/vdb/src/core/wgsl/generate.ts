@@ -35,7 +35,8 @@
 import { VDBError } from "../errors.js";
 import { VDB_GPU_LAYOUT_VERSION, vdbPoolLayoutWgsl } from "../pool/layout.js";
 import { VDB_GRID_TYPE_IDS, VDB_GRID_TYPE_NAMES, type VDBGridTypeName, type VDBSlot } from "../types.js";
-import { apiWgsl, type ApiOptions } from "./api.js";
+import { apiWgsl, hasMarch, type ApiOptions } from "./api.js";
+import type { VDBMajorantMode } from "./majorant.js";
 import { WGSL_KEYWORDS, WGSL_RESERVED_WORDS } from "./reserved.js";
 import { PNANOVDB_CHUNKS, type PnanovdbChunk } from "./pnanovdb.chunks.generated.js";
 import type { VDBModuleHelper, VDBModuleOptions, VDBModulePoolLike, VDBModuleProfile, VDBModuleTypeCheck } from "./types.js";
@@ -47,9 +48,9 @@ export const VDB_MODULE_BANNER =
 /** Name of the storage binding `slot` mode declares. */
 export const VDB_POOL_BINDING_NAME = "vdbPool";
 
-/** Profiles in inclusion order; only the first `IMPLEMENTED_PROFILES` generate (`majorant` is deferred, D22). */
+/** Profiles in inclusion order (`majorant`, P1.3, takes the march layer only with `majorant: 'nodeMax'`). */
 const PROFILES: readonly VDBModuleProfile[] = ["read", "sample", "march", "majorant"];
-const IMPLEMENTED_PROFILES = 3;
+const MAJORANT_MODES: readonly VDBMajorantMode[] = ["brick", "global", "nodeMax"];
 
 /** `GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE` (0x2 | 0x4); the global does not exist in Node. */
 const SHADER_STAGE_FRAGMENT_COMPUTE = 0x2 | 0x4;
@@ -102,7 +103,14 @@ function rejectPositionalSlot(where: string, options: object): void {
   }
 }
 
-function normalizeHelpers(helpers: unknown, profile: VDBModuleProfile, profileRank: number, where: string): VDBModuleHelper[] {
+function normalizeHelpers(
+  helpers: unknown,
+  profile: VDBModuleProfile,
+  profileRank: number,
+  majorant: VDBMajorantMode,
+  reader: "vendored" | "lean",
+  where: string,
+): VDBModuleHelper[] {
   if (helpers === undefined) return [];
   if (helpers === null || typeof helpers === "string" || typeof (helpers as Iterable<unknown>)[Symbol.iterator] !== "function") {
     throw bad(`${where}: helpers must be an array or set of helper names (${HELPER_NAMES.join(", ")}), got ${JSON.stringify(helpers)}.`);
@@ -113,8 +121,12 @@ function normalizeHelpers(helpers: unknown, profile: VDBModuleProfile, profileRa
       throw bad(`${where}: unknown helper ${JSON.stringify(h)}; use ${HELPER_NAMES.join(", ")}.`);
     }
     const need = HELPERS[h as VDBModuleHelper].rank;
-    if (profileRank < need) {
-      throw bad(`${where}: helper '${h}' needs profile '${PROFILES[need]}' or above, got '${profile}'.`);
+    if (profileRank < need || (need === 2 && !hasMarch(profileRank, { majorant }))) {
+      const also = profileRank === 3 ? " (profile 'majorant' has the march layer only with majorant: 'nodeMax')" : "";
+      throw bad(`${where}: helper '${h}' needs profile '${PROFILES[need]}' or above, got '${profile}'${also}.`);
+    }
+    if (reader === "lean" && h !== "rayClipSupport") {
+      throw bad(`${where}: helper '${h}' reads the vendored accessor; reader 'lean' takes only 'rayClipSupport'.`);
     }
     seen.add(h);
   }
@@ -172,8 +184,27 @@ function normalize(options: VDBModuleOptions, where: string): NormalizedOptions 
   if (profileRank < 0) {
     throw bad(`${where}: profile must be one of ${PROFILES.map((p) => `'${p}'`).join(", ")}, got ${JSON.stringify(options.profile)}.`);
   }
-  if (profileRank >= IMPLEMENTED_PROFILES) {
-    throw bad(`${where}: profile '${options.profile}' is deferred past 0.1 (D22). Use 'read', 'sample' or 'march'.`);
+  const isMajorant = profileRank === 3;
+  if (options.majorant !== undefined && !isMajorant) {
+    throw bad(`${where}: majorant applies to profile 'majorant' only, got profile '${options.profile}'.`);
+  }
+  if (options.minima !== undefined && !isMajorant) {
+    throw bad(`${where}: minima applies to profile 'majorant' only, got profile '${options.profile}'.`);
+  }
+  const majorant = options.majorant ?? "brick";
+  if (!MAJORANT_MODES.includes(majorant)) {
+    throw bad(`${where}: majorant must be ${MAJORANT_MODES.map((m) => `'${m}'`).join(", ")}, got ${JSON.stringify(majorant)}.`);
+  }
+  const minima = options.minima ?? false;
+  if (typeof minima !== "boolean") throw bad(`${where}: minima must be a boolean, got ${JSON.stringify(minima)}.`);
+  const reader = options.reader ?? "vendored";
+  if (reader !== "vendored" && reader !== "lean") {
+    throw bad(`${where}: reader must be 'vendored' or 'lean', got ${JSON.stringify(reader)}.`);
+  }
+  if (reader === "lean" && hasMarch(profileRank, { majorant })) {
+    throw bad(
+      `${where}: reader 'lean' has no march layer (HDDA, node stats); use the vendored reader for profile 'march' or majorant 'nodeMax'.`,
+    );
   }
 
   const sampler = options.sampler ?? "trilinear";
@@ -200,7 +231,14 @@ function normalize(options: VDBModuleOptions, where: string): NormalizedOptions 
     isActive,
     sampler: sampleOnly ? sampler : "trilinear",
     outside: sampleOnly ? outside : "background",
-    helpers: checkHelperSampler(normalizeHelpers(options.helpers, options.profile, profileRank, where), sampleOnly ? sampler : "trilinear", where),
+    helpers: checkHelperSampler(
+      normalizeHelpers(options.helpers, options.profile, profileRank, majorant, reader, where),
+      sampleOnly ? sampler : "trilinear",
+      where,
+    ),
+    reader,
+    majorant,
+    minima,
   };
 }
 

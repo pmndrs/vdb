@@ -52,11 +52,71 @@ Each profile includes the one before it.
 | `read` | `vdbAccessorInit`, `vdbReadValue`, `vdbIsActive`, `vdbGridCount`, `vdbGridType`, `vdbIndexMin`, `vdbIndexMax` |
 | `sample` | `vdbSample` (trilinear, or `nearest` with `sampler`), `vdbWorldToIndex`, `vdbWorldToIndexDir`, `vdbIndexToWorld`, `vdbIndexToWorldDir`, `vdbRayClip` |
 | `march` | the HDDA (`vdbHddaInit`, `vdbHddaUpdate`, `vdbHddaStep`), `vdbGetDim`, `vdbHasStats`, `vdbValueMax`, `vdbNodeMax` |
+| `majorant` | `sample` plus `vdbMajorantInit`, `vdbMajorantNext`, `vdbMajorantGlobal` (and `vdbMajorantMinimum` with `minima`); `march` too with `majorant: 'nodeMax'` |
 
-A `majorant` profile is reserved and throws `VDB_BAD_OPTION` in 0.1.
+Other options: `sampler` (`'trilinear'` default, or `'nearest'`), `isActive: false` to drop `vdbIsActive`,
+`outside`: `'background'` (default, the tree's background value) or `'zero'` (the field is 0 outside the index bbox),
+and `reader: 'lean'` (below).
 
-Other options: `sampler` (`'trilinear'` default, or `'nearest'`), `isActive: false` to drop `vdbIsActive`, and
-`outside`: `'background'` (default, the tree's background value) or `'zero'` (the field is 0 outside the index bbox).
+## Majorants
+
+Delta and ratio tracking need, along a ray, a bound of the density every sample can take. The `majorant` profile walks
+one as a sequence of segments:
+
+```wgsl
+var it = vdbMajorantInit(g, oIdx, dIdx, tMin, tMax);   // index-space ray; d unnormalized, t is yours
+loop {
+    let s = vdbMajorantNext(&it);                      // (t0, t1, bound); t1 <= t0 ends the walk
+    if s.y <= s.x { break; }
+    // every vdbSample on [s.x, s.y) is <= s.z; with minima: >= vdbMajorantMinimum(&it)
+}
+```
+
+Segments are contiguous and never empty. The bound is over the *sampled* field: a trilinear sample reads one voxel past
+its cell, so a cell's bound covers its neighbours' first layer too. Three walks, picked by `majorant`:
+
+| `majorant` | Walk | Data |
+| --- | --- | --- |
+| `'brick'` (default) | A 3D DDA over cells of `2^brickLog2` voxels (pmndrs/pathtracer's `ptDdaInit` / `ptDdaNext`) | `pool.setMajorant(id, vdbBrickMajorant(image))` from `@pmndrs/vdb/tools`; a grid without it walks as `'global'` |
+| `'global'` | One segment over the sampler's support box | The grid's `valueMax` (also `vdbMajorantGlobal(g)`, the scalar a guiding or emission estimator needs) |
+| `'nodeMax'` | The HDDA over the tree, leaf-sized cells widening over tiles | NanoVDB node stats (`HAS_MIN_MAX`); assumes inactive voxels don't exceed their leaf's max (fog) |
+
+{/* snippet: majorant-host */}
+```ts
+import { VDBGridPool, vdbModuleEntries, vdbModuleWgsl, type VDBSlotModuleOptions } from '@pmndrs/vdb';
+import { vdbBrickMajorant } from '@pmndrs/vdb/tools';
+
+const pool = await VDBGridPool.create(device);
+// Bounds over 8³ bricks for delta / ratio tracking, with minima for a residual tracker.
+// outside: 'zero' matches the module below (a tap outside the grid's bbox reads 0).
+const id = pool.add(smoke, { majorant: vdbBrickMajorant(smoke, { minima: true, outside: 'zero' }) });
+
+const slot = { group: 2, firstBinding: 0 };
+const options: VDBSlotModuleOptions = {
+    slot,
+    types: [...pool.types],
+    profile: 'majorant', // sample + vdbMajorantInit / vdbMajorantNext
+    majorant: 'brick',
+    minima: true,
+    outside: 'zero',
+    reader: 'lean', // a fifth of the vendored accessor's size, same values
+};
+const module = vdbModuleWgsl(options);
+const layout = device.createBindGroupLayout({ entries: vdbModuleEntries(slot) });
+```
+
+Build the bricks for the same `outside` as the module. Outside the walk's box the field is 0 with `outside: 'zero'`; with
+`'background'` it is the tree's background, which the walk does not cover, so use a fog grid with background 0 there.
+`vdbBrickMajorant(image, { align: 'pathtracer', resolution })` lays the cells out as the pathtracer's own
+`brickMajorants` does for a dense grid at index `[0, n)` (cell c over `[8c − 1, 8c + 7)`), and gives the same arrays.
+
+## The lean reader
+
+`reader: 'lean'` swaps the audited PNanoVDB accessor for a compact descent with a one-leaf cache: `read` for Float is
+3.1 KiB instead of 17.1, `sample` 5.1 KiB instead of 19.7. The functions and the values are the same (every scalar
+type, both `outside` modes). It covers `read`, `sample` and `majorant` with `'brick'` or `'global'`; it has no march
+layer, so no `march` profile, no `nodeMax`, and of the helpers only `rayClipSupport`. Use it when a kernel is near a
+compiler's size limit.
 
 ## Helpers
 
@@ -90,6 +150,11 @@ of 1024):
 | `read` | 17.5 | 19 | 19.5 |
 | `sample` | 21.5 | 23 | 24 |
 | `march` | 29 | 30.5 | 31 |
+| `majorant` (`brick`, `global`) | 23.5 | 25 | 26 |
+| `majorant` (`nodeMax`) | 32 | 33.5 | 34 |
+| `read`, `reader: 'lean'` | 4 | 5 | 6.5 |
+| `sample`, `reader: 'lean'` | 5.5 | 6 | 6.5 |
+| `majorant`, `reader: 'lean'` | 8.75 | 9 | 9.25 |
 
 Helpers add 1 KiB to the profile's budget, and `nodeAverage` adds 1.5 KiB. The budgets exist because a path tracer's
 kernels are already 41 to 55 KB of WGSL and compile time is on watch.

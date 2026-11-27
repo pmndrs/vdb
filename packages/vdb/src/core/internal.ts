@@ -14,6 +14,10 @@ export const pnanovdbWgslUrl = new URL("../../vendor/pnanovdb.wgsl", import.meta
 
 export {
   VDB_HEADER_WORD,
+  VDB_MAJORANT_FLAG,
+  VDB_MAJORANT_HEADER_BYTES,
+  VDB_MAJORANT_MAGIC,
+  VDB_MAJORANT_WORD,
   VDB_POOL_ALIGN,
   VDB_POOL_HEADER_BYTES,
   VDB_POOL_MAGIC,
@@ -24,6 +28,7 @@ export {
   VDB_RECORD_WORD,
   decodeHeader,
   decodeRecord,
+  encodeMajorantRange,
   encodeRecord,
   vdbPoolLayoutWgsl,
 } from "./pool/layout.js";

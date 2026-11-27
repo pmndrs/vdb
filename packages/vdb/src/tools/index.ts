@@ -127,6 +127,14 @@ export { vdbSampleNearestCpu, vdbSampleTrilinearCpu, vdbSampleTrilinearVec3Cpu }
 export type { VDBSampleCpuOptions } from "./cpu/sample-trilinear.js";
 
 /**
+ * Brick-majorant bounds for delta and ratio tracking (P1.2): the data the core's `majorant` WGSL profile
+ * walks (`pool.setMajorant(id, vdbBrickMajorant(image))`). `align: 'pathtracer'` reproduces
+ * pmndrs/pathtracer's `brickMajorants` layout.
+ */
+export { vdbBrickMajorant } from "./cpu/majorant.js";
+export type { VDBBrickMajorant, VDBBrickMajorantOptions } from "./cpu/majorant.js";
+
+/**
  * CPU versions of the core compute tools (K2.3): grid stats and the decode to a
  * dense atlas (the WebGL fallback path). The core's GPU versions are
  * `vdbGridStats` / `vdbDecodeToAtlas`.

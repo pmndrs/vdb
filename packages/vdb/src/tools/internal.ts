@@ -29,6 +29,7 @@ export {
   nodeStats,
   rayClip,
   rayClipSupport,
+  forEachTreeRegion,
   treeNodes,
 } from "./cpu/march.js";
 export type {
@@ -40,8 +41,12 @@ export type {
   NodeStats,
   RayClipSupportOptions,
   TreeNode,
+  TreeRegion,
   Vec3,
 } from "./cpu/march.js";
+// P1.3 / P1.4: twin of the majorant WGSL profile.
+export { majorantWalk } from "./cpu/majorant.js";
+export type { MajorantSegment, MajorantWalkOptions } from "./cpu/majorant.js";
 export { probeCoords, probePoints } from "./cpu/probe-coords.js";
 export type { ProbeOpts } from "./cpu/probe-coords.js";
 export {

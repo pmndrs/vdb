@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   VDBGridPool,
+  VDB_MAJORANT_HEADER_BYTES,
+  VDB_MAJORANT_MAGIC,
   VDB_POOL_RECORD_WORDS,
   VDB_RECORD_FLAG,
   decodeHeader,
@@ -497,14 +499,33 @@ describe("alignment, bind entries, majorants", () => {
     const rec = recordAt(pool, id);
     expect(rec).toMatchObject({ hasBrickMajorant: true, brickLog2: 3, majorantDims: [2, 3, 4] });
     expect(rec.majorantOffset).toBe(pool.info(id).majorantOffset);
-    const stored = new Float32Array(fake(pool).data.buffer, rec.majorantOffset, 24);
+    // P1.3: a 32-byte header (origin, flags, "VDBM"), then the bounds.
+    const head = new Int32Array(fake(pool).data.buffer, rec.majorantOffset, 8);
+    const bboxMin = pool.info(id).indexBBox.min;
+    expect(Array.from(head.subarray(0, 3))).toEqual(bboxMin.map((v) => v - 1)); // default origin: the trilinear support
+    expect(head[3]).toBe(0); // no minima
+    expect(head[4]! >>> 0).toBe(VDB_MAJORANT_MAGIC);
+    const stored = new Float32Array(fake(pool).data.buffer, rec.majorantOffset + VDB_MAJORANT_HEADER_BYTES, 24);
     expect(Array.from(stored)).toEqual(Array.from(data));
+    expect(pool.info(id)).toMatchObject({ majorantOrigin: bboxMin.map((v) => v - 1), majorantMinima: false });
 
     // Same size: rewritten in place.
     const data2 = new Float32Array(24).fill(7);
     pool.setMajorant(id, { brickLog2: 3, dims: [4, 3, 2], data: data2 });
     pool.flush();
     expect(recordAt(pool, id)).toMatchObject({ majorantOffset: rec.majorantOffset, majorantDims: [4, 3, 2] });
+
+    // Origin and minima: the range grows (moves) and carries both.
+    const minima = new Float32Array(24).fill(-1);
+    pool.setMajorant(id, { brickLog2: 2, dims: [4, 3, 2], data: data2, minima, origin: [-7, 5, 1 << 20] });
+    pool.flush();
+    const rec2 = recordAt(pool, id);
+    expect(rec2).toMatchObject({ brickLog2: 2, majorantDims: [4, 3, 2] });
+    const head2 = new Int32Array(fake(pool).data.buffer, rec2.majorantOffset, 8);
+    expect([head2[0], head2[1], head2[2], head2[3]]).toEqual([-7, 5, 1 << 20, 1]);
+    const lows = new Float32Array(fake(pool).data.buffer, rec2.majorantOffset + VDB_MAJORANT_HEADER_BYTES + 24 * 4, 24);
+    expect(Array.from(lows)).toEqual(Array.from(minima));
+    expect(pool.info(id)).toMatchObject({ majorantOrigin: [-7, 5, 1 << 20], majorantMinima: true });
 
     pool.setMajorant(id, null);
     pool.flush();
@@ -522,6 +543,9 @@ describe("alignment, bind entries, majorants", () => {
     expect(bad({ dims: [0, 1, 1] })).toBe("VDB_BAD_OPTION");
     expect(bad({ brickLog2: -1 })).toBe("VDB_BAD_OPTION");
     expect(bad({ data: [1] as unknown as Float32Array })).toBe("VDB_BAD_OPTION");
+    expect(bad({ minima: new Float32Array(2) })).toBe("VDB_BAD_OPTION");
+    expect(bad({ origin: [0.5, 0, 0] })).toBe("VDB_BAD_OPTION");
+    expect(bad({ origin: [0, 0] as unknown as [number, number, number] })).toBe("VDB_BAD_OPTION");
   });
 
   it("valueMax: stats bound, caller bound, and no-stats", async () => {

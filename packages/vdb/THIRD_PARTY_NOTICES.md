@@ -258,7 +258,9 @@ used; no code or data was copied. The tabulated CIE data (CC BY-SA 4.0) is not p
 vendored, extended fork of emcfarlane's WGSL port of NanoVDB's `PNanoVDB.h` (OpenVDB, Apache-2.0). The original
 copyright and attribution are in [vendor/NOTICE](./vendor/NOTICE), the licence text is
 [vendor/LICENSE](./vendor/LICENSE), and every local change is logged in [vendor/VENDOR.md](./vendor/VENDOR.md).
-These files must stay with any redistribution of the WGSL.
+These files must stay with any redistribution of the WGSL. The lean reader (`src/core/wgsl/lean.ts`, `reader: 'lean'`)
+is written for this package but derives its node layout, root key and leaf decoders from the same `PNanoVDB.h`; the
+modules it generates carry the same SPDX banner and the same notice applies.
 
 ## NanoVDB `math/HalfLite.h` (Apache-2.0; derived from Imath, BSD-3-Clause)
 
