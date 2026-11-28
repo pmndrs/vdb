@@ -349,6 +349,9 @@ export type { VDBFrameMlp, VDBFrameMlpLayer } from "./frame/mlp.js";
 // K6.Na: the network in the pmndrs neural tooling's weight container (OIDN `.tza` v2, pmndrs/denoiser `parseTZA`)
 export { vdbTzaRead, vdbTzaWrite, vdbFrameMlpToTza, vdbFrameMlpFromTza } from "./frame/mlp-tza.js";
 export type { VDBTzaTensor } from "./frame/mlp-tza.js";
+// K6.Nc: the network in the pmndrs NRC's bias-free weight convention (pmndrs/pathtracer `@pathtracer/mlp`)
+export { vdbFrameMlpToNn, vdbFrameMlpFromNn, vdbFrameMlpNnInputs, vdbFrameMlpNnWeightCount } from "./frame/mlp-nn.js";
+export type { VDBFrameMlpNn } from "./frame/mlp-nn.js";
 export {
   VDB_FRAME_MULTI_SCALE_MAX_LEVELS,
   VDB_FRAME_MULTI_SCALE_DEFAULT_LEVELS,
