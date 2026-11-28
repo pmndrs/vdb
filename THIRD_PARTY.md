@@ -40,13 +40,14 @@ with each port, vendor drop or new test fixture (see CLAUDE.md, "Licences").
 
 ## mjurczyk/openvdb: MIT notice
 
-mjurczyk/openvdb has no `LICENSE` file in its repository. Its npm packages declare MIT, and the owner has
-confirmed the licence. The notice below applies to the code we ported, as MIT requires.
+mjurczyk/openvdb added a `LICENSE` file (MIT) in v0.32.0 (2026-11-28, his VDB-186, `61bd93d`); before that only its
+npm packages declared MIT, and the owner had confirmed the licence with him. The notice below, with his LICENSE's
+copyright line, applies to the code we ported (pinned `75e7345` and the later commits named per row), as MIT requires.
 
 ```
 MIT License
 
-Copyright (c) mjurczyk/openvdb contributors
+Copyright (c) 2022-present mjurczyk
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 documentation files (the "Software"), to deal in the Software without restriction, including without limitation

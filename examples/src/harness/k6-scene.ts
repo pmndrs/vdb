@@ -8,7 +8,8 @@
  * (K6.8: always the core; `?backend=` is ignored), `?w=&h=` (default 1280 × 720), `?froxels=WxHxD`
  * (default his 512x512x24), `?lod=` (sparse sources: default 'coarse-pyramid', D28), `?shadowRes=`, `?shadowSteps=`.
  * K6.Q1b: `?shadowResMax=` (the size-adaptive shadow grid), `?shadowRule=both|optical|voxels` (its internal A/B rule).
- * A spectral scene (`def.spectral`) turns the renderer's `spectral` on.
+ * A spectral scene (`def.spectral`) turns the renderer's `spectral` on; K7.4: `?spectral=0|1` overrides it (a grey scene stays grey).
+ * K7.4: a scene's `phaseKind` ('henyey-greenstein' for the `-hg` scenes) names the renderer's and the volume's phase.
  * Jitter and temporal reprojection off (deterministic) unless the K6.Q1b multi-frame mode asks: `?frames=N` draws N frames
  * (default 4: the warm-up) with `?jitter=1` and / or `?temporal=1`; the image is the last frame, or with `?average=K` the
  * linear mean of the last K frames (the ensemble mean of the jittered estimator). No MSAA (no meshes).
@@ -148,12 +149,13 @@ async function main(): Promise<void> {
     lighting: LIGHTING,
     multipleScattering: MS,
     shadowResolution: Number(params.get("shadowRes") ?? 64),
-    phase: "dual-lobe",
+    phase: def.phaseKind ?? "dual-lobe",
     phaseG: def.phase[0],
     phaseBackG: def.phase[1],
     phaseBackWeight: def.phase[2],
     // K6.Q1b: a spectral scene (his medium presets: per-channel extinction and g)
-    spectral: !!def.spectral,
+    // K7.4: `?spectral=1` turns spectral on for a grey scene too (his v0.30 default; the medium stays grey, the reference too)
+    spectral: params.has("spectral") ? params.get("spectral") === "1" : !!def.spectral,
     phaseGExponent: def.spectral?.phaseGExponent ?? 0,
   });
 
@@ -189,7 +191,7 @@ async function main(): Promise<void> {
     normalizeDensity: true,
     opacity: 1.0,
     extinction: def.extinction,
-    phase: "dual-lobe",
+    phase: def.phaseKind ?? "dual-lobe",
     phaseG: def.phase[0],
     phaseBackG: def.phase[1],
     phaseBackWeight: def.phase[2],

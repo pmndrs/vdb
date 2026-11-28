@@ -19,36 +19,40 @@
       "name": "mjurczyk/openvdb tags",
       "kind": "github-tag",
       "repo": "mjurczyk/openvdb",
-      "pin": "v0.29.0",
-      "reviewed": "2026-11-24",
-      "review": "His changelog and diff since the pin: .wvdb format, renderer fixes and features we port (THIRD_PARTY.md rows, DIVERGES). Read his code; don't run it (CLAUDE.md)."
+      "pin": "v0.32.0",
+      "reviewed": "2026-11-29",
+      "review": "His changelog and diff since the pin: .wvdb format, renderer fixes and features we port (THIRD_PARTY.md rows, DIVERGES). Read his code; don't run it (CLAUDE.md).",
+      "reviewNote": "K7.4 (docs/archive/handoffs/K7-4.md): every commit v0.29.0..v0.32.0 (3d1160b..d833eaf) read. v0.30.0: new defaults (0979e8f: dual-lobe, spectral on, resolution 200, level sets 'surface', points 'points', emission light resolution 8, jitter removed; issue #1, V67) and dead-code removal; v0.31.0: VDB-161..VDB-181 per-frame allocation, cache-key and reader fixes (VDB-167 / VDB-168 / VDB-173 taken as K7.15-K7.17; the rest his WebGL / TSL architecture or already ours); v0.32.0: LICENSE (MIT, 'Copyright (c) 2022-present mjurczyk') and THIRD_PARTY_NOTICES, CLI and docs fixes, examples clean-up. No .wvdb format change (wvdbVersion 2)."
     },
     {
       "id": "mjurczyk-npm-openvdb",
       "name": "npm openvdb",
       "kind": "npm",
       "package": "openvdb",
-      "pin": "0.29.0",
-      "reviewed": "2026-11-24",
-      "review": "Published with the mjurczyk/openvdb tag of the same version; check the licence field still says MIT."
+      "pin": "0.32.0",
+      "reviewed": "2026-11-29",
+      "review": "Published with the mjurczyk/openvdb tag of the same version; check the licence field still says MIT.",
+      "reviewNote": "K7.4: 0.30.0-0.32.0 licence MIT; the 0.32.0 tarball ships LICENSE and THIRD_PARTY_NOTICES (0.30 / 0.31 had no LICENSE file). Reader change: VDB-173 metadata types and UTF-8 strings (K7.17)."
     },
     {
       "id": "mjurczyk-npm-three-openvdb",
       "name": "npm three-openvdb",
       "kind": "npm",
       "package": "three-openvdb",
-      "pin": "0.29.0",
-      "reviewed": "2026-11-24",
-      "review": "His three.js renderer package (the K3/K6 port's source); check the licence field still says MIT."
+      "pin": "0.32.0",
+      "reviewed": "2026-11-29",
+      "review": "His three.js renderer package (the K3/K6 port's source); check the licence field still says MIT.",
+      "reviewNote": "K7.4: 0.30.0-0.32.0 licence MIT; the 0.32.0 tarball ships LICENSE (no THIRD_PARTY_NOTICES). Renderer review as the tag (new defaults, VDB-161..VDB-172 fixes)."
     },
     {
       "id": "mjurczyk-npm-webvdb",
       "name": "npm webvdb",
       "kind": "npm",
       "package": "webvdb",
-      "pin": "0.29.0",
-      "reviewed": "2026-11-24",
-      "review": "His .wvdb CLI (baker); a format change shows here first."
+      "pin": "0.32.0",
+      "reviewed": "2026-11-29",
+      "review": "His .wvdb CLI (baker); a format change shows here first.",
+      "reviewNote": "K7.4: 0.30.0-0.32.0 licence MIT; the 0.32.0 tarball ships LICENSE and THIRD_PARTY_NOTICES. CLI fixes only (VDB-182: import extensions, --grids help); the .wvdb format is unchanged."
     },
     {
       "id": "emcfarlane-commit",

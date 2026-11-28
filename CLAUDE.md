@@ -42,7 +42,7 @@ in docs/dev/DIVERGES.md with the reason.
 - Our code is MIT, Copyright (c) 2026 Dennis Smolek and Poimandres contributors (D13). Root and `packages/vdb` `LICENSE` are MIT.
 - The vendored `pnanovdb.wgsl` (emcfarlane, Apache-2.0) and `PNanoVDB.h` (OpenVDB, Apache-2.0) keep their
   headers and NOTICE (D2).
-- mjurczyk/openvdb is MIT (the repo has no LICENSE file yet; its npm packages declare MIT). Port with a header
+- mjurczyk/openvdb is MIT (LICENSE file since v0.32.0: "Copyright (c) 2022-present mjurczyk"). Port with a header
   naming "mjurczyk/openvdb contributors (MIT)", a THIRD_PARTY entry and a DIVERGES row.
   Don't run its code in the cloud sandbox; read it.
 - Test assets are git-ignored and fetched by script. The openvdb.org samples are CC BY-SA 4.0.
@@ -749,3 +749,13 @@ From v1; details in docs/archive/handoffs/.
   −28.9 % with one clamp, −15.3 % per lobe; the isotropic reference row is −12.7 %).
 - K6.Q1c: `vdbFrameAmbientPhaseFactor` needs M⁺ of the PACKED directions (`vdbFrameAmbientDipoleMatrix`): with 1–3 pairs M
   is singular (pseudo-inverse), and a twin that drops a pair (`?mutate=ao-pairs`) must still use the renderer's matrix.
+- His demos set the renderer phase to dual-lobe 0.8 / −0.3 / 0.2 already at v0.26 (`utils/phase.js`), and k3-frame and
+  k6-scenes do too: his `step3-default` capture is dual-lobe, not his library default (HG). An HG A/B needs
+  `&phase=henyey-greenstein` (k3-frame) or a `-hg` scene (k6-scenes, K7.4), and its own reference: the phase is part of
+  the medium, so never judge a phase change against the other phase's reference.
+- `?spectral=1` on a grey medium in 'frame' lighting turns 'neural' / 'multi-scale' into 1D diffusion (V133): the frame
+  equals the grey diffusion frame. A spectral A/B with 'neural' measures the lost network, not spectral transport.
+- `packages/vdb/test/scripts/upstream-watch.test.mjs` runs its captured fixtures against its own capture-time pins
+  (`CAPTURE_PINS`, a temp pins file for `main()`): bump `.github/upstream-pins.json` after a review without touching it.
+- A worktree-isolated agent's `git clone` must name its destination as a full literal path (no relative dir, no
+  variable); clone his repo `--filter=blob:none --no-checkout` into the scratchpad and read it with `git show` / `git diff`.

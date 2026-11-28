@@ -9,14 +9,14 @@ copy of this list is [THIRD_PARTY.md](https://github.com/pmndrs/vdb/blob/main/TH
 Parts of the `.wvdb` reader, writer and baker, the dense and sparse volume sources, the froxel renderer, level sets
 and points are ported from [mjurczyk/openvdb](https://github.com/mjurczyk/openvdb) (pinned commit `75e7345`,
 v0.26.0; later commits are noted per file). The froxel renderer's ports live in the core frame renderer
-(`src/core/frame/`) and the `./three` adapter. The upstream repository has no LICENSE file; its npm packages declare MIT and the author has confirmed the
-licence. This notice applies to the files listed below, each of which carries a header "Portions derived from
+(`src/core/frame/`) and the `./three` adapter. The upstream repository has an MIT LICENSE file since v0.32.0 (before that its npm packages declared MIT and
+the author had confirmed the licence); the copyright line below is his LICENSE's. This notice applies to the files listed below, each of which carries a header "Portions derived from
 mjurczyk/openvdb (MIT)" (or "derived from") naming its upstream paths.
 
 ```
 MIT License
 
-Copyright (c) mjurczyk/openvdb contributors
+Copyright (c) 2022-present mjurczyk
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 documentation files (the "Software"), to deal in the Software without restriction, including without limitation
