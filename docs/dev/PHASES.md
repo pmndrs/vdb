@@ -204,6 +204,11 @@ K7.3, K7.5 (reference `PNanoVDB.h` at v14.0.0), K7.6 (upstream watch, not live y
 byte-identical to native) and K7.H1 (Welford stats, Half sources, native root order) done; K7.2 superseded. Open: K7.4
 (issue #1), K7.5a and K7.6a (owner), K7.7, K7.C4.
 
+**Status 2026-11-29 (K7.4):** his v0.30 defaults measured as setting changes against our reference (owner decides K7.4,
+[handoff](../archive/handoffs/K7-4.md)); his releases to v0.32.0 reviewed and the four mjurczyk pins bumped to v0.32.0 / 0.32.0
+(follow-ups K7.15–K7.17); K7.8 (his PR #112) closed as research. He added an MIT LICENSE file (v0.32.0). Open: K7.4 (owner),
+K7.4a–c, K7.C4, K7.12–K7.17.
+
 Since 0.1 OpenVDB shipped 13.1, 13.2 and 14.0, and mjurczyk/openvdb 0.27–0.29 (research 2026-11-24, TASKS K7). The
 NanoVDB file format and PNanoVDB layout are unchanged, but NanoVDB 13.2 added Half grids, Blosc is on by default in
 NanoVDB builds, and v14 tightened point-attribute checks. His releases fixed volume shadows and post-processing and
@@ -258,4 +263,4 @@ promotion into a K phase.
 | R7 | Bindless and texture-table grids, once a portable WebGPU feature exists | ⬜ | pathtracer |
 | R8 | PicoVDB: re-evaluate on the D16 triggers | — | — |
 | R9 | Retest the v1 sandbox workarounds on hardware | ✅ 2026-07-12: direct presentation, stock 3D texture and no-shim lanes pass (`pnpm hardware:perf`) | K2 |
-| R10 | Bring mjurczyk into the project: outreach, the `.nvdb` loader PR offer (and a nudge to add the LICENSE file). His neural weights are no longer shipped (D36) | ⬜ owner | K3 |
+| R10 | Bring mjurczyk into the project: outreach, the `.nvdb` loader PR offer, the CIE table. He added the LICENSE file himself (v0.32.0). His neural weights are no longer shipped (D36). Message drafted in the [K7.4 handoff](../archive/handoffs/K7-4.md) §5 | ⬜ owner | K3 |

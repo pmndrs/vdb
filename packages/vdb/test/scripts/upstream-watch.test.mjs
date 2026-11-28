@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   compareGithubCommits,
@@ -21,7 +23,14 @@ import {
 const fixture = (name) =>
   JSON.parse(readFileSync(new URL(`./fixtures/upstream-watch/${name}.json`, import.meta.url), "utf8"));
 const pinsUrl = new URL("../../../../.github/upstream-pins.json", import.meta.url);
-const pins = JSON.parse(readFileSync(pinsUrl, "utf8"));
+const committed = JSON.parse(readFileSync(pinsUrl, "utf8"));
+// The fixtures were captured on 2026-11-28 with the mjurczyk pins at v0.29.0 / 0.29.0. K7.4 (2026-11-29) reviewed his
+// releases and moved the committed pins past the fixtures, so the comparisons run against the capture-time pins (main()
+// reads them from a temp pins file); the committed file is checked on its own below.
+const CAPTURE_PINS = { "mjurczyk-tag": "v0.29.0", "mjurczyk-npm-openvdb": "0.29.0", "mjurczyk-npm-three-openvdb": "0.29.0", "mjurczyk-npm-webvdb": "0.29.0" };
+const pins = { ...committed, watches: committed.watches.map((w) => (w.id in CAPTURE_PINS ? { ...w, pin: CAPTURE_PINS[w.id] } : w)) };
+const pinsFile = join(mkdtempSync(join(tmpdir(), "upstream-watch-")), "pins.json");
+writeFileSync(pinsFile, JSON.stringify(pins));
 const watch = (id) => pins.watches.find((w) => w.id === id);
 
 const releases = fixture("openvdb-releases"); // v14.0.0, v13.2.0, v13.1.0, …
@@ -103,8 +112,9 @@ describe("K7.6 upstream watch: comparisons", () => {
   });
 
   it("the committed pins are valid and every watch has a request", () => {
-    expect(validatePins(pins).length).toBeGreaterThanOrEqual(6);
-    for (const w of pins.watches) expect(watchRequest(w).url).toMatch(/^https:\/\//);
+    expect(validatePins(committed).length).toBeGreaterThanOrEqual(6);
+    for (const w of committed.watches) expect(watchRequest(w).url).toMatch(/^https:\/\//);
+    expect(Object.keys(CAPTURE_PINS).every((id) => committed.watches.some((w) => w.id === id))).toBe(true);
     expect(() => validatePins({ ...pins, watches: [...pins.watches, pins.watches[0]] })).toThrow(/duplicate/);
     expect(() => validatePins({ ...pins, watches: [{ ...pins.watches[0], pin: "main" }] })).toThrow(/not a version/);
   });
@@ -163,7 +173,7 @@ describe("K7.6 upstream watch: main() against a fake client", () => {
   const run = (argv, table, env = { GITHUB_TOKEN: "t" }) => {
     const { request, calls } = fake(table);
     const log = [];
-    return main(argv, { request, env, log: (s) => log.push(s), now: () => new Date("2026-11-28T00:00:00Z") }).then(
+    return main([...argv, "--pins", pinsFile], { request, env, log: (s) => log.push(s), now: () => new Date("2026-11-28T00:00:00Z") }).then(
       (code) => ({ code, calls, log: log.join("\n") }),
     );
   };

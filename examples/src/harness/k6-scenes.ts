@@ -48,6 +48,11 @@ export interface K6Scene {
    * The reference renders each channel as a grey medium with that channel's extinction and phase.
    */
   spectral?: { angstromExponent: number; phaseGExponent: number };
+  /**
+   * K7.4: the phase function name the renderer page uses (default 'dual-lobe'). The `-hg` scenes set
+   * 'henyey-greenstein' with `phase` [g, 0, 0], so the reference (which reads `phase`) renders the same single lobe.
+   */
+  phaseKind?: "dual-lobe" | "henyey-greenstein";
 }
 
 const SUN: K6Light = { kind: "sun", toLight: [100, 200, 100], color: [1, 1, 1], intensity: 1 };
@@ -73,12 +78,21 @@ const ISO: K6Vec3 = [0, 0, 0];
 // the isotropic single-scattering reference IS the solid-angle mean of transmittance the shadowed ambient estimates, so
 // (phase vs isotropic reference) is the phase-weighting term and (renderer vs isotropic reference) the pair quadrature.
 const AMBIENT_ONLY: K6Light = { kind: "ambient", color: [1, 1, 1], intensity: 1 };
+// K7.4: Henyey-Greenstein g 0.8 (our default phase) and the media of the scenes that get an `-hg` twin
+const HG: K6Vec3 = [0.8, 0, 0];
+const BASES = {
+  wdas: { asset: "wdas", extinction: 40, albedo: [1, 1, 1], lights: [SUN] },
+  "wdas-ambient": { asset: "wdas", extinction: 40, albedo: [1, 1, 1], lights: [SUN, AMBIENT] },
+  "smoke-hemi": { asset: "smoke", extinction: 40, albedo: [1, 1, 1], lights: [SUN, HEMI] },
+  "bunny-absorbing": { asset: "bunny", extinction: 100, albedo: [0.5, 0.5, 0.5], lights: [SUN] },
+  "bunny-thin": { asset: "bunny", extinction: 5, albedo: [1, 1, 1], lights: [SUN] },
+} satisfies Record<string, Pick<K6Scene, "asset" | "extinction" | "albedo" | "lights">>;
 
 /** The scene set: each with his sun, and with / without ambient light; the WDAS cloud, the smoke, an absorbing and a thin bunny, a point light. */
 export const K6_SCENES: Record<string, K6Scene> = Object.fromEntries(
   [
-    scene("wdas", "WDAS cloud (quarter, Fp8, sparse), sun", { asset: "wdas", extinction: 40, albedo: [1, 1, 1], lights: [SUN] }),
-    scene("wdas-ambient", "WDAS cloud, sun + ambient 0.4", { asset: "wdas", extinction: 40, albedo: [1, 1, 1], lights: [SUN, AMBIENT] }),
+    scene("wdas", "WDAS cloud (quarter, Fp8, sparse), sun", { ...BASES.wdas }),
+    scene("wdas-ambient", "WDAS cloud, sun + ambient 0.4", { ...BASES["wdas-ambient"] }),
     scene("smoke", "openvdb.org smoke (sparse), sun", { asset: "smoke", extinction: 40, albedo: [1, 1, 1], lights: [SUN] }),
     scene("smoke-ambient", "openvdb.org smoke, sun + ambient 0.4", { asset: "smoke", extinction: 40, albedo: [1, 1, 1], lights: [SUN, AMBIENT] }),
     scene("bunny-absorbing", "his bunny, absorbing (albedo 0.5, extinction 100), sun", { asset: "bunny", extinction: 100, albedo: [0.5, 0.5, 0.5], lights: [SUN] }),
@@ -106,6 +120,9 @@ export const K6_SCENES: Record<string, K6Scene> = Object.fromEntries(
         scene(`${key}-${what}-only-iso`, `${key}, ${what} light only, isotropic phase (V128)`, { asset, extinction, albedo: [...albedo] as K6Vec3, lights: [light], phase: ISO }),
       ];
     }),
+    // K7.4 (issue #1): our default phase (Henyey-Greenstein g 0.8, his v0.26 default) on the dual-lobe scenes above, so
+    // his v0.30 'dual-lobe' default can be judged as a setting change: each phase against its own reference
+    ...(["wdas", "wdas-ambient", "smoke-hemi", "bunny-absorbing", "bunny-thin"] as const).map((base) => scene(`${base}-hg`, `${base}, Henyey-Greenstein g 0.8 (K7.4)`, { ...BASES[base], phase: HG, phaseKind: "henyey-greenstein" })),
     scene("bunny-point", "his bunny (extinction 20), a point light above-left (E = 1 at the centre in both mappings)", {
       asset: "bunny",
       extinction: 20,

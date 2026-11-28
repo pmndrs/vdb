@@ -37,6 +37,9 @@
 //
 // K6.Q1c: 'volume' rows with the distant light's dipole phase weight (`aoPhase=dipole`, ms off; `dipole-ms`, ms on) in every
 // scene group and the V128 groups; the multi-frame rows keep the fixed AO ring (D37 (5)).
+//
+// K7.4 (issue #1): `--groups=k74-…` (not in the default list) measure his v0.30 defaults (dual-lobe phase, spectral on) as
+// setting changes: each phase against its own reference, spectral against the grey reference.
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -334,8 +337,78 @@ const GROUP_DEFS = {
       },
     ]),
   ),
+  // K7.4 (issue #1): his v0.30 defaults as setting changes in our renderer. Not in the default group list (`--groups=k74-…`).
+  // Phase: his bunny in 'frame' lighting with Henyey-Greenstein g 0.8 (his v0.26 default, ours) and with 'dual-lobe'
+  // 0.8 / −0.3 / 0.2 (his v0.30 default), each against its own reference (the reference reads the phase from the frame's
+  // settings); the same in 'volume' lighting; and the report scenes in both phases (`-hg` scenes, k6-scenes.ts).
+  // Spectral: `&spectral=1` on every grey row (the medium stays grey, so the reference is the same; 'neural' then runs as
+  // 1D diffusion, V133, as his `isNeural`).
+  // His demos already set the renderer phase to dual-lobe 0.8 / −0.3 / 0.2 at v0.26 (utils/phase.js; k3-frame does too), so
+  // his step3-default capture is dual-lobe; the HG group overrides the phase with `&phase=henyey-greenstein`.
+  ...Object.fromEntries(
+    [
+      ["k74-frame-hg", "Henyey-Greenstein g 0.8 (our default)", "&phase=henyey-greenstein", {}],
+      ["k74-frame-dual-lobe", "dual-lobe 0.8 / −0.3 / 0.2 (his v0.30 default, his demos' phase)", "", { neural: "step4-default-neural-dir-isolated", diffusion: "step3-default-dir-isolated" }],
+    ].map(([key, what, q, captures]) => [
+      key,
+      {
+        kind: "his",
+        title: `K7.4: his bunny, 'frame' lighting, sun, ${what}`,
+        scenario: "step3-default-dir-isolated",
+        lighting: "frame",
+        rows: [
+          k3("ms neural", `scene=step3-default-dir-isolated&ms=neural${q}`, { lighting: "frame", ...(captures.neural ? { capture: captures.neural } : {}) }),
+          k3("ms neural + spectral", `scene=step3-default-dir-isolated&ms=neural&spectral=1${q}`, { lighting: "frame" }),
+          k3("ms diffusion", `scene=step3-default-dir-isolated&ms=1${q}`, { lighting: "frame", ...(captures.diffusion ? { capture: captures.diffusion } : {}) }),
+          k3("ms off", `scene=step3-default-dir-isolated&ms=0${q}`, { lighting: "frame", vsSingle: true }),
+        ],
+      },
+    ]),
+  ),
+  ...Object.fromEntries(
+    [
+      ["k74-volume-hg", "Henyey-Greenstein g 0.8", [0.8, 0, 0], "&phase=henyey-greenstein"],
+      ["k74-volume-dual-lobe", "dual-lobe 0.8 / −0.3 / 0.2 (his frame.js volume phase)", VOLUME_PHASE, ""],
+    ].map(([key, what, phase, q]) => [
+      key,
+      {
+        kind: "his",
+        title: `K7.4: his bunny, 'volume' lighting, sun, ${what}`,
+        scenario: "step1-volume-dir-ms-on-isolated",
+        lighting: "volume",
+        phase,
+        rows: [
+          k3("ms on", `scene=step1-volume-dir-ms-on-isolated${q}`, { lighting: "volume" }),
+          k3("ms on + spectral", `scene=step1-volume-dir-ms-on-isolated${q}&spectral=1`, { lighting: "volume" }),
+          k3("ms off", `scene=step1-volume-dir-ms-off-isolated${q}`, { lighting: "volume", vsSingle: true }),
+        ],
+      },
+    ]),
+  ),
+  ...Object.fromEntries(
+    ["wdas", "wdas-ambient", "smoke-hemi", "bunny-absorbing", "bunny-thin"].flatMap((base) =>
+      [base, `${base}-hg`].map((scene) => [
+        `k74-${scene}`,
+        {
+          kind: "scene",
+          title: `K7.4: ${scene} (${scene.endsWith("-hg") ? "Henyey-Greenstein g 0.8" : "dual-lobe 0.8 / −0.3 / 0.2"}), spectral off / on`,
+          scene,
+          asset: base.startsWith("wdas") ? "wdas" : base.startsWith("smoke") ? "smoke" : "bunny",
+          rows: [
+            k6("frame ms neural (default)", `scene=${scene}&lighting=frame&ms=neural`, { lighting: "frame" }),
+            k6("frame ms neural + spectral", `scene=${scene}&lighting=frame&ms=neural&spectral=1`, { lighting: "frame" }),
+            k6("frame ms diffusion", `scene=${scene}&lighting=frame&ms=1`, { lighting: "frame" }),
+            k6("frame ms off", `scene=${scene}&lighting=frame&ms=0`, { lighting: "frame", vsSingle: true }),
+            k6("volume ms on", `scene=${scene}&lighting=volume&ms=1`, { lighting: "volume" }),
+            k6("volume ms on + spectral", `scene=${scene}&lighting=volume&ms=1&spectral=1`, { lighting: "volume" }),
+          ],
+        },
+      ]),
+    ),
+  ),
 };
-const GROUPS = String(arg("groups", Object.keys(GROUP_DEFS).join(","))).split(",");
+// K7.4: the k74-* groups run only when named
+const GROUPS = String(arg("groups", Object.keys(GROUP_DEFS).filter((k) => !k.startsWith("k74-")).join(","))).split(",");
 
 // --- colour ------------------------------------------------------------------------------------------------------
 const eotf = (x) => (x < 0.04045 ? x * 0.0773993808 : Math.pow(x * 0.9478672986 + 0.0521327014, 2.4));
