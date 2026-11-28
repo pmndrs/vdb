@@ -193,8 +193,9 @@ describe("K6.Q1a spectral ambient visibilities (a grey medium = grey)", () => {
     { name: "octaves, white (albedo 1)", ms: 0, oct: octaves, absorption: 0 },
   ];
   for (const k of cases) {
-    it(`the spectral sky entry equals the grey fourth target's V up, V down in every channel (${k.name}, 4 pairs, turned ring)`, () => {
-      const directions = vdbFrameAmbientDirections([0, 1, 0], 4, 0.37);
+    it(`the spectral sky entry equals the grey fourth target's V up, V down in every channel (${k.name}, 4 pairs, a ring off the axes)`, () => {
+      // the fixed ring turned about the sky (off the axes; K6.Q1c deleted the renderer's turn)
+      const directions = vdbFrameAmbientDirections([0, 1, 0], 4).map((d, i): V3 => (i === 0 ? d : [Math.cos(0.77) * d[0] - Math.sin(0.77) * d[2], d[1], Math.sin(0.77) * d[0] + Math.cos(0.77) * d[2]]));
       const greyAt = (_c: number, uvw: V3): [number, number] => {
         const [e] = blob(uvw);
         return [e, e * k.absorption];

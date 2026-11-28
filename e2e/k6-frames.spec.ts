@@ -146,6 +146,15 @@ const FRAMES: Frame[] = [
     fields: ["rgba"],
     fixture,
   })),
+  // K6.Q1c: the AO ring under jitter + temporal (the 8th frame of k6-scene's multi-frame mode), both lightings. D37 (5)
+  // fixed the ring: against a pre-K6.Q1c tree (K6.Q1a turned it per frame) these two frames move by design.
+  ...(["frame", "volume"] as const).map((lighting) => ({
+    name: `scene-smoke-hemi-${lighting}-jitter-temporal`,
+    url: `/src/harness/k6-scene.html?scene=smoke-hemi&lighting=${lighting}&w=640&h=360&frames=8&jitter=1&temporal=1`,
+    global: "__VDB_K6_SCENE__",
+    fields: ["rgba"],
+    fixture: "fixtures/vdb-samples/smoke.vdb",
+  })),
   ...["?case=shadow", "?case=shadow&cascades=4", "?case=shadow&light=spot", "?case=shadow&source=sparse", "?case=shadow&lighting=frame", "?case=emission&source=dense", "?case=emission&source=sparse"].map((q) => ({
     name: `shadows-${slug(q)}`,
     url: `/src/harness/k3-frame-shadows.html${q}`,

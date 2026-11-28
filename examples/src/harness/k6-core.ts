@@ -299,10 +299,14 @@ const SPECTRAL_B: Partial<VDBFrameVolumeParams> = SPECTRAL ? { extinctionScale: 
 /** K6.Q1 `?ao=<pairs>` (`&aoSteps=`): the shadowed ambient in the frame and gather probes (0: off). */
 const AO_PAIRS = Number(params.get("ao") ?? 0);
 const AO_STEPS = Number(params.get("aoSteps") ?? 0);
-const AO_SETTINGS = { ambientOcclusion: AO_PAIRS > 0, ambientOcclusionPairs: Math.max(1, AO_PAIRS), ambientOcclusionSteps: AO_STEPS };
+/** K6.Q1c `&aoPhase=dipole|dipole-ms` (gather probe, 'volume' lighting): the distant light's dipole phase weight (internal). */
+const AO_PHASE = params.get("aoPhase") === "dipole" ? "dipole" : params.get("aoPhase") === "dipole-ms" ? "dipole-ms" : "isotropic";
+const AO_PHASE_MODE = AO_PHASE === "dipole" ? 1 : AO_PHASE === "dipole-ms" ? 2 : 0;
+const AO_SETTINGS = { ambientOcclusion: AO_PAIRS > 0, ambientOcclusionPairs: Math.max(1, AO_PAIRS), ambientOcclusionSteps: AO_STEPS, ambientPhase: AO_PHASE };
 /**
- * K6.Q1a `&aoJitter=<frameId>` (gather probe): jitter and temporal on, the first update at that frame id, so the ambient
- * ring turns by the frame's jitter (the twins read the same jitter; ?mutate=ao-ring: the unturned ring).
+ * K6.Q1a `&aoJitter=<frameId>` (gather probe): jitter and temporal on, the first update at that frame id (the twins read
+ * the same jitter). K6.Q1c (D37 (5)): the ambient ring stays fixed under jitter + temporal; ?mutate=ao-ring gives the
+ * twins K6.Q1a's ring turned by the frame's jitter × its azimuth step.
  */
 const AO_JITTER = Number(params.get("aoJitter") ?? 0);
 /** The renderer's jitter of frame `AO_JITTER` (its f32 uniform value), or −1 (off). */
@@ -320,7 +324,13 @@ const DENSITY_SETTINGS = DENSITY_STOCHASTIC ? { densityFilter: "stochastic" as c
 /** The probes' first frame id: the AO jitter's (`&aoJitter=`), else the stochastic filter's seed, else 0. */
 const FIRST_FRAME = AO_JITTER > 0 ? AO_JITTER : DENSITY_STOCHASTIC ? DENSITY_SEED : 0;
 /** The pairs' upper directions the probes' twins use (the probe lights' sky is the hemisphere light's +y). */
-const AO_DIRECTIONS = AO_PAIRS > 0 ? vdbFrameAmbientDirections([0, 1, 0], AO_PAIRS, AO_JITTER > 0 && MUTATE !== "ao-ring" ? AO_JITTER_VALUE : 0) : [];
+const AO_DIRECTIONS = AO_PAIRS > 0 ? turnedRing(vdbFrameAmbientDirections([0, 1, 0], AO_PAIRS), MUTATE === "ao-ring" && AO_JITTER > 0 ? AO_JITTER_VALUE : 0) : [];
+/** The ?mutate=ao-ring ring: the directions after the sky (+y) turned about +y by `phase` × the azimuth step. */
+function turnedRing(directions: readonly (readonly number[])[], phase: number): [number, number, number][] {
+  const angle = directions.length > 1 ? (-2 * Math.PI * phase) / (directions.length - 1) : 0;
+  const [c, s] = [Math.cos(angle), Math.sin(angle)];
+  return directions.map((d, k) => (k === 0 ? [d[0]!, d[1]!, d[2]!] : [c * d[0]! - s * d[2]!, d[1]!, s * d[0]! + c * d[2]!]));
+}
 const root = document.getElementById("demo-root")!;
 const result: Result = { done: false, warnings: [], uncaptured: [], probe: PROBE, mutate: MUTATE };
 window.__VDB_K6_CORE__ = result;
@@ -900,7 +910,7 @@ async function probeGather(device: GPUDevice): Promise<void> {
     height: GH,
     depth: GD,
     subSteps: 16,
-    // K6.Q1a ?aoJitter=: jitter + temporal (the ring turns; the scatter is the gather's, before the resolve)
+    // K6.Q1a ?aoJitter=: jitter + temporal (the ring stays fixed; the scatter is the gather's, before the resolve)
     temporal: AO_JITTER > 0,
     jitter: AO_JITTER > 0,
     ...MS_SETTINGS,
@@ -1005,7 +1015,7 @@ async function probeGather(device: GPUDevice): Promise<void> {
     ...(env ? { environment: env } : {}),
     octaves: MS_OCTAVES,
     twoSided: MS_MODE === "two-sided",
-    ambientOcclusion: AO_PAIRS > 0 ? { directions: AO_DIRECTIONS, steps: AO_STEPS } : null,
+    ambientOcclusion: AO_PAIRS > 0 ? { directions: AO_DIRECTIONS, steps: AO_STEPS, phase: AO_PHASE_MODE } : null,
     stochastic: DENSITY_STOCHASTIC ? { seed: FIRST_FRAME } : null,
   };
   const gatherCount = { n: 0 };

@@ -201,7 +201,11 @@ of order 1 or 2), all extracted on the GPU from `scene.environment` (no readback
 default. Meshes with `castShadow` shadow the volumes through three's shadow maps (`settings.occlusion`, default on), and
 `settings.ambientOcclusion` (**on by default** since 0.2.0, 4 direction pairs: `ambientOcclusionPairs`) attenuates ambient,
 hemisphere and light-probe light by the medium; `false` gives 0.1's unshadowed ambient (about 35 to 148 % too bright in single
-scattering against a path-traced reference).
+scattering against a path-traced reference). The direction pairs form a fixed ring around the sky direction, also with
+`jitter` and `temporal` (no frame-to-frame change). The shadowing is a solid-angle mean, the same for every view direction:
+in a strongly forward-scattering medium lit mostly by ambient-class light, the parts that face the camera can read up to about
+twice too bright, because the light they scatter toward the camera mostly crossed the medium behind them. A view-dependent
+form weighted by the medium's phase function is being evaluated for `'volume'` lighting (internal for now).
 
 `'frame'` lighting reads every light through the shadow grid, so its resolution bounds how sharply light falls off into a
 dense medium. The grid's voxels snap to powers of two, so `shadowResolution` 64 puts between 32 and 64 cells across the

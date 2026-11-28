@@ -306,6 +306,10 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSpec
   var environment = vec3f(0.0);
   var ambientUp = vec3f(0.0);
   var ambientDown = vec3f(0.0);
+  // K6.Q1c: the dipole sum b.r of the pairs' totals (M+ / 2 . r, r the view ray; mode 0: unused)
+  let dipole = vdbFrameLights.ambientDipole;
+  let dipoleRay = vec3f(dot(dipole[0].xyz, rayDirection), dot(dipole[1].xyz, rayDirection), dot(dipole[2].xyz, rayDirection));
+  var ambientDipoleSum = vec3f(0.0);
   for (var item = 0u; item < items; item++) {
     var direction = vec3f(0.0, 1.0, 0.0);
     var maxDistance = 1e6;
@@ -362,14 +366,19 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSpec
     if (ambientItem) {
       // K6.Q1a: the pair's isotropic-light totals of each channel (diffusion: the two-sided pair, white furnace; octaves:
       // over an open direction's octave total)
+      var up = vec3f(0.0);
+      var down = vec3f(0.0);
       if (diffusion) {
-        ambientUp += vdbFrameIsotropicDiffusion3(front.z, back.z, front.w);
-        ambientDown += vdbFrameIsotropicDiffusion3(back.z, front.z, back.w);
+        up = vdbFrameIsotropicDiffusion3(front.z, back.z, front.w);
+        down = vdbFrameIsotropicDiffusion3(back.z, front.z, back.w);
       } else {
         let open = vdbFrameSpectralShadowTotal(vec3f(1.0), octaves, albedo);
-        ambientUp += vdbFrameSpectralShadowTotal(front.y, octaves, albedo) / open;
-        ambientDown += vdbFrameSpectralShadowTotal(back.y, octaves, albedo) / open;
+        up = vdbFrameSpectralShadowTotal(front.y, octaves, albedo) / open;
+        down = vdbFrameSpectralShadowTotal(back.y, octaves, albedo) / open;
       }
+      ambientUp += up;
+      ambientDown += down;
+      ambientDipoleSum += (up - down) * dot(vdbFrameLights.ambientDirections[item - lightItems].xyz, dipoleRay);
     } else if (item < hemiCount) {
       var sky = vdbFrameSpectralShadowTotal(front.y, octaves, albedo);
       var ground = vdbFrameSpectralShadowTotal(back.y, octaves, albedo);
@@ -396,10 +405,14 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSpec
     }
   }
   irradiance += max(environment, vec3f(0.0));
-  // K6.Q1a: the distant light at the hemispherical visibilities of each channel, as 'frame' lighting's sky up / down
+  // K6.Q1a: the distant light at the hemispherical visibilities of each channel, as 'frame' lighting's sky up / down;
+  // K6.Q1c: x the phase weight of the pairs' dipole (mode 1: not on diffusion totals; 2: always)
   if (ambientPairs > 0u) {
-    let up = ambientUp / f32(ambientPairs) * 0.5;
-    let down = ambientDown / f32(ambientPairs) * 0.5;
+    let phaseMode = dipole[0].w;
+    let weighted = phaseMode > 1.5 || (phaseMode > 0.5 && !diffusion);
+    let factor = select(vec3f(1.0), vdbFrameAmbientPhaseFactor(ambientUp, ambientDown, ambientDipoleSum, ambientPairs, phase, phaseSpectrumMs.xyz), weighted);
+    let up = ambientUp / f32(ambientPairs) * 0.5 * factor;
+    let down = ambientDown / f32(ambientPairs) * 0.5 * factor;
     let sky = normalize(vdbFrameLights.sky.xyz);
     if ((lightMask & VDB_FRAME_LIGHT_AMBIENT) != 0u) {
       irradiance += vdbFrameLights.ambient.xyz * (up + down) + vdbFrameShIrradiance(sky) * up + vdbFrameShIrradiance(-sky) * down;
@@ -479,7 +492,7 @@ ${write}
   }
 ${write}`;
 
-  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "octaves", "spectral", "sh", "envSh", ...(o.stochastic ? (["rand"] as const) : [])])}
+  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "ambientPhase", "shadow", "octaves", "spectral", "sh", "envSh", ...(o.stochastic ? (["rand"] as const) : [])])}
 ${bindings}
 
 const VDB_FRAME_MIN_TRANSMITTANCE: f32 = 1.2664165549e-14; // exp(-32): tau is at most 32
@@ -589,7 +602,7 @@ export function vdbFrameGatherWgsl(o: VDBFrameGatherOptions): string {
   }`
     : `  textureStore(vdbFrameScatter, cell, vdbFrameFinish(sum, count, single));`;
 
-  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "octaves", "sh", "envSh", ...(o.stochastic ? (["rand"] as const) : [])])}
+  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "ambientPhase", "shadow", "octaves", "sh", "envSh", ...(o.stochastic ? (["rand"] as const) : [])])}
 ${bindings}
 
 const VDB_FRAME_MIN_TRANSMITTANCE: f32 = 1.2664165549e-14; // exp(-32): tau is at most 32
@@ -707,6 +720,10 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> vec4f {
   var environment = vec3f(0.0);
   var ambientUp = 0.0;
   var ambientDown = 0.0;
+  // K6.Q1c: the dipole sum b.r of the pairs' totals (M+ / 2 . r, r the view ray; mode 0: unused)
+  let dipole = vdbFrameLights.ambientDipole;
+  let dipoleRay = vec3f(dot(dipole[0].xyz, rayDirection), dot(dipole[1].xyz, rayDirection), dot(dipole[2].xyz, rayDirection));
+  var ambientDipoleSum = 0.0;
   for (var item = 0u; item < items; item++) {
     var direction = vec3f(0.0, 1.0, 0.0);
     var maxDistance = 1e6;
@@ -763,13 +780,18 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> vec4f {
     }
     if (ambientItem) {
       // K6.Q1: the pair's isotropic-light totals (diffusion: the two-sided pair, white furnace)
+      var up = 0.0;
+      var down = 0.0;
       if (diffusion) {
-        ambientUp += vdbFrameIsotropicDiffusion(front.z, back.z, front.w);
-        ambientDown += vdbFrameIsotropicDiffusion(back.z, front.z, back.w);
+        up = vdbFrameIsotropicDiffusion(front.z, back.z, front.w);
+        down = vdbFrameIsotropicDiffusion(back.z, front.z, back.w);
       } else {
-        ambientUp += vdbFrameShadowTotal(front.y, octaves) / vdbFrameShadowTotal(1.0, octaves);
-        ambientDown += vdbFrameShadowTotal(back.y, octaves) / vdbFrameShadowTotal(1.0, octaves);
+        up = vdbFrameShadowTotal(front.y, octaves) / vdbFrameShadowTotal(1.0, octaves);
+        down = vdbFrameShadowTotal(back.y, octaves) / vdbFrameShadowTotal(1.0, octaves);
       }
+      ambientUp += up;
+      ambientDown += down;
+      ambientDipoleSum += (up - down) * dot(vdbFrameLights.ambientDirections[item - lightItems].xyz, dipoleRay);
     } else if (item < hemiCount) {
       // Diffusion: sky and ground are an opposite pair, two-sided totals
       var sky = vdbFrameShadowTotal(front.y, octaves);
@@ -801,10 +823,14 @@ fn vdbFrameVolumeFroxel(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> vec4f {
   }
   // SH lights can be negative: the environment sum is clamped (his max(environment, 0))
   irradiance += max(environment, vec3f(0.0));
-  // K6.Q1: the distant light at the hemispherical visibilities, as 'frame' lighting's sky up / down totals
+  // K6.Q1: the distant light at the hemispherical visibilities, as 'frame' lighting's sky up / down totals; K6.Q1c: x the
+  // phase weight of the pairs' dipole (mode 1: not on diffusion totals; 2: always; per channel: a spectral phase g)
   if (ambientPairs > 0u) {
-    let up = ambientUp / f32(ambientPairs) * 0.5;
-    let down = ambientDown / f32(ambientPairs) * 0.5;
+    let phaseMode = dipole[0].w;
+    let weighted = phaseMode > 1.5 || (phaseMode > 0.5 && !diffusion);
+    let factor = select(vec3f(1.0), vdbFrameAmbientPhaseFactor(vec3f(ambientUp), vec3f(ambientDown), vec3f(ambientDipoleSum), ambientPairs, phase, phaseSpectrumMs.xyz), weighted);
+    let up = ambientUp / f32(ambientPairs) * 0.5 * factor;
+    let down = ambientDown / f32(ambientPairs) * 0.5 * factor;
     let sky = normalize(vdbFrameLights.sky.xyz);
     if ((lightMask & VDB_FRAME_LIGHT_AMBIENT) != 0u) {
       irradiance += vdbFrameLights.ambient.xyz * (up + down) + vdbFrameShIrradiance(sky) * up + vdbFrameShIrradiance(-sky) * down;

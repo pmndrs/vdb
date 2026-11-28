@@ -78,7 +78,7 @@ import { VDBFrameScattering } from "./scattering.js";
 import { vdbFrameScatteringIsMlp, type VDBFrameScatteringKernel } from "./wgsl/lighting.js";
 import { vdbFrameMieLutWords } from "../../tools/frame/mie.js";
 import { vdbFrameScatteringOctaves } from "../../tools/frame/index.js";
-import { VDB_FRAME_AMBIENT_MAX_PAIRS, vdbFrameAmbientDirections } from "../../tools/frame/ambient.js";
+import { VDB_FRAME_AMBIENT_MAX_PAIRS, vdbFrameAmbientDipoleMatrix, vdbFrameAmbientDirections } from "../../tools/frame/ambient.js";
 import { vdbFrameMlpFromNeural, type VDBFrameMlp } from "../../tools/frame/mlp.js";
 import { vdbFrameNeuralWeights } from "../../tools/frame/neural-weights.js";
 import { vdbFrameDefaultInternalSettings, type VDBFrameInternalSettings, type VDBFrameSettings } from "./settings.js";
@@ -633,11 +633,8 @@ class FrameRenderer implements VDBFrameRenderer {
     fw.set(U, 0, "spectral", [spectral ? 1 : 0, spectral ? 1 : 0, 0, 0]);
     // K6.2b: the environment kernels this update runs (reduced on the GPU; no readback)
     this.#env.prepare(frame.environment, s);
-    // K6.Q1a: with jitter and temporal accumulation the ambient ring turns by the frame's jitter (its azimuth step x
-    // the jitter value; a static frame keeps the fixed ring)
-    // K6.Q1a: the ambient ring turns with the frame's jitter (jitter + temporal); K6.11b internal A/B: 'fixed' keeps it
-    const ringPhase = s.jitter && s.temporal && (s as VDBFrameInternalSettings).ambientOcclusionRing !== "fixed" ? jitter : 0;
-    const lightInfo = this.#packLights(frame.lights, s.occlusion ? (frame.occluders ?? []) : [], frameLighting && this.#env.present && this.#env.mode === "outward", ringPhase);
+    // K6.Q1c (D37 (5)): the ambient ring is fixed (K6.Q1a turned it per frame with jitter + temporal)
+    const lightInfo = this.#packLights(frame.lights, s.occlusion ? (frame.occluders ?? []) : [], frameLighting && this.#env.present && this.#env.mode === "outward");
     const grid = usesGrid ? this.#frameGrid(casterGroups, cameraWorld, lightInfo, jitter, frameLighting && froxelWork) : null;
     this.device.queue.writeBuffer(this.#frameBuffer, 0, fw.buffer);
 
@@ -1331,7 +1328,6 @@ class FrameRenderer implements VDBFrameRenderer {
     lights: readonly VDBFrameLight[],
     occluders: readonly VDBFrameOccluder[],
     outwardEnvironment = false,
-    ringPhase = 0,
   ): { sorted: number[][]; sky: number[]; occluderOf: (VDBFrameOccluder | null)[]; ambient: number[] } {
     const w = this.#lightsWriter;
     const L = VDB_FRAME_LIGHTS;
@@ -1436,11 +1432,18 @@ class FrameRenderer implements VDBFrameRenderer {
     const s = this.settings;
     const distant = ambient.some((v) => v !== 0) || probe.some((v) => v !== 0) || hemi.length > 0 || outwardEnvironment;
     const pairs = s.ambientOcclusion && distant ? Math.min(VDB_FRAME_AMBIENT_MAX_PAIRS, Math.max(1, Math.round(s.ambientOcclusionPairs))) : 0;
-    const directions = pairs > 0 ? vdbFrameAmbientDirections(skyDirection, pairs, ringPhase) : [];
+    const directions = pairs > 0 ? vdbFrameAmbientDirections(skyDirection, pairs) : [];
     const aoSteps = Math.max(0, Math.round(s.ambientOcclusionSteps));
     w.set(L, 0, "ambient", [ambient[0]!, ambient[1]!, ambient[2]!, hemi.length]);
     w.set(L, 0, "counts", [used.length, views.length, pairs, aoSteps]);
-    if (pairs > 0) w.set(L, 0, "ambientDirections", directions.flatMap((d) => [...d, 0]));
+    if (pairs > 0) {
+      w.set(L, 0, "ambientDirections", directions.flatMap((d) => [...d, 0]));
+      // K6.Q1c: the dipole fit's M+ / 2 rows and the phase weight's mode (internal `ambientPhase`)
+      const phase = (s as VDBFrameInternalSettings).ambientPhase;
+      const mode = phase === "dipole" ? 1 : phase === "dipole-ms" ? 2 : 0;
+      const m = vdbFrameAmbientDipoleMatrix(directions);
+      w.set(L, 0, "ambientDipole", [m[0]!, m[1]!, m[2]!, mode, m[3]!, m[4]!, m[5]!, 0, m[6]!, m[7]!, m[8]!, 0]);
+    }
     w.set(L, 0, "probe", probe);
     w.set(L, 0, "hemiSky", hemi.flatMap((h) => [...h.sky, 0]));
     w.set(L, 0, "hemiGround", hemi.flatMap((h) => [...h.ground, 0]));

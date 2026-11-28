@@ -8,7 +8,8 @@ import { collectErrors } from "./console-errors";
 // scattering, diffusion (white-furnace pairs), octaves (normalised totals), the MLP. Each mutation must fail. With the
 // setting off the frames are the K6.1–K6.5 frames (k6-core.spec.ts covers those unchanged). K6.Q1a: the spectral kernels
 // (per-channel visibilities) and the ring turned by the frame's jitter. K6.Q1b: the `ambientProbe` A/B is deleted; the
-// light probe's sky up / down terms keep their own rows (`?mutate=probe-term` drops them from the twins).
+// light probe's sky up / down terms keep their own rows (`?mutate=probe-term` drops them from the twins). K6.Q1c: the ring is
+// fixed under jitter + temporal (D37 (5)); the 'volume' gathers' dipole phase weight (`?aoPhase=`, V128).
 const PAGE_URL = "/src/harness/k6-core.html";
 
 interface Stats {
@@ -60,8 +61,16 @@ const PROBES: { name: string; query: string; keys: Key[]; mutations: Record<stri
   { name: "spectral frame, light probe term, 4 pairs", query: "?probe=frame&spectral=1&ms=0&ao=4", keys: ["transmittanceStats", "stats"], mutations: { "probe-term": "stats" } },
   { name: "gather, light probe term, 4 pairs", query: "?probe=gather&ms=0&ao=4", keys: ["stats"], mutations: { "probe-term": "stats" } },
   { name: "spectral gather, light probe term, 4 pairs", query: "?probe=gather&spectral=1&ms=0&ao=4", keys: ["stats"], mutations: { "probe-term": "stats" } },
-  // K6.Q1a: jitter + temporal turn the ring per frame (frame 5's jitter); ?mutate=ao-ring: the unturned ring
-  { name: "gather, 4 pairs, ring turned by the frame's jitter", query: "?probe=gather&ms=0&ao=4&aoJitter=5", keys: ["stats"], mutations: { "ao-ring": "stats" } },
+  // K6.Q1c (D37 (5)): with jitter + temporal (frame 5's jitter) the ring stays fixed; ?mutate=ao-ring: K6.Q1a's turned ring
+  { name: "gather, 4 pairs, jitter + temporal, ring fixed", query: "?probe=gather&ms=0&ao=4&aoJitter=5", keys: ["stats"], mutations: { "ao-ring": "stats" } },
+  // K6.Q1c (V128): the dipole phase weight of the distant light ('volume' gathers; internal `ambientPhase`); ?mutate=ao-phase
+  // drops it from the twins (the isotropic visibility). 'dipole' leaves diffusion totals alone ('dipole-ms' does not).
+  { name: "gather, phase-weighted dipole, single scattering, 4 pairs", query: "?probe=gather&ms=0&ao=4&aoPhase=dipole", keys: ["stats"], mutations: { "ao-phase": "stats", "ao-pairs": "stats" } },
+  { name: "gather, phase-weighted dipole, 'octaves', 3 pairs, Lorenz-Mie", query: "?probe=gather&ms=octaves&ao=3&aoPhase=dipole&phase=lorenz-mie", keys: ["stats"], mutations: { "ao-phase": "stats" } },
+  { name: "gather, phase-weighted dipole, diffusion (unweighted), 4 pairs", query: "?probe=gather&ao=4&aoPhase=dipole", keys: ["stats"], mutations: { ao: "stats", "ao-phase-ms": "stats" } },
+  { name: "gather, phase-weighted dipole-ms, diffusion, 2 pairs, sparse", query: "?probe=gather&ao=2&aoPhase=dipole-ms&source=sparse&lod=none", keys: ["stats"], mutations: { "ao-phase": "stats" } },
+  { name: "spectral gather, phase-weighted dipole, single scattering, 4 pairs", query: "?probe=gather&spectral=1&ms=0&ao=4&aoPhase=dipole", keys: ["stats"], mutations: { "ao-phase": "stats", "ao-grey": "stats" } },
+  { name: "spectral gather, phase-weighted dipole-ms, diffusion, 4 pairs", query: "?probe=gather&spectral=1&ao=4&aoPhase=dipole-ms", keys: ["stats"], mutations: { "ao-phase": "stats" } },
 ];
 
 for (const p of PROBES) {

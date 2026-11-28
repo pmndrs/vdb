@@ -543,7 +543,8 @@ From v1; details in docs/archive/handoffs/.
   (`k6-scene ?shadowRes=128`) before blaming a 'frame' lighting term on a large sparse cloud.
 - k6-core probes can run with jitter on: `?aoJitter=<frameId>` turns on jitter + temporal and the twins take the
   renderer's jitter (`Math.fround`); the IGN noise agrees within the 2-ulp gate on SwiftShader. A jitter-dependent term
-  needs such a probe: every other probe runs `jitter: false`.
+  needs such a probe: every other probe runs `jitter: false`. Since K6.Q1c (D37 (5)) the AO ring is fixed under jitter +
+  temporal (`?mutate=ao-ring` gives the twins K6.Q1a's turned ring; `ambientOcclusionRing` and `?aoRing=` are gone).
 - Hardware k6-core probes (K6.4a): `node scripts/k6/k6-core-hardware.mjs <base> <query>…` (installed Chrome headless,
   Metal) against a Vite server on a frozen copy. Metal has `texture-formats-tier1`, so `&tier1=1` runs the rg16float
   alpha prefix there (SwiftShader never does). Don't quote its compile seconds: they are not timings.
@@ -597,10 +598,10 @@ From v1; details in docs/archive/handoffs/.
 - K6.11: `froxelMix` is gone (only the order-independent mixture is left). The k6-core `?mutate=mix` is now the twin's
   order-dependent premultiplied "over" blend (a mutation-only code path in `k6-core-twin.ts`), still failing the gather probes.
 - K6.11: with `ambientOcclusion` on, a static un-jittered scene with `temporal` differs between frame 1 and frame 2 by a
-  rounding step (2 bytes of 1/255; `k3-frame` reports `inPageDiff`; `?ao=0`: identical), and with `jitter` + `temporal`
-  the ambient ring turns per frame by design (K6.Q1a), so a gate that compares temporal frames with the mean of
-  un-accumulated ones (K3.3, which now passes `ao=0`) sees the AO ring-average, not that mean. Byte-identity gates of
-  the 'frame' defaults (K3.4 `defaults=1`) accept ≤ 1/255 on a handful of bytes.
+  rounding step (2 bytes of 1/255; `k3-frame` reports `inPageDiff`; `?ao=0`: identical). Until K6.Q1c the ambient ring
+  also turned per frame with `jitter` + `temporal` (K6.Q1a), so K3.3's temporal gate passes `ao=0`; the ring is fixed now
+  (D37 (5)), and jittered frames with AO differ from a pre-K6.Q1c tree (k6-frames `*-jitter-temporal`). Byte-identity
+  gates of the 'frame' defaults (K3.4 `defaults=1`) accept ≤ 1/255 on a handful of bytes.
 - K6.11: `k6-core ?probe=frame&emissionColor=lut|hook` on a dense source needs `&groups=2` (one group gives B the source of
   A, no emission channel: the mutation `emission-color` then does not fail). On Metal the 'frame' probe's transmittance
   and stats exceed the 0.1 % bar already without the colour (hardware trilinear): compare with the baseline probe's
@@ -741,3 +742,10 @@ From v1; details in docs/archive/handoffs/.
   gate on ~half the cells, so an f16 evaluator needs a justified bound, not the default gate.
 - A parity test of a Float32Array-input path against an f64 twin must feed f32-representable inputs (`Math.fround`), or input rounding
   (~1e-7) swamps a 1e-12 gate.
+- K6.Q1c: the distant light's dipole phase weight (internal `ambientPhase`) is 'volume' lighting only; 'frame' lighting
+  ignores it (no per-voxel dipole in the transmittance stack yet). The sign: light from along the view ray (behind the
+  position, seen from the camera) is forward-scattered, so a backlit position with g > 0 gets a factor > 1. Clamp each HG
+  lobe on its own: one clamp of the dual lobe's mean cosine loses the back lobe's share (absorbing bunny ambient-only
+  −28.9 % with one clamp, −15.3 % per lobe; the isotropic reference row is −12.7 %).
+- K6.Q1c: `vdbFrameAmbientPhaseFactor` needs M⁺ of the PACKED directions (`vdbFrameAmbientDipoleMatrix`): with 1–3 pairs M
+  is singular (pseudo-inverse), and a twin that drops a pair (`?mutate=ao-pairs`) must still use the renderer's matrix.
