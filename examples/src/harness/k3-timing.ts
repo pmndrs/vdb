@@ -16,6 +16,11 @@
  * passes are skipped in a still scene), the scene with the held froxels (`froxels = false`: composite + scene) and
  * without the volume (scene), then a whole frame timed on the queue. Medians. `?timerCheck=1`: a few frames, then the
  * timer's counters (e2e on SwiftShader; no timing taken). Results: `window.__VDB_K3_TIMING__`.
+ *
+ * Issue #2 step 2 (K6.S2): `?density=trilinear|stochastic` (the internal `densityFilter` of the slice march) and
+ * `?densityCheck=N` (no timing): the deterministic trilinear frame (jitter and temporal off), then N stochastic frames
+ * without temporal reprojection (per-pixel mean and variance: the bias) and N with it (the last frame), compared in
+ * linear radiance over the pixels the trilinear frame covers (`scripts/k6/stochastic-froxel-ab.mjs`).
  */
 import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
@@ -57,6 +62,25 @@ interface Result {
   height?: number;
   rgba?: string;
   backend?: string;
+  /** Issue #2 step 2 `?densityCheck=N`: the stochastic filter against the trilinear frame (see the header). */
+  densityCheck?: {
+    frames: number;
+    pixels: number;
+    /** Σ (mean of N − trilinear) luminance / Σ trilinear luminance over the covered pixels. */
+    relBias: number;
+    /** Σ e / √Σ σ²/N of the luminance (|z| < 4: no bias N frames can see). */
+    imageZ: number;
+    over4: number;
+    /** Display-byte PSNR vs the trilinear frame: one stochastic frame, the mean of N, the temporal frame after N. */
+    psnrSingle: number;
+    psnrMean: number;
+    psnrTemporal: number;
+    /** The temporal frame's PSNR after 1, 2, 4, 8, … frames. */
+    psnrTemporalAt: Record<string, number>;
+    /** Relative RMS luminance error of one stochastic frame and of the temporal frame after N. */
+    relRmsSingle: number;
+    relRmsTemporal: number;
+  };
   warnings: string[];
   uncaptured: string[];
 }
@@ -90,6 +114,9 @@ const BACKGROUND = new THREE.Color(0x598eff);
 // K6.1d / K6.2: `?image=1` reads one frame back instead of timing (K6.8: always the core; `?backend=` is ignored).
 const IMAGE = params.get("image") === "1";
 const TIMER_CHECK = params.get("timerCheck") === "1";
+// Issue #2 step 2 (K6.S2): the slice march's density filter (an internal core setting) and the quality check
+const DENSITY = params.get("density") === "stochastic" ? "stochastic" : "trilinear";
+const DENSITY_CHECK = Number(params.get("densityCheck") ?? 0);
 const BACKEND = "core";
 
 /** The half-float target, display RGBA8 (NoToneMapping, sRGB OETF) as base64. */
@@ -109,6 +136,16 @@ async function readImage(renderer: WebGPURenderer, rt: THREE.RenderTarget): Prom
   let s = "";
   for (let i = 0; i < out.length; i += 0x8000) s += String.fromCharCode(...out.subarray(i, i + 0x8000));
   return btoa(s);
+}
+
+/** The half-float target as linear rgb (W × H × 3, top row first). */
+async function readLinear(renderer: WebGPURenderer, rt: THREE.RenderTarget): Promise<Float32Array> {
+  const raw = (await renderer.readRenderTargetPixelsAsync(rt, 0, 0, W, H)) as unknown as Uint16Array;
+  const stride = raw.length / H;
+  const out = new Float32Array(W * H * 3);
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) for (let c = 0; c < 3; c++) out[(y * W + x) * 3 + c] = THREE.DataUtils.fromHalfFloat(raw[y * stride + x * 4 + c]!);
+  return out;
 }
 
 const root = document.getElementById("demo-root")!;
@@ -200,6 +237,8 @@ async function main(): Promise<void> {
     multipleScattering: params.get("ms") !== "0",
     ambientOcclusion: params.get("ao") !== "0",
     shadowResolution: Number(params.get("shadowRes") ?? 64),
+    // issue #2 step 2: an internal setting (VDBFrameInternalSettings)
+    densityFilter: DENSITY,
   });
 
   let source: VDBThreeVolumeSource;
@@ -295,6 +334,95 @@ async function main(): Promise<void> {
     source.dispose();
     rt.dispose();
     return;
+  }
+
+  if (DENSITY_CHECK > 0) {
+    await densityCheck(DENSITY_CHECK);
+    timer?.dispose();
+    volume.dispose();
+    source.dispose();
+    rt.dispose();
+    return;
+  }
+
+  async function densityCheck(n: number): Promise<void> {
+    const settings = frameRenderer.settings as typeof frameRenderer.settings & { densityFilter: "trilinear" | "stochastic" };
+    const render = async () => {
+      frame();
+      await device.queue.onSubmittedWorkDone();
+      return readLinear(renderer, rt);
+    };
+    Object.assign(settings, { densityFilter: "trilinear", temporal: false, jitter: false });
+    await render();
+    const ref = await render();
+    const bg = [BACKGROUND.r, BACKGROUND.g, BACKGROUND.b];
+    const lum = (a: Float32Array, i: number) => 0.2126 * a[i]! + 0.7152 * a[i + 1]! + 0.0722 * a[i + 2]!;
+    const pixels: number[] = [];
+    for (let i = 0; i < ref.length; i += 3) if (Math.abs(ref[i]! - bg[0]!) + Math.abs(ref[i + 1]! - bg[1]!) + Math.abs(ref[i + 2]! - bg[2]!) > 2e-3) pixels.push(i);
+    const oetf = (x: number) => Math.round(Math.min(1, Math.max(0, x <= 0.0031308 ? x * 12.92 : 1.055 * Math.pow(x, 1 / 2.4) - 0.055)) * 255);
+    const psnr = (a: Float32Array) => {
+      let se = 0;
+      for (const i of pixels) for (let c = 0; c < 3; c++) se += (oetf(a[i + c]!) - oetf(ref[i + c]!)) ** 2;
+      const mse = se / Math.max(1, pixels.length * 3);
+      return mse === 0 ? 99 : +(10 * Math.log10((255 * 255) / mse)).toFixed(2);
+    };
+    const relRms = (a: Float32Array) => {
+      let se = 0;
+      let s = 0;
+      for (const i of pixels) {
+        se += (lum(a, i) - lum(ref, i)) ** 2;
+        s += lum(ref, i) ** 2;
+      }
+      return +Math.sqrt(se / Math.max(s, 1e-30)).toFixed(5);
+    };
+    // N stochastic frames, no temporal reprojection: per-pixel mean and variance (the frame id moves the seed)
+    Object.assign(settings, { densityFilter: "stochastic" });
+    const mean = new Float64Array(ref.length);
+    const sq = new Float64Array(ref.length / 3);
+    let single: Float32Array | null = null;
+    for (let k = 0; k < n; k++) {
+      const f = await render();
+      single ??= f;
+      for (let i = 0; i < f.length; i++) mean[i] = mean[i]! + f[i]! / n;
+      for (let i = 0; i < f.length; i += 3) sq[i / 3] = sq[i / 3]! + lum(f, i) ** 2 / n;
+    }
+    const meanF = Float32Array.from(mean);
+    let eSum = 0;
+    let vSum = 0;
+    let refSum = 0;
+    let over4 = 0;
+    for (const i of pixels) {
+      const m = lum(meanF, i);
+      const v = Math.max(0, sq[i / 3]! - m * m) / Math.max(1, n - 1);
+      const e = m - lum(ref, i);
+      eSum += e;
+      vSum += v;
+      refSum += lum(ref, i);
+      if (v > 0 && Math.abs(e) / Math.sqrt(v) > 4) over4++;
+    }
+    // N frames with temporal reprojection (his blend): the frame a viewer sees after k frames
+    Object.assign(settings, { temporal: true });
+    const at: Record<string, number> = {};
+    let last: Float32Array | null = null;
+    for (let k = 1; k <= n; k++) {
+      last = await render();
+      if ((k & (k - 1)) === 0 || k === n) at[k] = psnr(last);
+    }
+    Object.assign(settings, { densityFilter: DENSITY, temporal: false });
+    result.densityCheck = {
+      frames: n,
+      pixels: pixels.length,
+      relBias: +(eSum / Math.max(refSum, 1e-30)).toFixed(6),
+      imageZ: +(eSum / Math.sqrt(Math.max(vSum, 1e-30))).toFixed(3),
+      over4,
+      psnrSingle: psnr(single!),
+      psnrMean: psnr(meanF),
+      psnrTemporal: psnr(last!),
+      psnrTemporalAt: at,
+      relRmsSingle: relRms(single!),
+      relRmsTemporal: relRms(last!),
+    };
+    log(`density check: ${JSON.stringify(result.densityCheck)}`, "ok");
   }
 
   if (TIMER_CHECK) {

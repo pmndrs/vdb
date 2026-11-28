@@ -287,18 +287,40 @@ ${density}
     return value;`
       : `    var a = vdbAccessorInit(g);
     return vdbReadValue(&a, ijk);`;
+    // K6.S2: the pick stands in for the level-0 trilinear wherever vdbSrcDensity reads level 0 ('none': at every lod;
+    // 'coarse-pyramid': below L0, blended with the pyramid base as vdbSrcDensity does, linear so still unbiased;
+    // 'node-average': at lod 0 only, its node blends keep their taps).
+    const fallback =
+      c.lod === "none"
+        ? ""
+        : c.lod === "coarse-pyramid"
+          ? `    let l = clamp(lod, 0.0, ${R}.lod.x);
+    let L0 = ${R}.lod.y;
+    if l >= L0 {
+        return vdbSrcDensity(v, uvw, lod);
+    }
+`
+          : `    if lod > 0.0 {
+        return vdbSrcDensity(v, uvw, lod);
+    }
+`;
+    const value =
+      c.lod === "coarse-pyramid"
+        ? `    let fine = vdbSrcVoxel0(g, ijk);
+    if l <= 0.0 {
+        return ${norm("fine")};
+    }
+    return ${norm("mix(fine, vdbSrcPyrSample(v, uvw, 0.0), l / L0)")};`
+        : `    return ${norm("vdbSrcVoxel0(g, ijk)")};`;
     out.push(`fn vdbSrcVoxel0(g: u32, ijk: vec3i) -> f32 {
 ${read}
 }
 fn vdbSrcDensityStochastic(v: u32, uvw: vec3f, lod: f32, xi: vec3f) -> f32 {
-    if lod > 0.0 {
-        return vdbSrcDensity(v, uvw, lod);
-    }
-    let g = ${R}.ids.x;
+${fallback}    let g = ${R}.ids.x;
     let p = vdbSrcSamplePos(${R}.densityMin.xyz, ${R}.densitySize.xyz, uvw);
     let b = floor(p);
     let ijk = vec3i(b) + select(vec3i(0), vec3i(1), xi < p - b);
-    return ${norm("vdbSrcVoxel0(g, ijk)")};
+${value}
 }`);
   }
   out.push(`

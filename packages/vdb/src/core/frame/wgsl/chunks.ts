@@ -133,6 +133,32 @@ fn vdbFrameNoise(jitter: f32, pixel: vec2f) -> f32 {
     },
   ],
   [
+    "rand",
+    {
+      deps: [],
+      code: `// Issue #2 step 2: pcg3d (Jarzynski & Olano 2020)
+fn vdbFramePcg3d(v0: vec3u) -> vec3u {
+  var v = v0 * 1664525u + 1013904223u;
+  v.x += v.y * v.z;
+  v.y += v.z * v.x;
+  v.z += v.x * v.y;
+  v = v ^ (v >> vec3u(16u));
+  v.x += v.y * v.z;
+  v.y += v.z * v.x;
+  v.z += v.x * v.y;
+  return v;
+}
+// the stochastic density filter's three uniforms of one lookup: the froxel's atlas pixel, a key ((volume << 16) | step)
+// and the frame seed (flags.w); 24-bit values (exact in f32)
+fn vdbFrameRand3(pixel: vec2f, key: u32) -> vec3f {
+  let seed = vdbFramePcg3d(vec3u(vdbFrame.flags.w, 0x9e3779b9u, 0x7f4a7c15u)).x;
+  let h = vdbFramePcg3d(vec3u(vec2u(pixel), key ^ seed));
+  return vec3f(h >> vec3u(8u)) * (1.0 / 16777216.0);
+}
+`,
+    },
+  ],
+  [
     "fade",
     {
       deps: ["constants"],
@@ -645,7 +671,7 @@ fn vdbFrameSrgbEotf(color: vec3f) -> vec3f {
 const BY_NAME = new Map(CHUNKS);
 
 /** Names of the chunks {@link frameChunksWgsl} knows. */
-export type VDBFrameChunk = "constants" | "mat3" | "sliceDepth" | "viewPosition" | "froxel" | "noise" | "fade" | "box" | "lod" | "phase" | "ambientPhase" | "shadow" | "octaveTotal" | "octaves" | "spectral" | "sh" | "envSh" | "grid" | "srgb";
+export type VDBFrameChunk = "constants" | "mat3" | "sliceDepth" | "viewPosition" | "froxel" | "noise" | "rand" | "fade" | "box" | "lod" | "phase" | "ambientPhase" | "shadow" | "octaveTotal" | "octaves" | "spectral" | "sh" | "envSh" | "grid" | "srgb";
 
 /** The closure of `roots` (with dependencies), in the fixed chunk order. */
 export function frameChunksWgsl(roots: Iterable<VDBFrameChunk>): string {

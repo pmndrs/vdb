@@ -88,10 +88,12 @@ export interface VDBFrameGatherKey {
   readonly hook?: string | null;
   /** K6.4: spectral media (a second scatter texture; per-channel extinction, albedo and multiple scattering). */
   readonly spectral?: boolean;
+  /** Issue #2 step 2: the stochastic density filter in the slice march (`densityFilter: 'stochastic'`, V182). */
+  readonly stochastic?: boolean;
 }
 
 /** The source's VDB module (sparse, K6.7) and its `vdbSrc*` WGSL at group 2, then the frame uniforms. */
-function sourcePrelude(source: VDBVolumeSource, maxVolumes: number | undefined, environment = false): string {
+function sourcePrelude(source: VDBVolumeSource, maxVolumes: number | undefined, environment = false, stochastic = false): string {
   // One VDB module per shader (design §5.1): a sparse source (K6.7) gives it; a dense source has none.
   const withModule = source as VDBVolumeSource & { moduleWgsl?: (slot: VDBSlot) => string };
   if (source.kind !== "dense" && typeof withModule.moduleWgsl !== "function") {
@@ -99,7 +101,7 @@ function sourcePrelude(source: VDBVolumeSource, maxVolumes: number | undefined, 
   }
   return [
     ...(typeof withModule.moduleWgsl === "function" ? [withModule.moduleWgsl(SOURCE_SLOT)] : []),
-    source.wgsl({ slot: SOURCE_SLOT, profile: "march" }),
+    source.wgsl({ slot: SOURCE_SLOT, profile: "march", ...(stochastic ? { stochastic: true } : {}) }),
     vdbFrameUniformsWgsl(maxVolumes ?? VDB_FRAME_MAX_VOLUMES, { environment }),
   ].join("\n");
 }
@@ -109,9 +111,9 @@ export function vdbFrameGatherKernelWgsl(source: VDBVolumeSource, key: VDBFrameG
   const hook = source.channels.emission ? (key.hook ?? null) : null;
   const body =
     key.lighting === "frame"
-      ? vdbFrameLightingGatherWgsl({ multi: key.multi, channels: source.channels, hook, spectral: !!key.spectral })
-      : vdbFrameGatherWgsl({ multi: key.multi, channels: source.channels, hook, spectral: !!key.spectral });
-  return `${sourcePrelude(source, key.maxVolumes, true)}\n${body}`;
+      ? vdbFrameLightingGatherWgsl({ multi: key.multi, channels: source.channels, hook, spectral: !!key.spectral, stochastic: !!key.stochastic })
+      : vdbFrameGatherWgsl({ multi: key.multi, channels: source.channels, hook, spectral: !!key.spectral, stochastic: !!key.stochastic });
+  return `${sourcePrelude(source, key.maxVolumes, true, !!key.stochastic)}\n${body}`;
 }
 
 /** The source layout part of a label: its kind, channels and LOD levels. */
@@ -139,7 +141,7 @@ export function vdbFrameGatherSpec(source: VDBVolumeSource, key: VDBFrameGatherK
   group1.push(...vdbFrameOccluderLayoutEntries(STAGE.COMPUTE));
   const hooked = source.channels.emission && key.hook ? `, hook ${vdbHashText(key.hook)}` : "";
   return {
-    label: `vdb frame gather (${frame ? "frame lighting" : "volume lighting"}${key.multi ? ", multi-group" : ""}${key.spectral ? ", spectral" : ""}; ${sourceChannels(source)}${hooked})`,
+    label: `vdb frame gather (${frame ? "frame lighting" : "volume lighting"}${key.multi ? ", multi-group" : ""}${key.spectral ? ", spectral" : ""}${key.stochastic ? ", stochastic density" : ""}; ${sourceChannels(source)}${hooked})`,
     code: vdbFrameGatherKernelWgsl(source, key),
     entryPoint: "vdbFrameGatherCs",
     groups: [GROUP0_LAYOUT, { entries: group1 }, { entries: source.layoutEntries(SOURCE_SLOT, STAGE.COMPUTE) }],
