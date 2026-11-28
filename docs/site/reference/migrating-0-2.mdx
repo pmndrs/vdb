@@ -64,6 +64,7 @@ encoder, the `./three` one a three renderer or object. Import by path; alias whe
 | `VDBThreeSparseSource.pyramid`, `pyramidBuilds`, `refreshPyramid()`, `nodeAverageFn()`, `skipEmptyFn()`, `createUniforms()`, `createNodes()`, `VDBSparsePyramid`, `VDBSparseVolumeUniforms`; the `pyramidBuild` option | none: the frame renderer's core source builds its own pyramid on the GPU (`pyramidMax` still sizes it). `gpuBytes` is `{ pool }`; nothing calls `refreshStats()` for you now (`VDBFrameRenderer` copies a changed `stats` into its core slot) |
 | `froxelMix: 'mixture' \| 'over'` | none: overlapping volumes in a froxel always combine order-independently (the former `'mixture'`). His draw-order "over" blend is deleted |
 | `ambientProbe: 'irradiance' \| 'radiance'` (an internal A/B setting of the 0.2 previews, `VDBFrameInternalSettings`) | none (deleted, no deprecation): the light probe's sky terms are three's irradiance along ± the sky, the former default. `'radiance'` moved the path-traced reference by 2 points at most |
+| `ambientOcclusionRing: 'turn' \| 'fixed'` (an internal A/B setting of the 0.2 previews, `VDBFrameInternalSettings`) | none (deleted, no deprecation): the shadowed ambient's direction ring is fixed, also with `jitter` and `temporal` (the former `'fixed'`). Turning it moved the path-traced reference by 0.1 points at most |
 | `VDBSequence` from `@pmndrs/vdb/three` | the core's `VDBSequence` (`@pmndrs/vdb`); `@pmndrs/vdb/three` re-exports it |
 
 {/* snippet: migrate-0-2 */}

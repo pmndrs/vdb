@@ -160,6 +160,10 @@ All notable changes to `@pmndrs/vdb` are documented here. The format follows
 
 ### Changed
 
+- Core (K6.Q1c, D37 (5)): with `ambientOcclusion`, `jitter` and `temporal` all on, the shadowed ambient's direction ring no
+  longer turns per frame (K6.Q1a did; it averaged to the same picture within 0.1 points against the reference and left a
+  small frame-to-frame shimmer). Jittered + temporal frames with ambient, hemisphere or light-probe light change a little;
+  static frames are byte-identical. The internal A/B setting `ambientOcclusionRing` is deleted.
 - Tools (K7.C1 / K7.H1): built and re-encoded grids now equal native NanoVDB byte for byte (GridData checksum and version
   aside) on every native fixture: the root table and upper nodes are in native's signed-origin order again (0.1's unsigned
   key order put grids with negative coordinates out of breadth-first order, which NanoVDB v14's `nanovdb_validate`

@@ -186,11 +186,14 @@ export interface VDBFrameInternalSettings extends VDBFrameSettings {
    */
   shadowResolutionRule: "both" | "optical" | "voxels";
   /**
-   * K6.11b: the shadowed ambient's direction ring with `jitter` and `temporal` on: `'turn'` (default, K6.Q1a: turned by
-   * the frame's jitter × its azimuth step, averaged by the temporal blend) or `'fixed'` (the static ring). An A/B
-   * setting for the owner's question (K6-Q1b handoff).
+   * K6.Q1c (V128): the phase weight of the shadowed distant light (ambient, hemisphere, probe) in 'volume' lighting with
+   * `ambientOcclusion`. `'isotropic'` (default, K6.Q1: the solid-angle mean of the pair totals); `'dipole'`: a dipole fit
+   * to the pair totals, T(ω) ≈ a + b·ω, weighted by the phase's mean cosine g (∫ p T dω = a − g b·ω_cam), every distant
+   * term × clamp(a − g b·ω_cam, 0, 1) / a, except on diffusion totals (multiple scattering on: isotropic, the white
+   * furnace holds); `'dipole-ms'`: on diffusion totals too. 'frame' lighting ignores it (no per-voxel dipole yet). An
+   * A/B setting (K6-Q1c handoff).
    */
-  ambientOcclusionRing: "turn" | "fixed";
+  ambientPhase: "isotropic" | "dipole" | "dipole-ms";
   /**
    * K6.Na: the evaluator of `'neural'` / `'mlp'` (EXPERIMENTAL). `'generic'` (default, K6.3): scalar loops over a flat
    * weight array. `'packed'`: the layer layout of the pmndrs neural tooling (pmndrs/denoiser `denoiser-wgsl`: mat4x4 per
@@ -250,7 +253,7 @@ export function vdbFrameDefaultInternalSettings(): VDBFrameInternalSettings {
     multiScaleEdge: "zero",
     multiScaleSigma: "his",
     shadowResolutionRule: "both",
-    ambientOcclusionRing: "turn",
+    ambientPhase: "isotropic",
     mlpRuntime: "generic",
     occlusion: true,
     ambientOcclusion: true,

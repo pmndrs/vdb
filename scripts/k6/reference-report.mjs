@@ -34,6 +34,9 @@
 // channel's own coverage); V128 groups (distant light only, the scene phase and an isotropic phase: single scattering
 // only); multi-frame rows (`frames=&jitter=1&temporal=1` or `&average=`: the jittered estimator, k6-scene); the
 // size-adaptive shadow grid A/B through `--query=shadowResMax=…` or `shadowRes=…` on the scene groups.
+//
+// K6.Q1c: 'volume' rows with the distant light's dipole phase weight (`aoPhase=dipole`, ms off; `dipole-ms`, ms on) in every
+// scene group and the V128 groups; the multi-frame rows keep the fixed AO ring (D37 (5)).
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -109,6 +112,9 @@ const k6 = (label, query, extra = {}) => ({ label, page: "k6-scene", query, ...e
 const sceneRows = (scene) => [
   k6("volume core ms off", `scene=${scene}&lighting=volume&ms=0`, { lighting: "volume", vsSingle: true }),
   k6("volume core ms on", `scene=${scene}&lighting=volume&ms=1`, { lighting: "volume" }),
+  // K6.Q1c (V128): the distant light's dipole phase weight ('volume' lighting; internal `ambientPhase`)
+  k6("volume core ms off, phase dipole", `scene=${scene}&lighting=volume&ms=0&aoPhase=dipole`, { lighting: "volume", vsSingle: true }),
+  k6("volume core ms on, phase dipole-ms", `scene=${scene}&lighting=volume&ms=1&aoPhase=dipole-ms`, { lighting: "volume" }),
   k6("frame core ms off", `scene=${scene}&lighting=frame&ms=0`, { lighting: "frame", vsSingle: true }),
   k6("frame core ms diffusion", `scene=${scene}&lighting=frame&ms=1`, { lighting: "frame" }),
   ...coreMsRows((label, query, extra) => k6(`frame ${label}`, query, extra), `scene=${scene}&lighting=frame`),
@@ -291,6 +297,8 @@ const GROUP_DEFS = {
             singleOnly: true,
             rows: [
               k6("volume core ms off, AO on", `scene=${scene}&lighting=volume&ms=0&ao=1`, { lighting: "volume", vsSingle: true }),
+              // K6.Q1c: the dipole phase weight (the g 0.8 rows should fall to the -iso rows' level)
+              k6("volume core ms off, AO on, phase dipole", `scene=${scene}&lighting=volume&ms=0&ao=1&aoPhase=dipole`, { lighting: "volume", vsSingle: true }),
               k6("volume core ms off, AO off", `scene=${scene}&lighting=volume&ms=0&ao=0`, { lighting: "volume", vsSingle: true }),
               k6("frame core ms off, AO on", `scene=${scene}&lighting=frame&ms=0&ao=1`, { lighting: "frame", vsSingle: true }),
               k6("frame core ms off, AO on, shadowRes 128", `scene=${scene}&lighting=frame&ms=0&ao=1&shadowRes=128`, { lighting: "frame", vsSingle: true }),
@@ -315,9 +323,9 @@ const GROUP_DEFS = {
         asset,
         rows: [
           ["static (1 frame of 4)", ""],
-          ["jitter + temporal, 32 frames, ring turning", "&frames=32&jitter=1&temporal=1&aoRing=turn"],
-          ["jitter + temporal, 32 frames, ring fixed", "&frames=32&jitter=1&temporal=1&aoRing=fixed"],
-          ["jitter, mean of 32 frames, ring fixed (no temporal)", "&frames=32&jitter=1&average=32&aoRing=fixed"],
+          // K6.Q1c (D37 (5)): the ring is fixed (K6.11b's 'turn' / 'fixed' A/B setting is deleted)
+          ["jitter + temporal, 32 frames", "&frames=32&jitter=1&temporal=1"],
+          ["jitter, mean of 32 frames (no temporal)", "&frames=32&jitter=1&average=32"],
           ["static, AO off", "&ao=0"],
         ].flatMap(([label, q]) => [
           k6(`frame neural ms off, ${label}`, `scene=${scene}&lighting=frame&ms=0${q}`, { lighting: "frame", vsSingle: true }),

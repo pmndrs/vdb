@@ -215,6 +215,9 @@ export const VDB_FRAME_LIGHTS = vdbUniformStruct("VdbFrameLights", [
   // K6.Q1: the upper direction of each shadowed-ambient pair (world, unit; [0] the sky direction; tools/frame
   // vdbFrameAmbientDirections)
   { name: "ambientDirections", type: "vec4f", count: VDB_FRAME_AMBIENT_MAX_PAIRS },
+  // K6.Q1c: the rows of M+ / 2 of the pairs' dipole fit (xyz; tools/frame vdbFrameAmbientDipoleMatrix); [0].w the phase
+  // weight's mode (internal `ambientPhase`: 0 'isotropic', 1 'dipole' (not on diffusion totals), 2 'dipole-ms')
+  { name: "ambientDipole", type: "vec4f", count: 3 },
 ]);
 
 /** One volume record (512 B) in the `VdbFrameVolumes` array (group 1). */

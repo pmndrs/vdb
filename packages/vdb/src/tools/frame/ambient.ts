@@ -14,6 +14,7 @@
 
 import { vdbFrameIsotropicDiffusion } from "./grid.js";
 import { vdbFrameOctavesOff, vdbFrameShadowTotal, type Vec3, type Vec4 } from "./index.js";
+import { vdbFrameMieAsymmetry, vdbFrameMieRgbMode } from "./mie.js";
 import { vdbFrameSpectralShadowTotal, type VDBFrameSpectralMarch } from "./spectral.js";
 
 /** Most direction pairs (the uniform table's length). */
@@ -28,10 +29,10 @@ const cross = (a: readonly number[], b: readonly number[]): Vec3 => [a[1]! * b[2
 /**
  * The upper direction of each pair (world, unit): [0] the sky direction, then `pairs − 1` at cos θ = (1 − 1/pairs) / 2
  * from it (the ring's area centroid when the sky direction's cap holds 1/pairs of the hemisphere), evenly in azimuth
- * from a tangent of the sky direction. The lower directions are their negatives. K6.Q1a `phase` (0–1) turns the ring by
- * that fraction of its azimuth step (the renderer passes the frame's jitter with `jitter` and `temporal`).
+ * from a tangent of the sky direction. The lower directions are their negatives. The ring is fixed (K6.Q1c, D37 (5):
+ * K6.Q1a turned it per frame with `jitter` and `temporal`).
  */
-export function vdbFrameAmbientDirections(sky: readonly number[], pairs: number, phase = 0): Vec3[] {
+export function vdbFrameAmbientDirections(sky: readonly number[], pairs: number): Vec3[] {
   const n = Math.min(VDB_FRAME_AMBIENT_MAX_PAIRS, Math.max(1, Math.round(pairs)));
   const s = normalize(sky);
   const out: Vec3[] = [s];
@@ -42,7 +43,7 @@ export function vdbFrameAmbientDirections(sky: readonly number[], pairs: number,
   const cosTheta = (1 - 1 / n) / 2;
   const sinTheta = Math.sqrt(1 - cosTheta * cosTheta);
   for (let k = 0; k < n - 1; k++) {
-    const phi = (2 * Math.PI * (k + phase)) / (n - 1);
+    const phi = (2 * Math.PI * k) / (n - 1);
     const c = Math.cos(phi) * sinTheta;
     const d = Math.sin(phi) * sinTheta;
     out.push(normalize([s[0] * cosTheta + t[0] * c + b[0] * d, s[1] * cosTheta + t[1] * c + b[1] * d, s[2] * cosTheta + t[2] * c + b[2] * d]));
@@ -100,6 +101,123 @@ export function vdbFrameAmbientVisibility(totals: readonly (readonly [number, nu
     down += t[1];
   }
   return [up / totals.length, down / totals.length];
+}
+
+/**
+ * K6.Q1c (V128): the phase weight of the distant light. The pair totals are fitted with a dipole, T(ω) ≈ a + b·ω (least
+ * squares over the 2N sides ±ω_k: a their mean, b = M⁺ Σ_k (T(ω_k) − T(−ω_k)) ω_k / 2 with M = Σ_k ω_k ω_kᵀ). Under an HG
+ * lobe of mean cosine g, ∫ p T dω = a − g b·ω_cam (ω_cam toward the camera) = a + g b·r (r the view ray's direction),
+ * clamped to [0, 1] per lobe and mixed by the lobe weight (a dual lobe's mean cosine in one clamp darkens a backlit
+ * position too much: the back lobe's share is lost to the clamp at 0). The renderer packs M⁺ / 2 (`ambientDipole`); with
+ * 1–3 pairs M is singular and the pseudo-inverse fits b in the pairs' span.
+ */
+
+/** Eigen-decomposition of a symmetric 3×3 (row-major) by Jacobi rotations: eigenvalues and eigenvector columns. */
+function symmetricEigen3(m: readonly number[]): { values: Vec3; vectors: number[] } {
+  const a = [...m];
+  const v = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  for (let sweep = 0; sweep < 32; sweep++) {
+    const off = Math.abs(a[1]!) + Math.abs(a[2]!) + Math.abs(a[5]!);
+    if (off < 1e-15) break;
+    for (const [p, q] of [[0, 1], [0, 2], [1, 2]] as const) {
+      const apq = a[p * 3 + q]!;
+      if (Math.abs(apq) < 1e-300) continue;
+      const theta = (a[q * 3 + q]! - a[p * 3 + p]!) / (2 * apq);
+      const t = Math.sign(theta || 1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+      const c = 1 / Math.sqrt(t * t + 1);
+      const s = t * c;
+      for (let k = 0; k < 3; k++) {
+        const akp = a[k * 3 + p]!;
+        const akq = a[k * 3 + q]!;
+        a[k * 3 + p] = c * akp - s * akq;
+        a[k * 3 + q] = s * akp + c * akq;
+      }
+      for (let k = 0; k < 3; k++) {
+        const apk = a[p * 3 + k]!;
+        const aqk = a[q * 3 + k]!;
+        a[p * 3 + k] = c * apk - s * aqk;
+        a[q * 3 + k] = s * apk + c * aqk;
+      }
+      for (let k = 0; k < 3; k++) {
+        const vkp = v[k * 3 + p]!;
+        const vkq = v[k * 3 + q]!;
+        v[k * 3 + p] = c * vkp - s * vkq;
+        v[k * 3 + q] = s * vkp + c * vkq;
+      }
+    }
+  }
+  return { values: [a[0]!, a[4]!, a[8]!], vectors: v };
+}
+
+/**
+ * K6.Q1c: M⁺ / 2 of the pairs' upper directions (row-major 3×3, symmetric; M = Σ_k ω_k ω_kᵀ, eigenvalues below 1e-6 of
+ * the largest dropped). `b · r = Σ_k (T(ω_k) − T(−ω_k)) ω_k · (M⁺/2 · r)`.
+ */
+export function vdbFrameAmbientDipoleMatrix(directions: readonly (readonly number[])[]): number[] {
+  const m = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+  for (const w of directions) for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) m[i * 3 + j] = m[i * 3 + j]! + w[i]! * w[j]!;
+  const { values, vectors } = symmetricEigen3(m);
+  const top = Math.max(...values.map(Math.abs));
+  const out = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+  for (let e = 0; e < 3; e++) {
+    if (!(top > 0) || Math.abs(values[e]!) <= 1e-6 * top) continue;
+    const inv = 0.5 / values[e]!;
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) out[i * 3 + j] = out[i * 3 + j]! + vectors[i * 3 + e]! * vectors[j * 3 + e]! * inv;
+  }
+  return out;
+}
+
+/** K6.Q1c: a phase's two HG lobes, each one's mean cosine per channel, and the second lobe's weight. */
+export interface VDBFramePhaseLobes {
+  g: [Vec3, Vec3];
+  weight: number;
+}
+
+/**
+ * K6.Q1c: the phase's lobes (the WGSL `vdbFrameAmbientPhaseFactor` reads the same): forward g and back g (spectral: each
+ * scaled per channel and clamped ±0.99, as `vdbFramePhaseColor`) with the back weight; both lobes at the Lorenz-Mie table's
+ * asymmetry for 'lorenz-mie' and 'lorenz-mie-rgb'.
+ */
+export function vdbFramePhaseLobes(phase: Vec4, phaseSpectrum: Vec3): VDBFramePhaseLobes {
+  const mieG: Vec3 = [vdbFrameMieAsymmetry, vdbFrameMieAsymmetry, vdbFrameMieAsymmetry];
+  if (phase[3] > vdbFrameMieRgbMode - 0.5) return { g: [mieG, mieG], weight: phase[2] };
+  const scale: Vec3 = phaseSpectrum[2] > 0.5 ? [phaseSpectrum[0], 1, phaseSpectrum[1]] : [1, 1, 1];
+  const clampG = (g: number) => Math.min(0.99, Math.max(-0.99, g));
+  const mie = Math.min(phase[3], 1);
+  const lobe = (g: number) => scale.map((s) => clampG(s * g) + (vdbFrameMieAsymmetry - clampG(s * g)) * mie) as Vec3;
+  return { g: [lobe(phase[0]), lobe(phase[1])], weight: phase[2] };
+}
+
+/**
+ * K6.Q1c: the scale of the distant light at one position (both visibilities × it): the dipole's phase-weighted visibility
+ * mix(clamp(a + g₁ b·r, 0, 1), clamp(a + g₂ b·r, 0, 1), weight) over the isotropic one a (1 where a ≤ 1e-6). `totals` are
+ * the pairs' (up, down) totals in `directions` order (grey: numbers; spectral: per channel), `matrix`
+ * {@link vdbFrameAmbientDipoleMatrix} of the directions the renderer packed, `ray` the unit view ray (camera → position),
+ * `lobes` {@link vdbFramePhaseLobes}.
+ */
+export function vdbFrameAmbientPhaseFactor(
+  totals: readonly (readonly [number | Vec3, number | Vec3])[],
+  directions: readonly (readonly number[])[],
+  matrix: readonly number[],
+  ray: readonly number[],
+  lobes: VDBFramePhaseLobes,
+): Vec3 {
+  if (totals.length === 0) return [1, 1, 1];
+  const u = [0, 1, 2].map((i) => matrix[i * 3]! * ray[0]! + matrix[i * 3 + 1]! * ray[1]! + matrix[i * 3 + 2]! * ray[2]!);
+  const ch = (v: number | Vec3, c: number) => (typeof v === "number" ? v : v[c]!);
+  return [0, 1, 2].map((c) => {
+    let sum = 0;
+    let dipole = 0;
+    totals.forEach((t, k) => {
+      const w = directions[k]!;
+      sum += ch(t[0], c) + ch(t[1], c);
+      dipole += (ch(t[0], c) - ch(t[1], c)) * (w[0]! * u[0]! + w[1]! * u[1]! + w[2]! * u[2]!);
+    });
+    const a = sum / (2 * totals.length);
+    const lobe = (g: Vec3) => Math.min(Math.max(a + g[c]! * dipole, 0), 1);
+    const v = lobe(lobes.g[0]) + (lobe(lobes.g[1]) - lobe(lobes.g[0])) * lobes.weight;
+    return a > 1e-6 ? v / a : 1;
+  }) as Vec3;
 }
 
 /** The distant light of a frame (renderer units: irradiance on a surface facing it, three colour × intensity). */

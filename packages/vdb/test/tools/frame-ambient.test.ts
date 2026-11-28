@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   VDB_FRAME_AMBIENT_MAX_PAIRS,
+  vdbFrameAmbientDipoleMatrix,
   vdbFrameAmbientDirections,
+  vdbFrameAmbientPhaseFactor,
+  vdbFramePhaseLobes,
   vdbFrameAmbientIrradiance,
   vdbFrameAmbientPairTotals,
   vdbFrameAmbientVisibility,
@@ -109,20 +112,153 @@ describe("K6.Q1 pair totals and irradiance", () => {
     for (let c = 0; c < 3; c++) expect(p[c]).toBeCloseTo(0.511664, 9);
   });
 
-  it("K6.Q1a: a ring phase turns the ring about the sky (same elevation, azimuth step × phase); phase 1 is the next ring", () => {
-    const sky: V3 = [0, 1, 0];
-    const base = vdbFrameAmbientDirections(sky, 5);
-    const turned = vdbFrameAmbientDirections(sky, 5, 0.25);
-    expect(turned[0]).toEqual(base[0]);
-    for (let k = 1; k < 5; k++) {
-      expect(turned[k]![1]).toBeCloseTo(base[k]![1]!, 12);
-      // azimuth step 2π/4, a quarter of it: π/8 about +y
-      const a = Math.atan2(base[k]![2]!, base[k]![0]!);
-      const b = Math.atan2(turned[k]![2]!, turned[k]![0]!);
-      const d = Math.abs(((b - a + 3 * Math.PI) % (2 * Math.PI)) - Math.PI);
-      expect(d).toBeCloseTo(Math.PI / 8, 12);
+});
+
+describe("K6.Q1c the distant light's phase weight (V128)", () => {
+  const hg = (c: number, g: number) => (1 - g * g) / Math.pow(1 + g * g - 2 * g * c, 1.5);
+  // ∫ p(r · ω) T(ω) dω / 4π by dense quadrature (ω: the direction toward the light; r: the view ray; HG normalised to 1)
+  const phaseMean = (T: (w: V3) => number, r: V3, g: number, M = 400) => {
+    let sum = 0;
+    for (let i = 0; i < M; i++)
+      for (let j = 0; j < 2 * M; j++) {
+        const u = -1 + (2 * (i + 0.5)) / M;
+        const phi = (Math.PI * (j + 0.5)) / M;
+        const s = Math.sqrt(1 - u * u);
+        const w: V3 = [s * Math.cos(phi), u, s * Math.sin(phi)];
+        sum += hg(dot(r, w), g) * T(w);
+      }
+    return sum / (2 * M * M);
+  };
+  // one HG lobe of mean cosine g (per channel)
+  const hgLobe = (g: number | V3) => {
+    const v: V3 = typeof g === "number" ? [g, g, g] : g;
+    return { g: [v, v] as [V3, V3], weight: 0 };
+  };
+  const unit = (v: readonly number[]): V3 => {
+    const l = Math.hypot(v[0]!, v[1]!, v[2]!);
+    return [v[0]! / l, v[1]! / l, v[2]! / l];
+  };
+
+  it("a linear T(ω) = a + b·ω: the dipole recovers b exactly (4–8 pairs) and a + g b·r is the phase-weighted mean", () => {
+    const a = 0.45;
+    const b: V3 = [0.2, -0.15, 0.1];
+    const r = unit([0.3, -0.5, 0.8]);
+    const g = 0.6;
+    // the exact phase-weighted mean of a linear T (sign convention: light from along the ray is forward-scattered)
+    expect(phaseMean((w) => a + dot(b, w), r, g)).toBeCloseTo(a + g * dot(b, r), 4);
+    for (let n = 4; n <= VDB_FRAME_AMBIENT_MAX_PAIRS; n++) {
+      const dirs = vdbFrameAmbientDirections([0.1, 1, -0.2], n);
+      const totals = dirs.map((w) => [a + dot(b, w), a - dot(b, w)] as [number, number]);
+      const m = vdbFrameAmbientDipoleMatrix(dirs);
+      const f = vdbFrameAmbientPhaseFactor(totals, dirs, m, r, hgLobe(g));
+      for (let c = 0; c < 3; c++) expect(f[c]! * a).toBeCloseTo(a + g * dot(b, r), 12);
+      // g = 0 (isotropic phase): the factor is 1
+      expect(vdbFrameAmbientPhaseFactor(totals, dirs, m, r, hgLobe(0))).toEqual([1, 1, 1]);
     }
-    const next = vdbFrameAmbientDirections(sky, 5, 1);
-    for (let k = 1; k < 4; k++) for (let i = 0; i < 3; i++) expect(next[k]![i]).toBeCloseTo(base[k + 1]![i]!, 12);
+  });
+
+  it("1–3 pairs: M is singular; the pseudo-inverse fits b in the pairs' span (the sky axis for 1 pair)", () => {
+    const sky: V3 = [0, 1, 0];
+    const b: V3 = [0.2, 0.3, -0.1];
+    const a = 0.5;
+    for (const n of [1, 2, 3]) {
+      const dirs = vdbFrameAmbientDirections(sky, n);
+      const m = vdbFrameAmbientDipoleMatrix(dirs);
+      expect(m.every(Number.isFinite)).toBe(true);
+      const totals = dirs.map((w) => [a + dot(b, w), a - dot(b, w)] as [number, number]);
+      // along the sky every set resolves b's sky component
+      const f = vdbFrameAmbientPhaseFactor(totals, dirs, m, sky, hgLobe(1));
+      expect(f[0]! * a).toBeCloseTo(a + b[1], 12);
+    }
+    // 1 pair: a ray in the tangent plane sees no dipole
+    const one = vdbFrameAmbientDirections(sky, 1);
+    const f = vdbFrameAmbientPhaseFactor([[0.9, 0.1]], one, vdbFrameAmbientDipoleMatrix(one), [1, 0, 0], hgLobe(0.8));
+    expect(f[1]).toBeCloseTo(1, 12);
+  });
+
+  it("clamps the weighted visibility to [0, 1], gives 1 where a ≤ 1e-6, and works per channel", () => {
+    const dirs = vdbFrameAmbientDirections([0, 1, 0], 4);
+    const m = vdbFrameAmbientDipoleMatrix(dirs);
+    // open above, black below; a ray looking down: forward scattering (g > 0) sees the light from below the position
+    // (black), back scattering (g < 0) the open sky
+    const totals = dirs.map(() => [1, 0] as [number, number]);
+    const f = vdbFrameAmbientPhaseFactor(totals, dirs, m, [0, -1, 0], hgLobe([0.99, 0, -0.99]));
+    expect(f[0]!).toBeLessThan(1);
+    expect(f[0]!).toBeGreaterThanOrEqual(0);
+    expect(f[1]).toBeCloseTo(1, 12);
+    expect(f[2]!).toBeGreaterThan(1);
+    expect(f[2]! * 0.5).toBeLessThanOrEqual(1);
+    expect(vdbFrameAmbientPhaseFactor(dirs.map(() => [0, 0] as [number, number]), dirs, m, [0, -1, 0], hgLobe(0.8))).toEqual([1, 1, 1]);
+    // spectral totals: each channel its own fit
+    const spectral = dirs.map(() => [[1, 0.5, 0.2], [0, 0.5, 0.1]] as [V3, V3]);
+    const fs = vdbFrameAmbientPhaseFactor(spectral, dirs, m, [0, -1, 0], hgLobe(0.5));
+    expect(fs[1]).toBeCloseTo(1, 12);
+    expect(fs[0]!).toBeLessThan(fs[2]!);
+  });
+
+  it("is closer to the phase-weighted mean than the isotropic visibility: a homogeneous ball, off-centre, g 0.8", () => {
+    const p: V3 = [0.35, -0.2, 0.15];
+    const sigma = 2.5;
+    const exit = (w: readonly number[]) => {
+      const b = dot(p, w);
+      return -b + Math.sqrt(b * b - (dot(p, p) - 1));
+    };
+    const T = (w: V3) => Math.exp(-sigma * exit(w));
+    const dirs = vdbFrameAmbientDirections([0, 1, 0], 4);
+    const totals = dirs.map((w) => [T(w), T(w.map((x) => -x) as V3)] as [number, number]);
+    const v = vdbFrameAmbientVisibility(totals);
+    const iso = (v[0] + v[1]) / 2;
+    const m = vdbFrameAmbientDipoleMatrix(dirs);
+    for (const r of [unit([0.7, 0.2, 0.3]), unit([-0.5, 0.1, -0.2]), unit([0, -1, 0.1])]) {
+      const exact = phaseMean(T, r, 0.8, 300);
+      const dip = iso * vdbFrameAmbientPhaseFactor(totals, dirs, m, r, hgLobe(0.8))[0]!;
+      expect(Math.abs(dip / exact - 1)).toBeLessThan(Math.abs(iso / exact - 1));
+    }
+  });
+
+  it("the phase lobes: forward and back g with the back weight, per channel with a spectrum, the Mie table's asymmetry", () => {
+    const d = vdbFramePhaseLobes([0.8, -0.3, 0.2, 0], [1, 1, 0]);
+    expect(d.g[0]).toEqual([0.8, 0.8, 0.8]);
+    expect(d.g[1]).toEqual([-0.3, -0.3, -0.3]);
+    expect(d.weight).toBe(0.2);
+    expect(vdbFramePhaseLobes([0, 0, 0, 1], [1, 1, 0]).g).toEqual([[0.8526, 0.8526, 0.8526], [0.8526, 0.8526, 0.8526]]);
+    expect(vdbFramePhaseLobes([0, 0, 0, 2], [1, 1, 1]).g).toEqual([[0.8526, 0.8526, 0.8526], [0.8526, 0.8526, 0.8526]]);
+    // spectral: g × (red, 1, blue) scale, clamped ±0.99 per lobe
+    const s = vdbFramePhaseLobes([0.9, -0.3, 0.25, 0], [0.8, 1.2, 1]);
+    expect(s.g[0][0]).toBeCloseTo(0.72, 12);
+    expect(s.g[0][2]).toBeCloseTo(0.99, 12);
+    expect(s.g[1][2]).toBeCloseTo(-0.36, 12);
+  });
+
+  it("a dual lobe clamps per lobe: a backlit step (open hemisphere behind the camera) keeps the back lobe's share", () => {
+    // T = 1 on the hemisphere around +y, 0 below; the camera looks up (r = +y is forward scattering of the light from
+    // above) or down (r = −y: light from above only by back scattering). Reference: the dual lobe 0.8 / −0.3 / 0.2.
+    const T = (w: V3) => (w[1] > 0 ? 1 : 0);
+    const dual = (c: number) => 0.8 * hg(c, 0.8) + 0.2 * hg(c, -0.3);
+    const exactDual = (r: V3) => {
+      let sum = 0;
+      const M = 300;
+      for (let i = 0; i < M; i++)
+        for (let j = 0; j < 2 * M; j++) {
+          const u = -1 + (2 * (i + 0.5)) / M;
+          const phi = (Math.PI * (j + 0.5)) / M;
+          const q = Math.sqrt(1 - u * u);
+          const w: V3 = [q * Math.cos(phi), u, q * Math.sin(phi)];
+          sum += dual(dot(r, w)) * T(w);
+        }
+      return sum / (2 * M * M);
+    };
+    const dirs = vdbFrameAmbientDirections([0, 1, 0], 4);
+    const m = vdbFrameAmbientDipoleMatrix(dirs);
+    const totals = dirs.map((w) => [T(w), T(w.map((x) => -x) as V3)] as [number, number]);
+    const lobes = vdbFramePhaseLobes([0.8, -0.3, 0.2, 0], [1, 1, 0]);
+    const down: V3 = [0, -1, 0];
+    const exact = exactDual(down);
+    const perLobe = 0.5 * vdbFrameAmbientPhaseFactor(totals, dirs, m, down, lobes)[0]!;
+    const meanCosine = 0.5 * vdbFrameAmbientPhaseFactor(totals, dirs, m, down, hgLobe(0.8 * 0.8 - 0.3 * 0.2))[0]!;
+    expect(Math.abs(perLobe - exact)).toBeLessThan(Math.abs(meanCosine - exact));
+    expect(Math.abs(perLobe / exact - 1)).toBeLessThan(0.35);
+    // forward: both near the exact (most light comes from the open side)
+    expect(Math.abs((0.5 * vdbFrameAmbientPhaseFactor(totals, dirs, m, [0, 1, 0], lobes)[0]!) / exactDual([0, 1, 0]) - 1)).toBeLessThan(0.1);
   });
 });

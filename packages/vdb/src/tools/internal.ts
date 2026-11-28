@@ -266,13 +266,17 @@ export type { VDBFrameStackLayout, VDBFrameTexture3d, VDBFrameGridCaster } from 
 // K6.Q1 shadowed ambient (twins of the core's ambient occlusion)
 export {
   VDB_FRAME_AMBIENT_MAX_PAIRS,
+  vdbFrameAmbientDipoleMatrix,
   vdbFrameAmbientDirections,
+  vdbFrameAmbientPhaseFactor,
+  vdbFramePhaseLobes,
   vdbFrameAmbientIrradiance,
   vdbFrameAmbientPairTotals,
   vdbFrameAmbientVisibility,
   vdbFrameSpectralAmbientPairTotals,
   vdbFrameSpectralAmbientVisibility,
   type VDBFrameDistantLight,
+  type VDBFramePhaseLobes,
 } from "./frame/ambient.js";
 // K6.5b: mesh → volume shadows (host occluder maps)
 export { vdbFrameOccluderVisibility, vdbFrameOccluderLayer, vdbFrameOccludedTotal, VDB_FRAME_MAX_OCCLUDERS, VDB_FRAME_OCCLUDER_MAX_LAYERS } from "./frame/occluders.js";

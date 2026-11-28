@@ -258,6 +258,30 @@ fn vdbFramePhaseWeightScaled(phase: vec4f, cosTheta: f32, gScale: f32) -> f32 {
     },
   ],
   [
+    "ambientPhase",
+    {
+      deps: [],
+      code: `// K6.Q1c (V128): the distant light's phase weight from the pairs' dipole fit (T = a + b.w), from the sums of the up and
+// down totals over the pairs and the dipole sum b.r (r the view ray): each HG lobe's clamp(a + g b.r, 0, 1) (g its mean
+// cosine; spectral: scaled and clamped as vdbFramePhaseColor; the Lorenz-Mie asymmetry for both Mie modes), mixed by the
+// back weight, over a; 1 where a <= 1e-6
+fn vdbFrameAmbientPhaseFactor(sumUp: vec3f, sumDown: vec3f, dipole: vec3f, pairs: u32, phase: vec4f, spectrum: vec3f) -> vec3f {
+  let a = (sumUp + sumDown) / f32(2u * pairs);
+  var g0 = vec3f(${MIE_ASYMMETRY});
+  var g1 = vec3f(${MIE_ASYMMETRY});
+  if (phase.w < ${MIE_RGB_MODE - 0.5}) {
+    let scale = select(vec3f(1.0), vec3f(spectrum.x, 1.0, spectrum.y), spectrum.z > 0.5);
+    let mie = min(phase.w, 1.0);
+    g0 = mix(clamp(scale * phase.x, vec3f(-0.99), vec3f(0.99)), g0, mie);
+    g1 = mix(clamp(scale * phase.y, vec3f(-0.99), vec3f(0.99)), g1, mie);
+  }
+  let v = mix(clamp(a + g0 * dipole, vec3f(0.0), vec3f(1.0)), clamp(a + g1 * dipole, vec3f(0.0), vec3f(1.0)), vec3f(phase.z));
+  return select(vec3f(1.0), v / max(a, vec3f(1e-6)), a > vec3f(1e-6));
+}
+`,
+    },
+  ],
+  [
     "shadow",
     {
       deps: [],
@@ -621,7 +645,7 @@ fn vdbFrameSrgbEotf(color: vec3f) -> vec3f {
 const BY_NAME = new Map(CHUNKS);
 
 /** Names of the chunks {@link frameChunksWgsl} knows. */
-export type VDBFrameChunk = "constants" | "mat3" | "sliceDepth" | "viewPosition" | "froxel" | "noise" | "fade" | "box" | "lod" | "phase" | "shadow" | "octaveTotal" | "octaves" | "spectral" | "sh" | "envSh" | "grid" | "srgb";
+export type VDBFrameChunk = "constants" | "mat3" | "sliceDepth" | "viewPosition" | "froxel" | "noise" | "fade" | "box" | "lod" | "phase" | "ambientPhase" | "shadow" | "octaveTotal" | "octaves" | "spectral" | "sh" | "envSh" | "grid" | "srgb";
 
 /** The closure of `roots` (with dependencies), in the fixed chunk order. */
 export function frameChunksWgsl(roots: Iterable<VDBFrameChunk>): string {

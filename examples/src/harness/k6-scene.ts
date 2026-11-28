@@ -7,9 +7,8 @@
  * `mlp`, `multi-scale` with `?msEdge=zero|clamp`, `?msLevels=`, K6.3a `?msSigma=his|paper`),
  * (K6.8: always the core; `?backend=` is ignored), `?w=&h=` (default 1280 × 720), `?froxels=WxHxD`
  * (default his 512x512x24), `?lod=` (sparse sources: default 'coarse-pyramid', D28), `?shadowRes=`, `?shadowSteps=`.
- * K6.Q1b: `?shadowResMax=` (the size-adaptive shadow grid), `?shadowRule=both|optical|voxels` (its internal A/B rule),
- * `?aoRing=turn|fixed` (K6.11b internal A/B of the ring under jitter + temporal). A spectral scene (`def.spectral`) turns
- * the renderer's `spectral` on.
+ * K6.Q1b: `?shadowResMax=` (the size-adaptive shadow grid), `?shadowRule=both|optical|voxels` (its internal A/B rule).
+ * A spectral scene (`def.spectral`) turns the renderer's `spectral` on.
  * Jitter and temporal reprojection off (deterministic) unless the K6.Q1b multi-frame mode asks: `?frames=N` draws N frames
  * (default 4: the warm-up) with `?jitter=1` and / or `?temporal=1`; the image is the last frame, or with `?average=K` the
  * linear mean of the last K frames (the ensemble mean of the jittered estimator). No MSAA (no meshes).
@@ -134,10 +133,11 @@ async function main(): Promise<void> {
   if (params.has("ao")) cs.ambientOcclusion = params.get("ao") === "1";
   if (params.has("aoPairs")) cs.ambientOcclusionPairs = Number(params.get("aoPairs"));
   if (params.has("aoSteps")) cs.ambientOcclusionSteps = Number(params.get("aoSteps"));
-  // K6.Q1b: the size-adaptive shadow grid and its internal rule; K6.11b: the AO ring's internal A/B (internal fields)
+  // K6.Q1b: the size-adaptive shadow grid and its internal rule (internal field)
   if (params.has("shadowResMax")) cs.shadowResolutionMax = Number(params.get("shadowResMax"));
   if (params.has("shadowRule")) Object.assign(cs, { shadowResolutionRule: params.get("shadowRule") === "voxels" ? "voxels" : params.get("shadowRule") === "optical" ? "optical" : "both" });
-  if (params.has("aoRing")) Object.assign(cs, { ambientOcclusionRing: params.get("aoRing") === "fixed" ? "fixed" : "turn" });
+  // K6.Q1c `?aoPhase=isotropic|dipole|dipole-ms`: the distant light's phase weight ('volume' lighting; internal A/B)
+  if (params.has("aoPhase")) Object.assign(cs, { ambientPhase: params.get("aoPhase") === "dipole" ? "dipole" : params.get("aoPhase") === "dipole-ms" ? "dipole-ms" : "isotropic" });
   result.backend = "core";
   Object.assign(frameRenderer.settings, {
     width: FROXELS[0],

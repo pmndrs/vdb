@@ -38,6 +38,9 @@ import {
   vdbFrameAmbientVisibility,
   vdbFrameSpectralAmbientPairTotals,
   vdbFrameSpectralAmbientVisibility,
+  vdbFrameAmbientDipoleMatrix,
+  vdbFrameAmbientPhaseFactor,
+  vdbFramePhaseLobes,
   type VDBFrameEnvironmentGpuResult,
   type VDBFrameVec2,
   type VDBFrameVec3,
@@ -91,10 +94,14 @@ export type TwinMutation =
   // K6.Q1 shadowed ambient: one pair fewer; no occlusion (V = 1)
   | "ao-pairs"
   | "ao"
-  // K6.Q1a: spectral ambient pairs read as grey (the green channel's totals); K6.Q1b: the probe's sky up / down terms dropped
+  // K6.Q1a: spectral ambient pairs read as grey (the green channel's totals); K6.Q1b: the probe's sky up / down terms dropped;
+  // K6.Q1c: the twins' ring turned by the frame's jitter (K6.Q1a's ring; the renderer's is fixed)
   | "ao-grey"
   | "probe-term"
   | "ao-ring"
+  // K6.Q1c: the phase weight of the ambient dipole dropped (the isotropic visibility); applied to diffusion totals in mode 1
+  | "ao-phase"
+  | "ao-phase-ms"
   // K6.3 phase and multiple scattering
   | "mie"
   | "octaves"
@@ -206,8 +213,11 @@ export interface TwinFrame {
   twoSided?: boolean;
   /** K6.5b: the host occluder visibility of light `index` (record order) at a world position. */
   occluder?: ((index: number, world: V3) => number) | null;
-  /** K6.Q1 shadowed ambient: the pairs' upper directions (world; [0] the sky) and each march's steps (0: the volume's). */
-  ambientOcclusion?: { directions: V3[]; steps: number } | null;
+  /**
+   * K6.Q1 shadowed ambient: the pairs' upper directions (world; [0] the sky) and each march's steps (0: the volume's);
+   * K6.Q1c `phase` the dipole phase weight's mode (0 isotropic, 1 not on diffusion totals, 2 always; default 0).
+   */
+  ambientOcclusion?: { directions: V3[]; steps: number; phase?: 0 | 1 | 2 } | null;
 }
 
 const sub = (a: readonly number[], b: readonly number[]): V3 => [a[0]! - b[0]!, a[1]! - b[1]!, a[2]! - b[2]!];
@@ -388,7 +398,11 @@ export function volumeFroxelTwin(frame: TwinFrame, r: TwinVolume, cell: V3, muta
       const back = march(r, local, scale(d, -1), 1e6, lod, maxTexels, albedo, shadowNoise, mutate, octaves, ao.steps);
       return vdbFrameAmbientPairTotals(front, back, diffusion, octaves);
     });
-    const v = mutate === "ao" ? ([1, 1] as [number, number]) : vdbFrameAmbientVisibility(totals);
+    const v0 = mutate === "ao" ? ([1, 1] as [number, number]) : vdbFrameAmbientVisibility(totals);
+    // K6.Q1c: the dipole phase weight (the renderer's matrix is of the packed directions, ?mutate=ao-pairs or not)
+    const mode = ao.phase ?? 0;
+    const factor: V3 = mutate !== "ao" && mutate !== "ao-phase" && (mode === 2 || (mode === 1 && (!diffusion || mutate === "ao-phase-ms"))) ? vdbFrameAmbientPhaseFactor(totals, dirs, vdbFrameAmbientDipoleMatrix(ao.directions), rayDirection, vdbFramePhaseLobes(r.phase, r.phaseSpectrum)) : [1, 1, 1];
+    const v: [V3, V3] = [scale(factor, v0[0]), scale(factor, v0[1])];
     const hemiSky = frame.hemi.reduce<V3>((a, h) => add(a, h.sky), [0, 0, 0]);
     const hemiGround = frame.hemi.reduce<V3>((a, h) => add(a, h.ground), [0, 0, 0]);
     const sky = norm(frame.hemi[0]?.up ?? [0, 1, 0]);
@@ -520,7 +534,11 @@ export function volumeFroxelSpectralTwin(frame: TwinFrame, r: TwinVolume, cell: 
       const t = vdbFrameSpectralAmbientPairTotals(front, back, diffusion, octaves, albedo);
       return mutate === "ao-grey" ? ([[t[0][1], t[0][1], t[0][1]], [t[1][1], t[1][1], t[1][1]]] as [V3, V3]) : t;
     });
-    const v: [V3, V3] = mutate === "ao" ? [[1, 1, 1], [1, 1, 1]] : vdbFrameSpectralAmbientVisibility(totals);
+    const v0: [V3, V3] = mutate === "ao" ? [[1, 1, 1], [1, 1, 1]] : vdbFrameSpectralAmbientVisibility(totals);
+    // K6.Q1c: the dipole phase weight per channel
+    const mode = ao.phase ?? 0;
+    const factor: V3 = mutate !== "ao" && mutate !== "ao-phase" && (mode === 2 || (mode === 1 && (!diffusion || mutate === "ao-phase-ms"))) ? vdbFrameAmbientPhaseFactor(totals, dirs, vdbFrameAmbientDipoleMatrix(ao.directions), rayDirection, vdbFramePhaseLobes(r.phase, r.phaseSpectrum)) : [1, 1, 1];
+    const v: [V3, V3] = [mul3(factor, v0[0]), mul3(factor, v0[1])];
     const hemiSky = frame.hemi.reduce<V3>((a, h) => add(a, h.sky), [0, 0, 0]);
     const hemiGround = frame.hemi.reduce<V3>((a, h) => add(a, h.ground), [0, 0, 0]);
     const sky = norm(frame.hemi[0]?.up ?? [0, 1, 0]);

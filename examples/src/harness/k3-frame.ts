@@ -746,11 +746,11 @@ async function main(): Promise<void> {
   if (params.has("aoPairs")) s.ambientOcclusionPairs = Number(params.get("aoPairs"));
   if (params.has("aoSteps")) s.ambientOcclusionSteps = Number(params.get("aoSteps"));
   if (params.get("occlusion") === "0") s.occlusion = false;
-  // K6.Q1b `?shadowResMax=` (the size-adaptive shadow grid; result.shadowGridResolution), `?shadowRule=` (internal A/B);
-  // K6.11b `?aoRing=turn|fixed` (internal A/B of the ring under jitter + temporal)
+  // K6.Q1b `?shadowResMax=` (the size-adaptive shadow grid; result.shadowGridResolution), `?shadowRule=` (internal A/B)
   if (params.has("shadowResMax")) s.shadowResolutionMax = Number(params.get("shadowResMax"));
   if (params.has("shadowRule")) Object.assign(s, { shadowResolutionRule: params.get("shadowRule") === "voxels" ? "voxels" : params.get("shadowRule") === "optical" ? "optical" : "both" });
-  if (params.has("aoRing")) Object.assign(s, { ambientOcclusionRing: params.get("aoRing") === "fixed" ? "fixed" : "turn" });
+  // K6.Q1c `?aoPhase=isotropic|dipole|dipole-ms`: the distant light's phase weight ('volume' lighting; internal A/B)
+  if (params.has("aoPhase")) Object.assign(s, { ambientPhase: params.get("aoPhase") === "dipole" ? "dipole" : params.get("aoPhase") === "dipole-ms" ? "dipole-ms" : "isotropic" });
   result.backend = "core";
   Object.assign(frameRenderer.settings, {
     width: FROXELS[0],
