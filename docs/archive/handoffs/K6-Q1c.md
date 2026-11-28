@@ -1,6 +1,6 @@
 # K6.Q1c handoff: the AO ring fixed (D37 (5)), the phase-weighted distant light in 'volume' lighting (D37 (6), V128)
 
-Task: TASKS K6.Q1c. Tree: main `2b5e7b1`. Quality only, no timings (D25; the machine was loaded by other agents). References
+Task: TASKS K6.Q1c. Tree: main `2b5e7b1`, then main `848feb7` merged in (K6.S2 stochastic filter, K6.Nc). Quality only, no timings (D25; the machine was loaded by other agents). References
 and report frames: installed Chrome headless on the owner's Mac (adapter "apple metal-3") from a frozen copy of the worktree,
 the K6.Q1b reference renders reused (`--reuse`; the reference inputs are unchanged since K6.Q1b, the report logs "(reused)");
 every e2e on SwiftShader from frozen copies (ports 5349, 5352). The K6.R1 report settings throughout: 160 × 90 references to
@@ -136,11 +136,11 @@ the 'volume' default. Design:
 | gate | result |
 |---|---|
 | `pnpm typecheck` | 0 |
-| `pnpm test` | 118 files, 2703 passed, 23 skipped; 7 load failures in unrelated files (timing asserts in `points-hostile`, 30 s timeouts in `compute` / `wvdb-k413`) pass on a rerun with `--testTimeout=120000` (76 / 76) |
+| `pnpm test` | after the merge: 119 files, 2752 passed, 23 skipped. Before it: 118 files, 2703 passed, 23 skipped and 7 load failures in unrelated files (timing asserts in `points-hostile`, 30 s timeouts in `compute` / `wvdb-k413`) pass on a rerun with `--testTimeout=120000` (76 / 76) |
 | `pnpm docs:check` | 53 blocks match, snippets type-check |
 | `pnpm wgsl:size` | 464 variants match (the VDB module is untouched) |
-| frame size snapshot | rewritten on purpose (`K6_WRITE_SIZES=1`): every kernel that declares `VdbFrameLights` +29 B minified (the `ambientDipole` member); the four 'volume' gathers (grey, multi-group, spectral, spectral multi-group) +1197 B minified more (the `ambientPhase` chunk and the dipole lines) |
-| `e2e/k6-ambient.spec.ts` (SwiftShader) | GATE_AMBIENT |
+| frame size snapshot | rewritten on purpose (`K6_WRITE_SIZES=1`): every kernel that declares `VdbFrameLights` +29 B minified (the `ambientDipole` member); every 'volume' gather variant (grey, multi-group, spectral, spectral multi-group, stochastic, hook) +1197 B minified more (the `ambientPhase` chunk and the dipole lines); largest vs cap unchanged in kind (the spectral 'volume' gathers stay well under their 57344 B cap) |
+| `e2e/k6-ambient.spec.ts` (SwiftShader) | **25 passed** (the 19 K6.Q1 / K6.Q1a / K6.Q1b rows unchanged, the ring row and the 6 new rows below; pre-merge tree, port 5349) |
 | `e2e/k6-frames.spec.ts` vs main (before: `git archive 2b5e7b1` + this spec, port 5349; after: frozen copy, 5352) | **106 / 108 identical** (max 0/255); the two new `scene-smoke-hemi-{frame,volume}-jitter-temporal` frames move by design (the ring no longer turns): max 5 / 4 of 255, 0.52 % / 0.56 % of pixels over 1/255 |
 
 New k6-ambient rows (2 f16 ulp, ≤ 0.1 % over; mutations over / compared):
@@ -150,7 +150,7 @@ New k6-ambient rows (2 f16 ulp, ≤ 0.1 % over; mutations over / compared):
 | gather, 4 pairs, jitter + temporal, ring fixed | 0.72, 0 | ao-ring 475 |
 | gather, dipole, single scattering, 4 pairs | 0.72, 0 | ao-phase 575, ao-pairs 583 |
 | gather, dipole, 'octaves', 3 pairs, Lorenz-Mie | 0.76, 0 | ao-phase 580 |
-| gather, dipole, diffusion (unweighted), 4 pairs | 0.73, 0 | ao 585, ao-phase-ms AMB_MS |
+| gather, dipole, diffusion (unweighted), 4 pairs | 0.73, 0 | ao 585, ao-phase-ms 579 |
 | gather, dipole-ms, diffusion, 2 pairs, sparse | 2.09 (abs floor), 0 | ao-phase 248 |
 | spectral gather, dipole, single scattering, 4 pairs | 0.69, 0 | ao-phase 584, ao-grey 585 |
 | spectral gather, dipole-ms, diffusion, 4 pairs | 0.67, 0 | ao-phase 584 |
@@ -159,8 +159,8 @@ New k6-ambient rows (2 f16 ulp, ≤ 0.1 % over; mutations over / compared):
 
 ## DIVERGES
 
-V184 (the ring fixed; supersedes V150), V185 (the dipole phase weight, 'volume' lighting, internal); V128 updated. (Main had
-V182 / V183 when this branch was cut; renumber at the merge if needed.)
+V184 (the ring fixed; supersedes V150), V185 (the dipole phase weight, 'volume' lighting, internal); V128 updated. Main's
+V182 (K6.S2) and V183 (K6.Nc) come before them.
 
 ## Owner questions
 
