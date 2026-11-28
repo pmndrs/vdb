@@ -141,6 +141,8 @@ the 'volume' default. Design:
 | `pnpm wgsl:size` | 464 variants match (the VDB module is untouched) |
 | frame size snapshot | rewritten on purpose (`K6_WRITE_SIZES=1`): every kernel that declares `VdbFrameLights` +29 B minified (the `ambientDipole` member); every 'volume' gather variant (grey, multi-group, spectral, spectral multi-group, stochastic, hook) +1197 B minified more (the `ambientPhase` chunk and the dipole lines); largest vs cap unchanged in kind (the spectral 'volume' gathers stay well under their 57344 B cap) |
 | `e2e/k6-ambient.spec.ts` (SwiftShader) | **25 passed** (the 19 K6.Q1 / K6.Q1a / K6.Q1b rows unchanged, the ring row and the 6 new rows below; pre-merge tree, port 5349) |
+| `e2e/k6-core.spec.ts` subset on the merged tree (`-g` grey compile, every K6.1 probe, every K6.4 spectral probe, the K6.2b 'volume' gathers; frozen copy, port 5349) | **35 passed** (the new chunk compiles in every grey variant; the 'volume' gathers with the setting at its default match their twins as before). Not run: the spectral compile probe (its own long run; the spectral 'volume' gathers compiled and passed in the K6.4 probes) |
+| merged tree (main `848feb7`): k6-frames + the 7 K6.Q1c k6-ambient rows (frozen copy, port 5352) | same 106 / 108 identical and the same two jitter frames (max 5 / 4 of 255); 7 passed |
 | `e2e/k6-frames.spec.ts` vs main (before: `git archive 2b5e7b1` + this spec, port 5349; after: frozen copy, 5352) | **106 / 108 identical** (max 0/255); the two new `scene-smoke-hemi-{frame,volume}-jitter-temporal` frames move by design (the ring no longer turns): max 5 / 4 of 255, 0.52 % / 0.56 % of pixels over 1/255 |
 
 New k6-ambient rows (2 f16 ulp, ≤ 0.1 % over; mutations over / compared):
