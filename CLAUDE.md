@@ -724,3 +724,14 @@ From v1; details in docs/archive/handoffs/.
 - K6.Na: reference caches (`reference-*.json`) copied from older scratchpad runs did not match this tree's reference queries,
   so `--reuse` re-rendered all 32 (16 groups). Budget for a fresh set unless the run that made the
   cache is from the same tree; the second run of a pair (e.g. an A/B with `--query`) reuses them.
+- K6.Nc: an isolated worktree's Bash refuses `git -C <another repo>` and `for` loops around git ("too complex to verify"); `cd <repo> && git …`
+  with one git command works, and so does a script file in the scratchpad run with `bash`. Read sibling branches with `git show <ref>:<path>`.
+- Run vitest from the repo root (`npx vitest run packages/vdb/test/…`): from `packages/vdb` it fails with "Projects definition references a
+  non-existing file … packages/vdb/examples" even with `node_modules` installed.
+- K6.Nc: pmndrs/pathtracer's `@pathtracer/mlp` nets have NO biases (constant-one inputs instead) and its kernels stage weights between
+  `workgroupBarrier()`s: they cannot be called inside our per-thread `near > 0` branch. Move our net into its convention with
+  `vdbFrameMlpToNn` (exact; carriers hold the biases). Its checkout sits at detached `0e4435b` (pmndrs/gi's pin): `packages/mlp` code equals main's.
+- An f16 evaluation of 'neural' (the NRC's f16 arms, K6.Nc) moves exp(o) by median 4e-4 and p99 ~1 % (max 4 %): it fails a ≤ 2 f16 ulp twin
+  gate on ~half the cells, so an f16 evaluator needs a justified bound, not the default gate.
+- A parity test of a Float32Array-input path against an f64 twin must feed f32-representable inputs (`Math.fround`), or input rounding
+  (~1e-7) swamps a 1e-12 gate.
