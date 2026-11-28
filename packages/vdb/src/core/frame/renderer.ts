@@ -394,6 +394,11 @@ class FrameRenderer implements VDBFrameRenderer {
     };
   }
 
+  /** Issue #2 step 2: the internal `densityFilter` A/B setting (a gather pipeline key). */
+  #stochastic(): boolean {
+    return (this.settings as VDBFrameInternalSettings).densityFilter === "stochastic";
+  }
+
   async prepare(options: { lighting?: ("volume" | "frame")[] } = {}): Promise<void> {
     this.#check();
     const modes = options.lighting ?? [this.settings.lighting];
@@ -408,7 +413,7 @@ class FrameRenderer implements VDBFrameRenderer {
       if (source.channels.emission) for (const v of this.#volumes) if (v.slot.source === source) hooks.add(this.#colors.codeOf(v.params.emissionColor).hook);
       for (const hook of hooks) {
         for (const multi of [false, true]) {
-          for (const lighting of modes) jobs.push(prepareCompute(this.device, vdbFrameGatherSpec(source, { multi, maxVolumes: this.#maxVolumes, lighting, hook, spectral })));
+          for (const lighting of modes) jobs.push(prepareCompute(this.device, vdbFrameGatherSpec(source, { multi, maxVolumes: this.#maxVolumes, lighting, hook, spectral, stochastic: this.#stochastic() })));
         }
         if (source.channels.emission) jobs.push(prepareCompute(this.device, vdbFrameEmissionDirectionSpec(source, { maxVolumes: this.#maxVolumes, hook })));
       }
@@ -618,7 +623,8 @@ class FrameRenderer implements VDBFrameRenderer {
     const jitter = s.jitter ? ((frame.frameId % 1024) * 0.618034) % 1.0 : -1.0;
     const fade = Number.isFinite(s.fadeRadius) && s.fadeRadius > 0 ? s.fadeRadius : 0;
     fw.set(U, 0, "jitterFade", [jitter, fade, Math.min(1, Math.max(0.01, s.temporalBlend)), useHistory ? 1 : 0]);
-    fw.set(U, 0, "flags", [Math.max(1, Math.round(s.subSteps)), s.temporal ? 1 : 0, (cam.reversedDepth ? 1 : 0) | (cam.orthographic ? 2 : 0), 0]);
+    // w: the frame seed of the stochastic density filter (issue #2 step 2; read only by those kernels)
+    fw.set(U, 0, "flags", [Math.max(1, Math.round(s.subSteps)), s.temporal ? 1 : 0, (cam.reversedDepth ? 1 : 0) | (cam.orthographic ? 2 : 0), frame.frameId >>> 0]);
     fw.set(U, 0, "camera", [cam.near, cam.far, 0, 0]);
     // K6.3: octaves (count 0: off) and 'two-sided' for both lightings ('frame' rewrites lighting.xzw in #frameGrid)
     fw.set(U, 0, "octaves", vdbFrameScatteringOctaves(s));
@@ -728,7 +734,7 @@ class FrameRenderer implements VDBFrameRenderer {
     if (emission) this.#recordEmission(pass, group0, groups, emission, lut);
     if (tex && area) {
       gatherGroups.forEach((g) => {
-        const built = computePipeline(this.device, vdbFrameGatherSpec(g.source, { multi, maxVolumes: this.#maxVolumes, lighting: s.lighting, hook: g.hook, spectral }));
+        const built = computePipeline(this.device, vdbFrameGatherSpec(g.source, { multi, maxVolumes: this.#maxVolumes, lighting: s.lighting, hook: g.hook, spectral, stochastic: this.#stochastic() }));
         pass.setPipeline(built.pipeline);
         pass.setBindGroup(0, group0);
         pass.setBindGroup(1, this.#gatherBind(built.layouts[1]!, tex, multi, frameLighting, g.source.channels.emission ? lut : null), [groups.indexOf(g) * VDB_FRAME_GROUP_STRIDE]);

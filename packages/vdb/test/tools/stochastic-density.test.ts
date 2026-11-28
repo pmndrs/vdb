@@ -6,6 +6,7 @@ import {
   vdbReferenceRenderCpu,
   vdbReferenceSparseMediumCpu,
   vdbReferenceStatistics,
+  vdbBoxPyramid,
   vdbSparseDensityCpu,
   vdbSparseDensityStochasticCpu,
   type VDBReferenceMediumCpu,
@@ -48,7 +49,7 @@ function samplePos(uvw: readonly number[]): number[] {
 }
 
 /** E[stochastic] by enumerating the 8 voxels: xi picks each corner, weighted by its probability. */
-function expectation(uvw: readonly number[], swap = false): number {
+function expectation(uvw: readonly number[], swap = false, v: VDBSparseVolumeCpu = vol, lod = 0): number {
   const p = samplePos(uvw);
   const frac = p.map((v) => v - Math.floor(v));
   let sum = 0;
@@ -60,7 +61,7 @@ function expectation(uvw: readonly number[], swap = false): number {
       w *= bit ? pu : 1 - pu;
       return bit ? frac[a]! / 2 : (1 + frac[a]!) / 2; // xi < frac picks the upper voxel
     });
-    if (w > 0) sum += w * vdbSparseDensityStochasticCpu(vol, uvw, 0, xi).value;
+    if (w > 0) sum += w * vdbSparseDensityStochasticCpu(v, uvw, lod, xi).value;
   }
   return sum;
 }
@@ -89,8 +90,39 @@ describe("issue #2: stochastic trilinear density (CPU twin of vdbSrcDensityStoch
     expect(worst).toBeGreaterThan(1e-2);
   });
 
-  it("lod > 0 falls back to the deterministic sample", () => {
-    expect(vdbSparseDensityStochasticCpu(vol, [0.3, 0.4, 0.5], 1, [0.5, 0.5, 0.5]).value).toBe(vdbSparseDensityCpu(vol, [0.3, 0.4, 0.5], 1).value);
+  // K6.S2: the froxel renderer reads at lod > 0. The pick stands in for the level-0 trilinear wherever the deterministic
+  // sample reads level 0, so the expectation still equals it; elsewhere the read ignores xi.
+  const pyramidVol: VDBSparseVolumeCpu = { lod: "coarse-pyramid", density: vol.density, pyramid: vdbBoxPyramid(image, { pyramidMax: 8 }) };
+  const nodeVol: VDBSparseVolumeCpu = { lod: "node-average", density: vol.density };
+  const worstOver = (v: VDBSparseVolumeCpu, lod: number) => {
+    const rand = lcg(11);
+    let worst = 0;
+    for (let i = 0; i < 200; i++) {
+      const uvw = [rand(), rand(), rand()];
+      worst = Math.max(worst, Math.abs(expectation(uvw, false, v, lod) - vdbSparseDensityCpu(v, uvw, lod).value));
+    }
+    return worst;
+  };
+
+  it("lod 'none' picks at every lod (its deterministic sample ignores lod)", () => {
+    expect(worstOver(vol, 2.5)).toBeLessThan(1e-6);
+    expect(vdbSparseDensityStochasticCpu(vol, [0.31, 0.42, 0.53], 2.5, [0.99, 0.99, 0.99]).value).not.toBe(vdbSparseDensityCpu(vol, [0.31, 0.42, 0.53], 2.5).value);
+  });
+
+  it("'coarse-pyramid': below the base level the pick blends with the base as the deterministic sample (same mean); above it, no pick", () => {
+    const L0 = pyramidVol.pyramid!.level;
+    expect(L0).toBeGreaterThan(0.5);
+    for (const lod of [0, 0.3 * L0, 0.8 * L0]) expect(worstOver(pyramidVol, lod), `lod ${lod}`).toBeLessThan(1e-6);
+    const at = [0.31, 0.42, 0.53];
+    // the pick moves the value below L0 (a blend of the picked voxel) and not at or above it
+    expect(vdbSparseDensityStochasticCpu(pyramidVol, at, 0.5 * L0, [0.99, 0.99, 0.99]).value).not.toBe(vdbSparseDensityCpu(pyramidVol, at, 0.5 * L0).value);
+    for (const lod of [L0, L0 + 0.7]) expect(vdbSparseDensityStochasticCpu(pyramidVol, at, lod, [0.99, 0.01, 0.5]).value).toBe(vdbSparseDensityCpu(pyramidVol, at, lod).value);
+  });
+
+  it("'node-average': lod 0 picks, lod > 0 is the deterministic node blend", () => {
+    expect(worstOver(nodeVol, 0)).toBeLessThan(1e-6);
+    const at = [0.31, 0.42, 0.53];
+    expect(vdbSparseDensityStochasticCpu(nodeVol, at, 1, [0.99, 0.01, 0.5]).value).toBe(vdbSparseDensityCpu(nodeVol, at, 1).value);
   });
 });
 

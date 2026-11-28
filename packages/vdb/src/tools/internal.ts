@@ -126,6 +126,7 @@ export {
   vdbFrameDistanceFade,
   vdbFrameBoxSteps,
   vdbFrameNoise,
+  vdbFrameRand3,
   vdbFrameHenyeyGreenstein,
   vdbFramePhaseWeight,
   vdbFrameShadowAbsorption,

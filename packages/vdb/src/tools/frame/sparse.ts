@@ -415,17 +415,26 @@ export function vdbSparseDensityCpu(vol: VDBSparseVolumeCpu, uvw: readonly numbe
  * Issue #2: twin of `vdbSrcDensityStochastic(v, uvw, lod, xi)`: at lod 0, the one voxel of the trilinear cell picked
  * by `xi` (per axis the upper voxel when `xi[a] < frac`, so with probability equal to its trilinear weight; the tree
  * value everywhere, as {@link vdbSparseDensityCpu}'s taps), normalised as {@link vdbSparseDensityCpu}. Its mean over
- * uniform `xi` is the trilinear value (exactly, when `clamp01` is off or the voxels are in [0, 1]). `lod` > 0:
- * {@link vdbSparseDensityCpu}.
+ * uniform `xi` is the trilinear value (exactly, when `clamp01` is off or the voxels are in [0, 1]). K6.S2: the pick
+ * replaces the level-0 trilinear wherever {@link vdbSparseDensityCpu} reads level 0 ('none': every lod; 'coarse-pyramid':
+ * below the base level, blended with the base; 'node-average': lod 0); elsewhere it is {@link vdbSparseDensityCpu}.
  */
 export function vdbSparseDensityStochasticCpu(vol: VDBSparseVolumeCpu, uvw: readonly number[], lod: number, xi: readonly number[]): VDBSparseSampleCpu {
-  if (lod > 0) return vdbSparseDensityCpu(vol, uvw, lod);
+  // K6.S2: where vdbSrcDensity reads level 0 ('none': every lod; 'coarse-pyramid': below L0, blended with the base;
+  // 'node-average': lod 0 only)
+  const l = vol.lod === "none" ? 0 : Math.min(Math.max(lod, 0), vdbSparseLodLevelsCpu(vol));
+  const L0 = vol.lod === "coarse-pyramid" ? vol.pyramid?.level : undefined;
+  if (vol.lod === "node-average" ? lod > 0 : vol.lod === "coarse-pyramid" && (L0 === undefined || l >= L0)) return vdbSparseDensityCpu(vol, uvw, lod);
   const { image, box } = vol.density;
   const p = samplePos(box, uvw);
   const b = p.map(Math.floor) as Vec3;
   const ijk = [0, 1, 2].map((a) => b[a]! + (f(xi[a]!) < p[a]! - b[a]! ? 1 : 0)) as Vec3;
-  const v = vdbReadValueF32Cpu(image, ijk);
-  return { value: vol.clamp01 ? Math.min(Math.max(v, 0), 1) : v, scale: Math.abs(v), filtered: false };
+  const fine = vdbReadValueF32Cpu(image, ijk);
+  const norm = (v: number) => (vol.clamp01 ? Math.min(Math.max(v, 0), 1) : v);
+  if (vol.lod !== "coarse-pyramid" || l <= 0) return { value: norm(fine), scale: Math.abs(fine), filtered: false };
+  const base = pyramidSample(vol.pyramid!, uvw, 0);
+  const t = l / L0!;
+  return { value: norm(fine * (1 - t) + base.value * t), scale: Math.max(Math.abs(fine), base.scale), filtered: true };
 }
 
 /** Twin of `vdbSrcMask(v, uvw, lod)` (level 0; 1 without a mask). */

@@ -61,6 +61,26 @@
       "min": 14433,
       "gz": 3835
     },
+    "vdb frame gather (volume lighting, stochastic density; dense density+mask+albedo+emission+mips)": {
+      "raw": 45954,
+      "min": 32222,
+      "gz": 8388
+    },
+    "vdb frame gather (volume lighting, spectral, stochastic density; dense density+mask+albedo+emission+mips)": {
+      "raw": 51712,
+      "min": 37432,
+      "gz": 9206
+    },
+    "vdb frame gather (frame lighting, stochastic density; dense density+mask+albedo+emission+mips)": {
+      "raw": 46062,
+      "min": 31998,
+      "gz": 8344
+    },
+    "vdb frame gather (frame lighting, spectral, stochastic density; dense density+mask+albedo+emission+mips)": {
+      "raw": 51797,
+      "min": 36557,
+      "gz": 9020
+    },
     "vdb frame emission direction; dense density+mask+albedo+emission+mips": {
       "raw": 18482,
       "min": 14230,
@@ -140,6 +160,26 @@
       "raw": 14050,
       "min": 10004,
       "gz": 3275
+    },
+    "vdb frame gather (volume lighting, stochastic density; dense density)": {
+      "raw": 40107,
+      "min": 27322,
+      "gz": 7692
+    },
+    "vdb frame gather (volume lighting, spectral, stochastic density; dense density)": {
+      "raw": 45865,
+      "min": 32532,
+      "gz": 8507
+    },
+    "vdb frame gather (frame lighting, stochastic density; dense density)": {
+      "raw": 40215,
+      "min": 27098,
+      "gz": 7660
+    },
+    "vdb frame gather (frame lighting, spectral, stochastic density; dense density)": {
+      "raw": 45950,
+      "min": 31657,
+      "gz": 8338
     },
     "vdb frame transmittance": {
       "raw": 20332,

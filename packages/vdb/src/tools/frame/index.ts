@@ -116,6 +116,34 @@ export function vdbFrameNoise(jitter: number, pixel: Vec2): number {
   return jitter < 0 ? 0.5 : fract(noise + jitter);
 }
 
+/** pcg3d (Jarzynski & Olano 2020) on u32 lanes, as the WGSL `vdbFramePcg3d`. */
+function pcg3d(x: number, y: number, z: number): [number, number, number] {
+  x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+  y = (Math.imul(y, 1664525) + 1013904223) >>> 0;
+  z = (Math.imul(z, 1664525) + 1013904223) >>> 0;
+  x = (x + Math.imul(y, z)) >>> 0;
+  y = (y + Math.imul(z, x)) >>> 0;
+  z = (z + Math.imul(x, y)) >>> 0;
+  x = (x ^ (x >>> 16)) >>> 0;
+  y = (y ^ (y >>> 16)) >>> 0;
+  z = (z ^ (z >>> 16)) >>> 0;
+  x = (x + Math.imul(y, z)) >>> 0;
+  y = (y + Math.imul(z, x)) >>> 0;
+  z = (z + Math.imul(x, y)) >>> 0;
+  return [x, y, z];
+}
+
+/**
+ * Issue #2 step 2: twin of the WGSL `vdbFrameRand3(pixel, key)`: the stochastic density filter's three uniforms in
+ * [0, 1) for one lookup, from the froxel's atlas pixel (truncated to integers), a per-lookup key ((volume << 16) | step)
+ * and the frame seed (`flags.w`: the frame id). 24-bit values, exact in f32 and f64.
+ */
+export function vdbFrameRand3(pixel: Vec2, key: number, seed: number): Vec3 {
+  const s = pcg3d(seed >>> 0, 0x9e3779b9, 0x7f4a7c15)[0];
+  const h = pcg3d(Math.trunc(pixel[0]) >>> 0, Math.trunc(pixel[1]) >>> 0, (key ^ s) >>> 0);
+  return [(h[0] >>> 8) / 16777216, (h[1] >>> 8) / 16777216, (h[2] >>> 8) / 16777216];
+}
+
 /** frameHenyeyGreenstein: HG phase divided by the isotropic phase 1/(4π); g = 0 gives 1. */
 export function vdbFrameHenyeyGreenstein(cosTheta: number, g: number): number {
   const g2 = g * g;

@@ -724,3 +724,9 @@ From v1; details in docs/archive/handoffs/.
 - K6.Na: reference caches (`reference-*.json`) copied from older scratchpad runs did not match this tree's reference queries,
   so `--reuse` re-rendered all 32 (16 groups). Budget for a fresh set unless the run that made the
   cache is from the same tree; the second run of a pair (e.g. an A/B with `--query`) reuses them.
+- Metal loses the WebGPU device ("[Device] is lost" at the next `mapAsync`) when another job loads the GPU (another
+  session's Playwright workers; load 39) or a frame runs too long: WDAS sparse at `lod=none` (960 × 540) or 1080p took
+  > 9 min per image with trilinear too. Before blaming a change, render the same query with the old setting and check
+  `ps` for other headless Chrome; measure WDAS at `lod=pyramid`, 960 × 540 (`stochastic-froxel-ab.mjs --size=mid`).
+- A fresh frozen copy's first page load re-optimises Vite's dependencies and reloads mid-run (a device loss in K6.S2):
+  warm it with one cheap query before a measured run.

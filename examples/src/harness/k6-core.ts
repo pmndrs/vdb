@@ -101,6 +101,7 @@ import {
   vdbPyramidToHalf,
   vdbSparseAlbedoCpu,
   vdbSparseDensityCpu,
+  vdbSparseDensityStochasticCpu,
   vdbSparseEmissionCpu,
   vdbSparseMaskCpu,
   vdbFrameDensityFroxel,
@@ -306,6 +307,18 @@ const AO_SETTINGS = { ambientOcclusion: AO_PAIRS > 0, ambientOcclusionPairs: Mat
 const AO_JITTER = Number(params.get("aoJitter") ?? 0);
 /** The renderer's jitter of frame `AO_JITTER` (its f32 uniform value), or −1 (off). */
 const AO_JITTER_VALUE = AO_JITTER > 0 ? ((AO_JITTER % 1024) * 0.618034) % 1.0 : -1;
+/**
+ * Issue #2 step 2 `&density=stochastic` (gather and frame probes, grey and spectral): the slice march reads one voxel per
+ * sub-step (the internal `densityFilter: 'stochastic'`); the first update runs at frame id `&densitySeed=` (default 5: the
+ * filter's seed is the frame id) and the twins draw the same uniforms (`vdbFrameRand3`). WGSL mutations:
+ * `wgsl-stochastic-pick` (the upper voxel when xi >= frac), `wgsl-stochastic-key` (one key per volume: every sub-step reads
+ * the same uniforms), `wgsl-stochastic-seed` (the seed off by one).
+ */
+const DENSITY_STOCHASTIC = params.get("density") === "stochastic";
+const DENSITY_SEED = Number(params.get("densitySeed") ?? 5);
+const DENSITY_SETTINGS = DENSITY_STOCHASTIC ? { densityFilter: "stochastic" as const } : {};
+/** The probes' first frame id: the AO jitter's (`&aoJitter=`), else the stochastic filter's seed, else 0. */
+const FIRST_FRAME = AO_JITTER > 0 ? AO_JITTER : DENSITY_STOCHASTIC ? DENSITY_SEED : 0;
 /** The pairs' upper directions the probes' twins use (the probe lights' sky is the hemisphere light's +y). */
 const AO_DIRECTIONS = AO_PAIRS > 0 ? vdbFrameAmbientDirections([0, 1, 0], AO_PAIRS, AO_JITTER > 0 && MUTATE !== "ao-ring" ? AO_JITTER_VALUE : 0) : [];
 const root = document.getElementById("demo-root")!;
@@ -665,6 +678,7 @@ function sparseSampler(cpu: VDBSparseVolumeCpu, slot: VDBVolumeSlot, source: VDB
     levels: slot.lodLevels,
     hasEmission: source.channels.emission,
     density: (uvw, lod) => vdbSparseDensityCpu(cpu, uvw, lod).value,
+    densityStochastic: (uvw, lod, xi) => vdbSparseDensityStochasticCpu(cpu, uvw, lod, xi).value,
     mask: (uvw) => vdbSparseMaskCpu(cpu, uvw).value,
     albedo: (uvw) => vdbSparseAlbedoCpu(cpu, uvw).value,
     emission: (uvw) => vdbSparseEmissionCpu(cpu, uvw).value,
@@ -749,6 +763,10 @@ const WGSL_PATCHES: Record<string, [string, string]> = {
   "wgsl-composite-depth": ["textureLoad(vdbFrameSceneDepth, pixel, 0)", "textureLoad(vdbFrameSceneDepth, pixel + vec2i(1, 0), 0)"],
   // K6.Na, the packed MLP evaluator (?mlpRuntime=packed): each input chunk's lanes turned before its mat4x4
   "wgsl-mlp-packed": ["vdbFrameMlpWeights[at + 3u]) * a[k];", "vdbFrameMlpWeights[at + 3u]) * a[k].yzwx;"],
+  // issue #2 step 2 (`&density=stochastic`): the swapped voxel pick; one key per volume; the seed off by one
+  "wgsl-stochastic-pick": ["select(vec3i(0), vec3i(1), xi < p - b);", "select(vec3i(0), vec3i(1), xi >= p - b);"],
+  "wgsl-stochastic-key": ["vdbFrameRand3(f.fragCoord, (vi << 16u) | i)", "vdbFrameRand3(f.fragCoord, vi << 16u)"],
+  "wgsl-stochastic-seed": ["vec3u(vdbFrame.flags.w, 0x9e3779b9u, 0x7f4a7c15u)", "vec3u(vdbFrame.flags.w + 1u, 0x9e3779b9u, 0x7f4a7c15u)"],
 };
 
 /** Installs the `?mutate=wgsl-*` patch; the returned check throws when it matched no module. */
@@ -887,6 +905,7 @@ async function probeGather(device: GPUDevice): Promise<void> {
     jitter: AO_JITTER > 0,
     ...MS_SETTINGS,
     ...AO_SETTINGS,
+    ...DENSITY_SETTINGS,
     phase: PHASE_NAME,
     fadeRadius: 9,
     srgbBlending: false,
@@ -930,7 +949,7 @@ async function probeGather(device: GPUDevice): Promise<void> {
   const frame = (frameId: number) => ({ frameId, camera: { view, projection, near: 0.1, far: 100, id: 1 }, viewport: { drawingBuffer: [GW, GH] as [number, number], canvas: [GW, GH] as [number, number] }, lights, environment, occluders });
   const counter = countBuilds(device);
   let enc = device.createCommandEncoder();
-  const u = renderer.update(enc, frame(AO_JITTER));
+  const u = renderer.update(enc, frame(FIRST_FRAME));
   device.queue.submit([enc.finish()]);
   const first = counter.count;
   if (params.get("swap") === "1") {
@@ -960,7 +979,8 @@ async function probeGather(device: GPUDevice): Promise<void> {
   const near = Math.max(Math.min(...clipped.map((v) => v.c.viewNear)), 0.1);
   const far = Math.min(Math.max(...clipped.map((v) => v.c.viewFar)), 100);
   const range: [number, number] = [near, Math.max(far, near * 1.0001)];
-  const records: TwinVolume[] = clipped.map(({ h, sampler, p, c }) => ({
+  const records: TwinVolume[] = clipped.map(({ h, sampler, p, c }, index) => ({
+    index,
     ...twinRecord(h, sampler, c, vdbFrameFroxelRect(c.localToView, projection, GW, GH)!, vdbFrameVolumeSlices(c.viewNear, c.viewFar, range, GD), p.phaseG ?? 0.8, ms),
     // K6.4: the renderer's spectrum packing (his getFrameExtinctionSpectrum)
     extinctionSpectrum: vdbFrameExtinctionSpectrum([...p.extinctionScale], p.angstromExponent),
@@ -986,6 +1006,7 @@ async function probeGather(device: GPUDevice): Promise<void> {
     octaves: MS_OCTAVES,
     twoSided: MS_MODE === "two-sided",
     ambientOcclusion: AO_PAIRS > 0 ? { directions: AO_DIRECTIONS, steps: AO_STEPS } : null,
+    stochastic: DENSITY_STOCHASTIC ? { seed: FIRST_FRAME } : null,
   };
   const gatherCount = { n: 0 };
   if (occ && MUTATE !== "occluder") twinFrame.occluder = occluderTwin(occ, gatherCount);
@@ -1088,6 +1109,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
     jitter: false,
     ...MS_SETTINGS,
     ...AO_SETTINGS,
+    ...DENSITY_SETTINGS,
     phase: PHASE_NAME,
     phaseG: g,
     phaseBackG: backG,
@@ -1136,7 +1158,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
   const occluders = occ?.inputs ?? [];
   const frame = (frameId: number) => ({ frameId, camera: { view, projection, near: 0.1, far: 100, id: 1 }, viewport: { drawingBuffer: [GW, GH] as [number, number], canvas: [GW, GH] as [number, number] }, lights, environment, occluders });
   let enc = device.createCommandEncoder();
-  const u = renderer.update(enc, frame(0));
+  const u = renderer.update(enc, frame(FIRST_FRAME));
   device.queue.submit([enc.finish()]);
   if (!u.recorded) throw new Error("update recorded nothing");
   const grid = vdbFrameRendererGrid(renderer)!;
@@ -1187,7 +1209,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
   const records = handles.map((h, i) => {
     const cl = clips[i] ?? { localToView: vdbMat4Multiply(view, h.params.matrixWorld), viewToLocal: vdbMat4Invert(vdbMat4Multiply(view, h.params.matrixWorld)), worldToLocal: vdbMat4Invert(h.params.matrixWorld), viewNear: 0, viewFar: 0 };
     const rect = i < 2 ? vdbFrameFroxelRect(cl.localToView, projection, GW, GH)! : ([0, 0, 0, 0] as [number, number, number, number]);
-    return { ...twinRecord(h, scene.samplers[i]!, cl, rect, i < 2 ? vdbFrameVolumeSlices(cl.viewNear, cl.viewFar, range, GD) : { first: 0, count: 0 }, 0.8), emissionColor: i === 1 ? frameEmissionColorTwin() : null };
+    return { ...twinRecord(h, scene.samplers[i]!, cl, rect, i < 2 ? vdbFrameVolumeSlices(cl.viewNear, cl.viewFar, range, GD) : { first: 0, count: 0 }, 0.8), index: i, emissionColor: i === 1 ? frameEmissionColorTwin() : null };
   });
   const readLod = (r: TwinVolume, lod: number) => (r.mipmaps ? lod : 0);
 
@@ -1374,6 +1396,7 @@ async function probeFrame(device: GPUDevice): Promise<void> {
             baseColor: r.baseColor,
             scatterColor: r.scatterColor,
             extinctionAt: (local, lod) => extinctionAt(r, local, readLod(r, lod), MUTATE),
+            stochastic: DENSITY_STOCHASTIC ? { volume: r.index!, seed: FIRST_FRAME, at: (local, lod, xi) => extinctionAt(r, local, readLod(r, lod), MUTATE, xi) } : null,
             albedoAt: (local, lod) => albedoAt(r, local, readLod(r, lod)),
             emissionAt: (local, lod) => emissionAt(r, local, readLod(r, lod), r.emissionColor ?? null),
             shadows: null,
@@ -1477,6 +1500,7 @@ async function probeFrameSpectral(device: GPUDevice): Promise<void> {
     spectral: true,
     // K6.Q1a: the shadowed ambient (?ao=)
     ...AO_SETTINGS,
+    ...DENSITY_SETTINGS,
   };
   const renderer = vdbCreateFrameRenderer(device, { settings });
   const envSource = ENV_MODE ? synthEnvironment(device, "equirect", "rgba16float") : null;
@@ -1517,7 +1541,7 @@ async function probeFrameSpectral(device: GPUDevice): Promise<void> {
   const occluders = occ?.inputs ?? [];
   const frame = (frameId: number) => ({ frameId, camera: { view, projection, near: 0.1, far: 100, id: 1 }, viewport: { drawingBuffer: [GW, GH] as [number, number], canvas: [GW, GH] as [number, number] }, lights, environment, occluders });
   let enc = device.createCommandEncoder();
-  const u = renderer.update(enc, frame(0));
+  const u = renderer.update(enc, frame(FIRST_FRAME));
   device.queue.submit([enc.finish()]);
   if (!u.recorded) throw new Error("update recorded nothing");
   const grid = vdbFrameRendererGrid(renderer)!;
@@ -1556,7 +1580,7 @@ async function probeFrameSpectral(device: GPUDevice): Promise<void> {
   const records = handles.map((h, i) => {
     const cl = clips[i] ?? { localToView: vdbMat4Multiply(view, h.params.matrixWorld), viewToLocal: vdbMat4Invert(vdbMat4Multiply(view, h.params.matrixWorld)), worldToLocal: vdbMat4Invert(h.params.matrixWorld), viewNear: 0, viewFar: 0 };
     const rect = i < 2 ? vdbFrameFroxelRect(cl.localToView, projection, GW, GH)! : ([0, 0, 0, 0] as [number, number, number, number]);
-    return { ...twinRecord(h, scene.samplers[i]!, cl, rect, i < 2 ? vdbFrameVolumeSlices(cl.viewNear, cl.viewFar, range, GD) : { first: 0, count: 0 }, 0.8), extinctionSpectrum: spectrumOf(h), emissionColor: i === 1 ? frameEmissionColorTwin() : null };
+    return { ...twinRecord(h, scene.samplers[i]!, cl, rect, i < 2 ? vdbFrameVolumeSlices(cl.viewNear, cl.viewFar, range, GD) : { first: 0, count: 0 }, 0.8), index: i, extinctionSpectrum: spectrumOf(h), emissionColor: i === 1 ? frameEmissionColorTwin() : null };
   });
   const readLod = (r: TwinVolume, lod: number) => (r.mipmaps ? lod : 0);
   const at = (t: VDBFrameTexture3d, p: readonly number[]) => {
@@ -1703,6 +1727,7 @@ async function probeFrameSpectral(device: GPUDevice): Promise<void> {
             scatterColor: r.scatterColor,
             extinctionSpectrum: r.extinctionSpectrum,
             extinctionAt: (local, lod) => extinctionAt(r, local, readLod(r, lod), MUTATE),
+            stochastic: DENSITY_STOCHASTIC ? { volume: r.index!, seed: FIRST_FRAME, at: (local, lod, xi) => extinctionAt(r, local, readLod(r, lod), MUTATE, xi) } : null,
             albedoAt: (local, lod) => albedoAt(r, local, readLod(r, lod)),
             emissionAt: (local, lod) => emissionAt(r, local, readLod(r, lod), r.emissionColor ?? null),
             environmentAt: environment

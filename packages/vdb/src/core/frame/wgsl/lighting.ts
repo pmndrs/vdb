@@ -32,7 +32,7 @@
 
 import type { VDBVolumeChannels } from "../../source/types.js";
 import { frameChunksWgsl } from "./chunks.js";
-import { VDB_FRAME_SLICE_WGSL, vdbFrameSliceWgsl, vdbFrameSourceFunctionsWgsl } from "./gather.js";
+import { vdbFrameSliceWgsl, vdbFrameSourceFunctionsWgsl } from "./gather.js";
 import { vdbFrameMultiScaleWgsl } from "../../compute/multi-scale.js";
 import { vdbFrameOccluderWgsl } from "./occluders.js";
 import { VDB_FRAME_AMBIENT_MAX_PAIRS } from "../../../tools/frame/ambient.js";
@@ -774,7 +774,7 @@ ${slotTerm}      // K6.5b: a host occluder map scales the scene slot's scattered
  * scatter (radiance × α of each channel, green α) and scatterAlpha (red α, blue α, 0, green α). Multi-group partials:
  * the 12 sums as 6 words.
  */
-function vdbFrameSpectralLightingGatherWgsl(o: { multi: boolean; channels: VDBVolumeChannels; hook?: string | null }): string {
+function vdbFrameSpectralLightingGatherWgsl(o: { multi: boolean; channels: VDBVolumeChannels; hook?: string | null; stochastic?: boolean }): string {
   const b = FRAME_GATHER_BINDINGS;
   const write = `  textureStore(vdbFrameScatter, cell, out.scatter);
   textureStore(vdbFrameScatterAlpha, cell, out.alpha);`;
@@ -814,7 +814,7 @@ ${write}
   }
 ${write}`;
 
-  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "octaves", "spectral", "sh", "envSh", "grid"])}
+  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "octaves", "spectral", "sh", "envSh", "grid", ...(o.stochastic ? (["rand"] as const) : [])])}
 @group(1) @binding(${b.volumes}) var<uniform> vdbFrameVolumes: VdbFrameVolumes;
 @group(1) @binding(${b.group}) var<uniform> vdbFrameGroup: VdbFrameGroup;
 @group(1) @binding(${b.scatter}) var vdbFrameScatter: texture_storage_3d<rgba16float, write>;
@@ -822,8 +822,8 @@ ${write}`;
 ${o.multi ? `@group(1) @binding(${b.partials}) var vdbFramePartials: texture_storage_3d<r32uint, read_write>;\n` : ""}@group(1) @binding(${b.transmittance}) var vdbFrameTransmittanceStack: texture_3d<f32>;
 @group(1) @binding(${b.environmentGrid}) var vdbFrameEnvGrid: texture_3d<f32>;
 ${vdbFrameOccluderWgsl()}
-${vdbFrameSourceFunctionsWgsl(o.channels, { lutBinding: b.emissionLut, hook: o.hook ?? null })}
-${vdbFrameSliceWgsl(true)}
+${vdbFrameSourceFunctionsWgsl(o.channels, { lutBinding: b.emissionLut, hook: o.hook ?? null }, !!o.stochastic)}
+${vdbFrameSliceWgsl(true, !!o.stochastic)}
 // His spectral density targets as sums: (albedo·extinction rgb, weight), (emission·weight, visible t·weight), (extinction rgb, 0)
 struct VdbFrameSums {
   a: vec4f,
@@ -1069,7 +1069,7 @@ ${store}
 }
 
 /** The 'frame' gather kernel (after the source module, the source WGSL and `vdbFrameUniformsWgsl()`). */
-export function vdbFrameLightingGatherWgsl(o: { multi: boolean; channels: VDBVolumeChannels; hook?: string | null; spectral?: boolean }): string {
+export function vdbFrameLightingGatherWgsl(o: { multi: boolean; channels: VDBVolumeChannels; hook?: string | null; spectral?: boolean; stochastic?: boolean }): string {
   if (o.spectral) return vdbFrameSpectralLightingGatherWgsl(o);
   const b = FRAME_GATHER_BINDINGS;
   const store = o.multi
@@ -1109,15 +1109,15 @@ export function vdbFrameLightingGatherWgsl(o: { multi: boolean; channels: VDBVol
   }
   textureStore(vdbFrameScatter, cell, out);`;
 
-  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "octaves", "sh", "envSh", "grid"])}
+  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "octaves", "sh", "envSh", "grid", ...(o.stochastic ? (["rand"] as const) : [])])}
 @group(1) @binding(${b.volumes}) var<uniform> vdbFrameVolumes: VdbFrameVolumes;
 @group(1) @binding(${b.group}) var<uniform> vdbFrameGroup: VdbFrameGroup;
 @group(1) @binding(${b.scatter}) var vdbFrameScatter: texture_storage_3d<rgba16float, write>;
 ${o.multi ? `@group(1) @binding(${b.partials}) var vdbFramePartials: texture_storage_3d<r32uint, read_write>;\n` : ""}@group(1) @binding(${b.transmittance}) var vdbFrameTransmittanceStack: texture_3d<f32>;
 @group(1) @binding(${b.environmentGrid}) var vdbFrameEnvGrid: texture_3d<f32>;
 ${vdbFrameOccluderWgsl()}
-${vdbFrameSourceFunctionsWgsl(o.channels, { lutBinding: b.emissionLut, hook: o.hook ?? null })}
-${VDB_FRAME_SLICE_WGSL}
+${vdbFrameSourceFunctionsWgsl(o.channels, { lutBinding: b.emissionLut, hook: o.hook ?? null }, !!o.stochastic)}
+${vdbFrameSliceWgsl(false, !!o.stochastic)}
 // His density targets as sums: (albedo·σ, σ), (emission·σ, visible t·σ), (sky up, sky down, slot 0, 1)·σ, (slots 2–5)·σ
 struct VdbFrameSums {
   a: vec4f,
