@@ -4,7 +4,7 @@
   "files": {
     "none": {
       "bytes": 1997123,
-      "sha256": "96044e3420dcf08c8c0198f4ab2167c66518901bd20890b33f265a0f68008570",
+      "sha256": "c94131d41b941dbc9ee7bfeb01b28774eca30015f262ff916bce6f1e42cd6cca",
       "probe": {
         "nanovdb": "32.11.0",
         "meta": [
@@ -42,7 +42,7 @@
               0,
               0
             ],
-            "version": "32.9.1"
+            "version": "32.11.0"
           },
           {
             "name": "density.lod16",
@@ -78,7 +78,7 @@
               0,
               0
             ],
-            "version": "32.9.1"
+            "version": "32.11.0"
           },
           {
             "name": "density",
@@ -114,7 +114,7 @@
               0,
               0
             ],
-            "version": "32.9.1"
+            "version": "32.11.0"
           }
         ],
         "grid0": "density.lod8",
@@ -476,8 +476,8 @@
       ]
     },
     "zip": {
-      "bytes": 44984,
-      "sha256": "f1df86c2d5ca6f836bfb244b90deaf08326d933c9ab29801e295669976c41355",
+      "bytes": 44979,
+      "sha256": "ef2800324cc80b8cf9e1702fef511b49121ec704c412e34333c4c9bc9d74da96",
       "probe": {
         "nanovdb": "32.11.0",
         "meta": [
@@ -490,7 +490,7 @@
             "class": "FOG",
             "codec": "ZIP",
             "gridSize": 305696,
-            "fileSize": 985,
+            "fileSize": 983,
             "voxelCount": 236,
             "indexBBox": {
               "min": [
@@ -515,7 +515,7 @@
               0,
               0
             ],
-            "version": "32.9.1"
+            "version": "32.11.0"
           },
           {
             "name": "density.lod16",
@@ -526,7 +526,7 @@
             "class": "FOG",
             "codec": "ZIP",
             "gridSize": 309952,
-            "fileSize": 3526,
+            "fileSize": 3524,
             "voxelCount": 1956,
             "indexBBox": {
               "min": [
@@ -551,7 +551,7 @@
               0,
               0
             ],
-            "version": "32.9.1"
+            "version": "32.11.0"
           },
           {
             "name": "density",
@@ -562,7 +562,7 @@
             "class": "FOG",
             "codec": "ZIP",
             "gridSize": 1380896,
-            "fileSize": 39894,
+            "fileSize": 39893,
             "voxelCount": 16504,
             "indexBBox": {
               "min": [
@@ -587,7 +587,7 @@
               0,
               0
             ],
-            "version": "32.9.1"
+            "version": "32.11.0"
           }
         ],
         "grid0": "density.lod8",

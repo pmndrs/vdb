@@ -29,10 +29,10 @@ export const MAGIC_GRID = 0x314244566f6e614en; // "NanoVDB1"
 /** File-header magic `NanoVDB2` (u64) for the segment `.nvdb` container. */
 export const MAGIC_FILE = 0x324244566f6e614en; // "NanoVDB2"
 
-/** Written into every grid and file header: 32.9.1, not the reference header's 32.11.0 (K7.5, DIVERGES V163). */
+/** Written into every grid and file header: 32.11.0, as native NanoVDB v14 and the reference header (K7.5a, D37). */
 export const MAJOR_VERSION = 32;
-export const MINOR_VERSION = 9;
-export const PATCH_VERSION = 1;
+export const MINOR_VERSION = 11;
+export const PATCH_VERSION = 0;
 /** Packed `Version`: major<<21 | minor<<10 | patch. */
 export const VERSION_PACKED = (MAJOR_VERSION << 21) | (MINOR_VERSION << 10) | PATCH_VERSION;
 

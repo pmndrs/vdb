@@ -280,18 +280,19 @@ describe("collapse: resample, quantize, coarse-first", () => {
 // Digests of the re-encoded native fixtures. Taken on v2 at 17fb52f (before K4.6); retaken at K7.C1, which
 // moved two things on purpose: root entries and upper nodes in native's signed origin order (K4.12's unsigned
 // key order reverted; changes grids with negative coordinates) and GridStats' Welford ave/stddev (K7.H1;
-// changes a few f32 ulps). `native-order.test.ts` checks these images against native NanoVDB byte for byte.
+// changes a few f32 ulps); retaken at K7.5a for the 32.11.0 version stamp (D37). `native-order.test.ts` checks these
+// images against native NanoVDB byte for byte.
 const PRE_K46 = {
-  "sphere_fog_float->fp8": "91279d380029846d916c7eaeaa9565c32f651c1f61d35f75d861716896f01ce4",
-  "sphere_fog_float->fpn": "712e1fe032596bdc8235d36c5cd578820a03d8f51aeb7338f7f89cf9f2a88d27",
-  "box_fog_float->fp8": "15706b92a8b78d623b0c3ba7abefd4c16ffad29bfc756f0a0302033d02012f72",
-  "box_fog_float->fpn": "44f1adbdddc9b0b9228ca7cec01b759ea768829bc054369499edb9f2c0d43085",
-  "torus_fog_float->fp8": "45381344279a357ce9455e79c9a6fe039ea55bedc21bbb63f66adb25c472f873",
-  "torus_fog_float->fpn": "aa2ab7a89db207d777f6ae0526399bb05f1a98eeb253a2885f4c1abdcfcba114",
-  "smoke.vdb->float": "4e8bb02048a8f13cf64090c9b60e366bba963760620c68300c8c13f2b64cc3ca",
-  "sphere.vdb->float": "b9cd500a98b35f44a58931dacf5ec04f49fc47cf53af7da8f31a6845cb9c7a0d",
-  "utahteapot.vdb->float": "c5c99f1055646d3efc178c5835de45236bec7cc2322d622bc19a7750a602eee5",
-  "cube.vdb->float": "7997a5423fb06c119fa2d78713ad2505854957e73da548ce7633ae88d7e59838",
+  "sphere_fog_float->fp8": "523a4475188cd6d4b3136dba44565bc448d7c1d37a1e4e30258df26bae43edae",
+  "sphere_fog_float->fpn": "8fcd3d30df89f38e6fcec61010d14ce67aed6f718b9549f64e1e3f68470c3d16",
+  "box_fog_float->fp8": "daf8c1a4de8218b92674c6ca3b06b02103331409616933749086489e6c20e150",
+  "box_fog_float->fpn": "5cb48b1b2daacc1c925300a7ca505679b53318873b8dca9f3e53387791575212",
+  "torus_fog_float->fp8": "4af032dd3c8d74fc6311ebc6edccee8599e02fae52b5e0279a3fc2815b239d5a",
+  "torus_fog_float->fpn": "b8eec818ef257712f5510695981ac0c43cdfedebc5555141a4f64454a793325d",
+  "smoke.vdb->float": "5b9cd872ce476c43dfb8aa1c8c8fc5ff9d7723dc50c7ddea918270960239c2d4",
+  "sphere.vdb->float": "899c6f31ed48fa8f10c815cfe8bf9ca8a500d5354bc2e0f0ce897b5898679555",
+  "utahteapot.vdb->float": "991a85dd4a81d6201b461d1489ecc7a47fc34048658772f6101c9d1a2d292862",
+  "cube.vdb->float": "aa9787f3ce25407fd2b7da4d2659d9e534bcd1219e8442143c15467342bd0f6f",
 } as const;
 
 const primitive = (n: string): string => path.join(FIXTURES, "primitives", `${n}.nvdb`);

@@ -639,10 +639,11 @@ From v1; details in docs/archive/handoffs/.
 - Issue #2: the K6.R twin's statistical check cannot see a small change of the medium on smooth grids (the sparse twin's
   blobs hid a swapped stochastic pick); the twins agree path for path, so gate a voxel-exact change on `equalShare`
   (0.997 unmutated vs 0.80 mutated).
-- K7.5: the reference `PNanoVDB.h` (32.11.0, v14.0.0) and the version our writers stamp (`tools/nanovdb/bytes.ts`, 32.9.1)
-  are separate on purpose (V163, K7.5a). Re-pinning the header regenerates `stride-tables.json` and its two generated
-  mirrors (`node scripts/extract-stride-tables.mjs`, `node scripts/gen-wgsl-constants.mjs`); moving the stamp moves every
-  written byte, and the K4.6 byte-identity hashes in `test/tools/collapse.test.ts` with it.
+- K7.5 / K7.5a (D37): the version our writers stamp (`tools/nanovdb/bytes.ts`) equals the reference `PNanoVDB.h`'s
+  (32.11.0, v14.0.0; `build-from-dense.test.ts` checks it). Re-pinning the header regenerates `stride-tables.json` and its
+  two generated mirrors (`node scripts/extract-stride-tables.mjs`, `node scripts/gen-wgsl-constants.mjs`) and moves the
+  stamp, so every written byte moves: retake the K4.6 digests in `test/tools/collapse.test.ts` and rerun
+  `pnpm parity:native --only=coarse-first --update` in the same commit.
 - The worktree's git-ignored `fixtures/` can be filled with symlinks to the main checkout's directories (`ln -s`), not only
   `cp -n`: git ignores them and the fixture tests read through them. Without them ~240 tests skip silently.
 - `.github/upstream-pins.json` (K7.6) records what we REVIEWED, not what upstream has: bump a pin only after the review its
