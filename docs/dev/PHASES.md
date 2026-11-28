@@ -168,11 +168,14 @@ needs the owner's asset release (`examples-assets-v1`, RELEASING §4). K5.3 clou
 
 ## K6 — Renderer in the core (pure WebGPU) 🟨
 
-**Status 2026-11-26:** K6.0–K6.8 done (K6.1–K6.7, K6.9, K6.R/R1, K6.Q1, K6.3a, K7.1, K7.3): the core renders 'volume' and
+**Status 2026-11-27:** K6.0–K6.8 done (K6.1–K6.7, K6.9, K6.R/R1, K6.Q1, K6.3a, K7.1, K7.3): the core renders 'volume' and
 'frame' lighting, environment, shadows both ways, emission, every multiple-scattering mode, spectral media and shadowed
 ambient; `./three` is a thin adapter (TSL passes deleted) and the 0.2.0 API is in. Open: the owner's defaults
 (multiple scattering, `ambientOcclusion`), K6.10 (gate review), follow-ups K6.4a, K6.Q1a, K6.8a, K6.R2.
-Timing A/Bs are deferred to K6.T (no quiet machine); nothing in K6 gates on speed.
+Timing A/Bs are deferred to K6.T (no quiet machine); nothing in K6 gates on speed. Issue #2 (stochastic density
+lookups): step 1 in the reference renderer done (K6.S, ≈ 2× to equal error); step 2, the froxel slice march, built behind an A/B setting
+(K6.S2; its Jensen bias measures +0.01 % (WDAS) to +0.08 % (smoke) of the image mean and temporal accumulation takes
+its noise to 0.25 % rel. RMS; the default changes only after the GPU-time A/B on a quiet machine).
 
 The froxel renderer, level-set tracer and points live in `./three` as TSL today. K6 moves them into the engine-free
 core as WebGPU compute on 3D textures: the core takes the host's `GPUDevice`, records into the host's encoder and

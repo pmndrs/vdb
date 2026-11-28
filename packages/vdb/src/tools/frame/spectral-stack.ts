@@ -17,7 +17,7 @@
 
 import { vdbFrameDistanceFade, vdbFrameNoise, vdbFrameOctavesOff, vdbFrameTwoSidedDiffusion, vdbSrgbEotf, vdbSrgbOetf, type Vec2, type Vec3, type Vec4 } from "./index.js";
 import { vdbFrameIntegratePrefix, vdbFrameMaxOpticalDepth } from "./froxel.js";
-import { vdbFrameFindCascade, vdbFrameGridUvw, vdbFrameInsideGrid, vdbFrameDensityFroxelSteps, vdbFrameIsotropicDiffusion, type VDBFrameDensityInputs, type VDBFrameGridLayout, type VDBFrameShadowLight } from "./grid.js";
+import { vdbFrameFindCascade, vdbFrameGridUvw, vdbFrameInsideGrid, vdbFrameDensityFroxelSteps, vdbFrameSliceExtinction, vdbFrameIsotropicDiffusion, type VDBFrameDensityInputs, type VDBFrameGridLayout, type VDBFrameShadowLight } from "./grid.js";
 import { vdbFrameGridFragCoord, vdbFrameGridVoxelWorld } from "./stack.js";
 import {
   vdbFrameMeanComponent,
@@ -277,7 +277,7 @@ export interface VDBFrameSpectralSums {
 }
 
 /** The inputs of {@link vdbFrameSpectralDensitySums}: the grey density inputs (hooks), the extinction spectrum, the environment term. */
-export interface VDBFrameSpectralDensityInputs3d extends Pick<VDBFrameDensityInputs, "froxelGrid" | "columns" | "range" | "projectionInverse" | "cameraWorld" | "viewToLocal" | "maxTexels" | "mipLevels" | "worldScale" | "subSteps" | "jitter" | "fadeRadius" | "opacity" | "baseColor" | "scatterColor" | "extinctionAt" | "albedoAt" | "emissionAt"> {
+export interface VDBFrameSpectralDensityInputs3d extends Pick<VDBFrameDensityInputs, "froxelGrid" | "columns" | "range" | "projectionInverse" | "cameraWorld" | "viewToLocal" | "maxTexels" | "mipLevels" | "worldScale" | "subSteps" | "jitter" | "fadeRadius" | "opacity" | "baseColor" | "scatterColor" | "extinctionAt" | "stochastic" | "albedoAt" | "emissionAt"> {
   extinctionSpectrum: Vec3;
   /** The environment irradiance added as albedo · E / π at the visible world and local position, given the albedo. */
   environmentAt?: ((world: Vec3, local: Vec3, albedo: Vec3) => Vec3) | null;
@@ -300,7 +300,7 @@ export function vdbFrameSpectralDensitySums(fragCoord: Vec2, p: VDBFrameSpectral
   let visibleTSum = 0;
   for (let i = 0; i < steps; i++) {
     const t = t0 + segment * ((i + jitter) / steps);
-    const e = p.extinctionAt(lerp3(localNear, localFar, t), lod) * p.opacity * vdbFrameDistanceFade(p.fadeRadius, lerp3(viewNear, viewFar, t));
+    const e = vdbFrameSliceExtinction(p, fragCoord, i, lerp3(localNear, localFar, t), lod) * p.opacity * vdbFrameDistanceFade(p.fadeRadius, lerp3(viewNear, viewFar, t));
     const stepT = map3((c) => Math.exp(-spectrum[c]! * e * subStepLength));
     const w = vdbFrameMeanComponent(map3((c) => transmittance[c]! * (1 - stepT[c]!)));
     visibleWeight += w;

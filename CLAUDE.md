@@ -607,3 +607,9 @@ From v1; details in docs/archive/handoffs/.
 - Issue #2: the K6.R twin's statistical check cannot see a small change of the medium on smooth grids (the sparse twin's
   blobs hid a swapped stochastic pick); the twins agree path for path, so gate a voxel-exact change on `equalShare`
   (0.997 unmutated vs 0.80 mutated).
+- Metal loses the WebGPU device ("[Device] is lost" at the next `mapAsync`) when another job loads the GPU (another
+  session's Playwright workers; load 39) or a frame runs too long: WDAS sparse at `lod=none` (960 × 540) or 1080p took
+  > 9 min per image with trilinear too. Before blaming a change, render the same query with the old setting and check
+  `ps` for other headless Chrome; measure WDAS at `lod=pyramid`, 960 × 540 (`stochastic-froxel-ab.mjs --size=mid`).
+- A fresh frozen copy's first page load re-optimises Vite's dependencies and reloads mid-run (a device loss in K6.S2):
+  warm it with one cheap query before a measured run.

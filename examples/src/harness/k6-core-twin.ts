@@ -15,6 +15,7 @@ import {
   vdbFrameIsotropicDiffusion,
   vdbFrameNoise,
   vdbFrameOctavesOff,
+  vdbFrameRand3,
   vdbFrameReproject,
   vdbFrameScanColumn,
   vdbFrameShadowMarch,
@@ -130,6 +131,8 @@ export interface TwinSampler {
   /** The source compiles the emission channel (else `vdbFrameEmission` is 0). */
   hasEmission: boolean;
   density(uvw: V3, lod: number): number;
+  /** Issue #2 step 2: `vdbSrcDensityStochastic` (sparse: one voxel at lod 0; default: `density`). */
+  densityStochastic?(uvw: V3, lod: number, xi: V3): number;
   mask(uvw: V3, lod: number): number;
   albedo(uvw: V3, lod: number): V3;
   emission(uvw: V3, lod: number): number;
@@ -180,6 +183,8 @@ export interface TwinVolume {
   extinctionSpectrum?: V3;
   /** K6.10b: the volume's emission colour (t, temperature) → rgb, a LUT row or a hook's twin (default white). */
   emissionColor?: ((t: number, temperature: number) => V3) | null;
+  /** Issue #2 step 2: the record index (`vi`; the stochastic filter's key). */
+  index?: number;
 }
 
 /** The frame values the gather kernel reads. */
@@ -208,6 +213,8 @@ export interface TwinFrame {
   ambientOcclusion?: { directions: V3[]; steps: number } | null;
   /** K6.Q1a `ambientProbe`: the probe along ± the sky as three's irradiance (default) or the hemisphere's mean radiance. */
   probeMode?: "irradiance" | "radiance";
+  /** Issue #2 step 2: the stochastic density filter in the slice march, with the frame seed (the frame id). */
+  stochastic?: { seed: number } | null;
 }
 
 const sub = (a: readonly number[], b: readonly number[]): V3 => [a[0]! - b[0]!, a[1]! - b[1]!, a[2]! - b[2]!];
@@ -255,13 +262,24 @@ function gridUv(r: TwinVolume, local: V3): V3 {
   return uvw;
 }
 
-/** sampleExtinction: extinction per world unit at a local position (the WGSL `vdbFrameExtinction`). */
-export function extinctionAt(r: TwinVolume, local: V3, lod: number, mutate: TwinMutation = "none"): number {
+/**
+ * sampleExtinction: extinction per world unit at a local position (the WGSL `vdbFrameExtinction`); with `xi` the
+ * stochastic filter's read (`vdbFrameExtinctionStochastic`, issue #2 step 2).
+ */
+export function extinctionAt(r: TwinVolume, local: V3, lod: number, mutate: TwinMutation = "none", xi: V3 | null = null): number {
   const vol = r.volume;
   const mask = vol.mask(add(local, [0.5, 0.5, 0.5]), lod);
-  const value = vol.density(gridUv(r, local), lod) * mask;
+  const uvw = gridUv(r, local);
+  const value = (xi && vol.densityStochastic ? vol.densityStochastic(uvw, lod, xi) : vol.density(uvw, lod)) * mask;
   const e = ((value > r.densityCutoff ? value : 0) * r.densityScale * r.extinction) / r.worldScale;
   return mutate === "extinction" ? e * 1.02 : e;
+}
+
+/** Issue #2 step 2: the stochastic filter's uniforms of slice sub-step `i` (the WGSL `vdbFrameRand3(f.fragCoord, (vi << 16u) | i)`), or null. */
+function sliceXi(frame: TwinFrame, r: TwinVolume, fragCoord: VDBFrameVec2, i: number): V3 | null {
+  if (!frame.stochastic) return null;
+  if (r.index === undefined) throw new Error("stochastic twin: the record has no index");
+  return vdbFrameRand3(fragCoord, ((r.index << 16) | i) >>> 0, frame.stochastic.seed);
 }
 
 /** sampleAlbedo: base colour × the albedo channel. */
@@ -325,7 +343,7 @@ export function volumeFroxelTwin(frame: TwinFrame, r: TwinVolume, cell: V3, muta
   for (let i = 0; i < steps; i++) {
     const t = seg[0] + segment * ((i + jitter) / steps);
     const fade = mutate === "fade" ? 1 : vdbFrameDistanceFade(frame.fadeRadius, mix3(f.viewNear, f.viewFar, t));
-    depths.push(extinctionAt(r, mix3(localNear, localFar, t), readLod, mutate) * r.opacity * fade * subStepLength);
+    depths.push(extinctionAt(r, mix3(localNear, localFar, t), readLod, mutate, sliceXi(frame, r, fragCoord, i)) * r.opacity * fade * subStepLength);
   }
   const slice = vdbFrameInjectSlice(depths, seg, jitter);
   if (!slice) return null;
@@ -444,7 +462,7 @@ export function volumeFroxelSpectralTwin(frame: TwinFrame, r: TwinVolume, cell: 
   const depths: number[] = [];
   for (let i = 0; i < steps; i++) {
     const t = seg[0] + segment * ((i + jitter) / steps);
-    depths.push(extinctionAt(r, mix3(localNear, localFar, t), readLod, mutate) * r.opacity * vdbFrameDistanceFade(frame.fadeRadius, mix3(f.viewNear, f.viewFar, t)) * subStepLength);
+    depths.push(extinctionAt(r, mix3(localNear, localFar, t), readLod, mutate, sliceXi(frame, r, fragCoord, i)) * r.opacity * vdbFrameDistanceFade(frame.fadeRadius, mix3(f.viewNear, f.viewFar, t)) * subStepLength);
   }
   const slice = vdbFrameSpectralInjectSlice(depths, spectrum, seg, jitter);
   if (!slice) return null;

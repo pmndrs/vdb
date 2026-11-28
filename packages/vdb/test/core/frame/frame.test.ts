@@ -48,6 +48,7 @@ import {
   vdbFroxelHeldSize,
 } from "../../../src/tools/frame/view.js";
 import { vdbFrameStackLayout } from "../../../src/tools/frame/stack.js";
+import { frameChunksWgsl } from "../../../src/core/frame/wgsl/chunks.js";
 import { wgslNameProblems } from "../wgsl-names.js";
 // @ts-expect-error: repo-level ESM helper without type declarations
 import { wgslSizes } from "../../../../../scripts/lib/wgsl-variants.mjs";
@@ -104,6 +105,8 @@ function allSpecs(): { compute: VDBComputeSpec[]; render: VDBRenderSpec[] } {
       compute.push(vdbFrameGatherSpec(s, { multi, spectral: true }));
       compute.push(vdbFrameGatherSpec(s, { multi, lighting: "frame", spectral: true }), vdbFrameGridDensitySpec(s, { multi, spectral: true }));
     }
+    // Issue #2 step 2: the stochastic density filter (both lightings, grey and spectral)
+    for (const lighting of ["volume", "frame"] as const) for (const spectral of [false, true]) compute.push(vdbFrameGatherSpec(s, { multi: false, lighting, spectral, stochastic: true }));
     // K6.5: the emission direction pass (sources with emission), with and without a user colour hook
     if (s.channels.emission) {
       compute.push(vdbFrameEmissionDirectionSpec(s, {}), vdbFrameEmissionDirectionSpec(s, { hook: TEST_HOOK }));
@@ -183,6 +186,40 @@ describe("K6.1 composed WGSL", () => {
   it("the same options give the same bytes (fixed chunk order)", () => {
     const again = allSpecs();
     expect(again.compute.map((s) => s.code)).toEqual(compute.map((s) => s.code));
+  });
+});
+
+describe("issue #2 step 2: the stochastic density filter in the gathers", () => {
+  const variants = sources().flatMap((s) =>
+    (["volume", "frame"] as const).flatMap((lighting) => [false, true].flatMap((spectral) => [false, true].map((multi) => [`${s.channels.emission ? "full" : "density"} ${lighting}${spectral ? " spectral" : ""}${multi ? " multi" : ""}`, s, { multi, lighting, spectral }] as const))),
+  );
+  const lines = (code: string) => {
+    const m = new Map<string, number>();
+    for (const l of code.split("\n")) m.set(l, (m.get(l) ?? 0) + 1);
+    return m;
+  };
+  const minus = (a: Map<string, number>, b: Map<string, number>) => [...a].flatMap(([l, n]) => Array.from({ length: Math.max(0, n - (b.get(l) ?? 0)) }, () => l));
+
+  it.each(variants)("%s: the trilinear kernel with the slice march's one density read replaced, and nothing else removed", (_, source, key) => {
+    const trilinear = vdbFrameGatherSpec(source, key).code;
+    const stochastic = vdbFrameGatherSpec(source, { ...key, stochastic: true }).code;
+    expect(trilinear).not.toMatch(/Stochastic|vdbFrameRand3/);
+    // exactly one line goes: the slice's trilinear extinction read
+    const removed = minus(lines(trilinear), lines(stochastic));
+    expect(removed).toHaveLength(1);
+    expect(removed[0]).toContain("vdbFrameExtinction(vi, mix(s.localNear, s.localFar, vec3f(t)), s.readLod)");
+    // its replacement reads one voxel with the lookup's three uniforms ((volume << 16) | step); the rest are declarations
+    const added = minus(lines(stochastic), lines(trilinear));
+    const calls = added.filter((l) => l.includes("vdbFrameExtinctionStochastic(vi, mix("));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("vdbFrameRand3(f.fragCoord, (vi << 16u) | i)");
+    expect(stochastic.match(/vdbSrcDensityStochastic\(/g)).toHaveLength(2); // the source's declaration and the one call
+    expect(stochastic.match(/\bfn vdbFrameRand3\b/g)).toHaveLength(1);
+  });
+
+  it("the seed is the frame id in flags.w; the default settings keep 'trilinear'", () => {
+    expect((vdbFrameDefaultSettings() as VDBFrameInternalSettings).densityFilter).toBe("trilinear");
+    expect(frameChunksWgsl(["rand"])).toContain("vdbFrame.flags.w");
   });
 });
 

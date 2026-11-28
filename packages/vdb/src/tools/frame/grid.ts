@@ -32,6 +32,7 @@ import {
   vdbFrameNoise,
   vdbFrameOctavesOff,
   vdbFramePhaseColor,
+  vdbFrameRand3,
   vdbFrameShadowMarchDepth,
   vdbFrameShadowStep,
   vdbFrameShadowTotal,
@@ -596,6 +597,12 @@ export interface VDBFrameDensityInputs {
   scatterColor: Vec3;
   /** The source's `sampleExtinction(local, lod)` (extinction per world unit). */
   extinctionAt: (local: Vec3, lod: number) => number;
+  /**
+   * Issue #2 step 2, the stochastic density filter: sub-step i of the slice reads `at(local, lod, xi)` with
+   * `xi = vdbFrameRand3(fragCoord, (volume << 16) | i, seed)` (the WGSL `vdbFrameExtinctionStochastic`) instead of
+   * `extinctionAt`. `volume` is the record index, `seed` the frame id. Default: none (trilinear).
+   */
+  stochastic?: { volume: number; seed: number; at: (local: Vec3, lod: number, xi: Vec3) => number } | null;
   /** The 4 transmittance atlases and their layout, or null without shadows. */
   shadows: { atlases: readonly VDBFrameAtlas[]; grid: VDBFrameGridLayout } | null;
   /** K6.2: the 4 transmittance targets at a world position (a stacked 3D texture, `vdbFrameStackShadows`); replaces `shadows`' atlases. */
@@ -644,7 +651,7 @@ export function vdbFrameDensityFroxel(fragCoord: Vec2, p: VDBFrameDensityInputs)
   let visibleTSum = 0;
   for (let i = 0; i < steps; i++) {
     const t = t0 + segment * ((i + jitter) / steps);
-    const e = p.extinctionAt(lerp3(localNear, localFar, t), lod) * p.opacity * vdbFrameDistanceFade(p.fadeRadius, lerp3(viewNear, viewFar, t));
+    const e = vdbFrameSliceExtinction(p, fragCoord, i, lerp3(localNear, localFar, t), lod) * p.opacity * vdbFrameDistanceFade(p.fadeRadius, lerp3(viewNear, viewFar, t));
     const stepT = Math.exp(-e * subStepLength);
     const w = transmittance * (1 - stepT);
     visibleWeight += w;
@@ -653,6 +660,12 @@ export function vdbFrameDensityFroxel(fragCoord: Vec2, p: VDBFrameDensityInputs)
     transmittance *= stepT;
   }
   return densityFroxelTail(p, viewNear, viewFar, mul, extinctionSum, steps, segment, visibleWeight, visibleTSum, { localNear, localFar, lod });
+}
+
+/** Sub-step `i`'s extinction in the slice march: `extinctionAt`, or the stochastic filter's one-voxel read (issue #2). */
+export function vdbFrameSliceExtinction(p: Pick<VDBFrameDensityInputs, "extinctionAt" | "stochastic">, fragCoord: Vec2, i: number, local: Vec3, lod: number): number {
+  const s = p.stochastic;
+  return s ? s.at(local, lod, vdbFrameRand3(fragCoord, ((s.volume << 16) | i) >>> 0, s.seed)) : p.extinctionAt(local, lod);
 }
 
 /** The froxel geometry of the density pass (and the inject pre-integration): box segment, sub-steps, lods. null: discarded. */

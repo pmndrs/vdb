@@ -36,6 +36,8 @@ export interface VDBFrameGatherOptions {
   readonly hook?: string | null;
   /** K6.4: spectral media (per-channel extinction, albedo, multiple scattering; the second scatter texture). */
   readonly spectral?: boolean;
+  /** Issue #2 step 2: the stochastic density filter in the slice march (V163). */
+  readonly stochastic?: boolean;
 }
 
 /** Group-1 bindings of the gather kernel (K6.4: `scatterAlpha` with spectral). */
@@ -48,7 +50,7 @@ export const VDB_FRAME_GATHER_WORDS = { grey: 2, spectral: 3 } as const;
  * The volume-record functions every source kernel shares (gather 'volume' and 'frame', gridDensity): his gridUv,
  * sampleExtinction, sampleAlbedo and sampleEmission over the group-2 source, reading `vdbFrameVolumes` (group 1).
  */
-export function vdbFrameSourceFunctionsWgsl(channels: VDBVolumeChannels, color: { lutBinding: number | null; hook: string | null } = { lutBinding: null, hook: null }): string {
+export function vdbFrameSourceFunctionsWgsl(channels: VDBVolumeChannels, color: { lutBinding: number | null; hook: string | null } = { lutBinding: null, hook: null }, stochastic = false): string {
   // K6.5: the colour is the volume's (march.w: white, a LUT row or the user hook; core/frame/wgsl/emission.ts)
   const emission = channels.emission
     ? `  let e = vdbFrameVolumes.v[vi].emission;
@@ -81,7 +83,19 @@ fn vdbFrameExtinction(vi: u32, localPosition: vec3f, lod: f32) -> f32 {
   let value = vdbSrcDensity(v, vdbFrameGridUv(vi, localPosition), lod) * mask;
   let d = vdbFrameVolumes.v[vi].density;
   return select(0.0, value, value > d.y) * d.x * vdbFrameVolumes.v[vi].baseExtinction.w / d.z;
-}
+}${
+    stochastic
+      ? `
+// Issue #2 step 2: sampleExtinction with the stochastic density filter (one voxel picked by xi at lod 0; V163)
+fn vdbFrameExtinctionStochastic(vi: u32, localPosition: vec3f, lod: f32, xi: vec3f) -> f32 {
+  let v = vdbFrameVolumes.v[vi].slices.z;
+  let mask = vdbSrcMask(v, localPosition + 0.5, lod);
+  let value = vdbSrcDensityStochastic(v, vdbFrameGridUv(vi, localPosition), lod, xi) * mask;
+  let d = vdbFrameVolumes.v[vi].density;
+  return select(0.0, value, value > d.y) * d.x * vdbFrameVolumes.v[vi].baseExtinction.w / d.z;
+}`
+      : ""
+  }
 // sampleAlbedo: base colour times the albedo channel
 fn vdbFrameAlbedo(vi: u32, localPosition: vec3f, lod: f32) -> vec3f {
   return vdbFrameVolumes.v[vi].baseExtinction.xyz * vdbSrcAlbedo(vdbFrameVolumes.v[vi].slices.z, vdbFrameGridUv(vi, localPosition), lod);
@@ -100,7 +114,11 @@ ${emission}
  * spectrum); the visible position weighs the channel mean (his frameMeanComponent); `alpha3` holds each channel's alpha
  * and `alpha` the largest.
  */
-export function vdbFrameSliceWgsl(spectral = false): string {
+export function vdbFrameSliceWgsl(spectral = false, stochastic = false): string {
+  // Issue #2 step 2: the stochastic density filter reads one voxel per sub-step (three uniforms per lookup)
+  const extinction = stochastic
+    ? "vdbFrameExtinctionStochastic(vi, mix(s.localNear, s.localFar, vec3f(t)), s.readLod, vdbFrameRand3(f.fragCoord, (vi << 16u) | i))"
+    : "vdbFrameExtinction(vi, mix(s.localNear, s.localFar, vec3f(t)), s.readLod)";
   return `// One volume's slice: (alpha, visible t, extinction sum / steps * segment, read lod); alpha 0: nothing.
 struct VdbFrameSlice {
   alpha: f32,
@@ -151,7 +169,7 @@ fn vdbFrameSliceOf(vi: u32, cell: vec3u, f: VdbFrameFroxel) -> VdbFrameSlice {
   let jitter = vdbFrameNoise(vdbFrame.jitterFade.x, f.fragCoord);
   for (var i = 0u; i < steps; i++) {
     let t = boxSegment.x + segment * ((f32(i) + jitter) / subStepCount);
-    let extinction = vdbFrameExtinction(vi, mix(s.localNear, s.localFar, vec3f(t)), s.readLod) * opacity * vdbFrameDistanceFade(mix(f.viewNear, f.viewFar, vec3f(t)));
+    let extinction = ${extinction} * opacity * vdbFrameDistanceFade(mix(f.viewNear, f.viewFar, vec3f(t)));
     let stepTransmittance = exp(-${spectral ? "spectrum * " : ""}extinction * subStepLength);
     let weight = ${spectral ? "vdbFrameMeanComponent(transmittance * (vec3f(1.0) - stepTransmittance))" : "transmittance * (1.0 - stepTransmittance)"};
     visibleWeight += weight;
@@ -461,13 +479,13 @@ ${write}
   }
 ${write}`;
 
-  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "octaves", "spectral", "sh", "envSh"])}
+  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "octaves", "spectral", "sh", "envSh", ...(o.stochastic ? (["rand"] as const) : [])])}
 ${bindings}
 
 const VDB_FRAME_MIN_TRANSMITTANCE: f32 = 1.2664165549e-14; // exp(-32): tau is at most 32
 
-${vdbFrameSourceFunctionsWgsl(o.channels, { lutBinding: b.emissionLut, hook: o.hook ?? null })}
-${vdbFrameSliceWgsl(true)}
+${vdbFrameSourceFunctionsWgsl(o.channels, { lutBinding: b.emissionLut, hook: o.hook ?? null }, !!o.stochastic)}
+${vdbFrameSliceWgsl(true, !!o.stochastic)}
 ${SPECTRAL_MARCH_WGSL}
 ${SPECTRAL_VOLUME_FROXEL_WGSL}
 struct VdbFrameStoreOut {
@@ -571,13 +589,13 @@ export function vdbFrameGatherWgsl(o: VDBFrameGatherOptions): string {
   }`
     : `  textureStore(vdbFrameScatter, cell, vdbFrameFinish(sum, count, single));`;
 
-  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "octaves", "sh", "envSh"])}
+  return `${frameChunksWgsl(["constants", "mat3", "froxel", "noise", "fade", "box", "lod", "phase", "shadow", "octaves", "sh", "envSh", ...(o.stochastic ? (["rand"] as const) : [])])}
 ${bindings}
 
 const VDB_FRAME_MIN_TRANSMITTANCE: f32 = 1.2664165549e-14; // exp(-32): tau is at most 32
 
-${vdbFrameSourceFunctionsWgsl(o.channels, { lutBinding: b.emissionLut, hook: o.hook ?? null })}
-${VDB_FRAME_SLICE_WGSL}
+${vdbFrameSourceFunctionsWgsl(o.channels, { lutBinding: b.emissionLut, hook: o.hook ?? null }, !!o.stochastic)}
+${vdbFrameSliceWgsl(false, !!o.stochastic)}
 // The inject pass's shadow march inside one volume: (direct, total, reduced depth, effective depth).
 // The one march of the kernel (one density call site), stopping when the depth passes 8. Samples sit at
 // t_k = step (k + noise); with the volume's hdda flag (K6.1d) runs of samples the source proves empty are jumped

@@ -176,6 +176,14 @@ export interface VDBFrameInternalSettings extends VDBFrameSettings {
    * 0), the weight isotropic in-scattering gives each hemisphere. An A/B setting (K6.Q1a handoff).
    */
   ambientProbe: "irradiance" | "radiance";
+  /**
+   * Issue #2 step 2: how the slice march (both lightings) reads the density. `'trilinear'` (default): the source's
+   * filter. `'stochastic'` (Pharr et al. 2024): at lod 0 one voxel of the trilinear cell, picked with its weight from
+   * three uniforms per sub-step (`vdbFrameRand3`: the froxel, the volume and step, the frame id), so a sparse source
+   * reads one voxel instead of eight; temporal accumulation averages the picks. exp(−Σσ dt) is not linear in σ, so
+   * the mean transmittance is biased upward (Jensen; V163): measure before a default. An A/B setting (K6.S2).
+   */
+  densityFilter: "trilinear" | "stochastic";
 }
 
 /** His v0.26 defaults (`FrameRenderer.js` L191–246, as `VDBFrameRenderer.settings`), plus `occlusion: true` and the K6.Q1 ambient occlusion (on since D35). */
@@ -227,6 +235,7 @@ export function vdbFrameDefaultInternalSettings(): VDBFrameInternalSettings {
     multiScaleEdge: "zero",
     multiScaleSigma: "his",
     ambientProbe: "irradiance",
+    densityFilter: "trilinear",
     occlusion: true,
     ambientOcclusion: true,
     ambientOcclusionPairs: 4,

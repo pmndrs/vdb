@@ -457,6 +457,44 @@ for (const p of K610B_PROBES) {
   });
 }
 
+// Issue #2 step 2 (K6.S2): the stochastic density filter in the slice march (`&density=stochastic`, the first update at
+// frame id 5): the kernel's one-voxel picks against the twins drawing the same `vdbFrameRand3` uniforms, sparse (one voxel
+// per sub-step) in both lightings, grey and spectral, and dense (its trilinear fallback). The WGSL mutations swap the pick,
+// give every sub-step the same uniforms, or move the seed: each must fail.
+const K6S2_PROBES: { name: string; query: string; mutations: string[] }[] = [
+  { name: "'volume' gather, sparse", query: "?probe=gather&source=sparse&lod=none&density=stochastic", mutations: ["wgsl-stochastic-pick", "wgsl-stochastic-key", "wgsl-stochastic-seed"] },
+  { name: "'volume' gather, sparse, spectral", query: "?probe=gather&source=sparse&lod=none&spectral=1&density=stochastic", mutations: ["wgsl-stochastic-pick"] },
+  // the D28 default lod: below the pyramid's base level the pick blends with the base (the twin the same)
+  { name: "'volume' gather, sparse, coarse-pyramid", query: "?probe=gather&source=sparse&lod=coarse-pyramid&density=stochastic", mutations: ["wgsl-stochastic-pick"] },
+  { name: "'volume' gather, dense (the trilinear fallback)", query: "?probe=gather&density=stochastic", mutations: [] },
+  { name: "'frame' lighting, sparse", query: "?probe=frame&source=sparse&density=stochastic", mutations: ["wgsl-stochastic-pick", "wgsl-stochastic-key"] },
+  { name: "'frame' lighting, sparse, spectral", query: "?probe=frame&source=sparse&spectral=1&density=stochastic", mutations: ["wgsl-stochastic-pick"] },
+];
+
+for (const p of K6S2_PROBES) {
+  test(`K6.S2 probe: stochastic density, ${p.name}, matches its CPU twin; WGSL mutations fail`, async ({ page }) => {
+    test.setTimeout(900_000);
+    const errors = collectErrors(page);
+    const r = await run(page, p.query);
+    expect(r.error, detail(r)).toBeUndefined();
+    expect(r.uncaptured, detail(r)).toEqual([]);
+    // the 'frame' probes ran 'frame' lighting (its shadow grid exists)
+    if (p.query.includes("probe=frame")) expect(r.frame?.cascades, detail(r)).toBe(1);
+    const s = r.stats!;
+    expect(s.compared, detail(r)).toBeGreaterThanOrEqual(512);
+    expect(s.covered, detail(r)).toBeGreaterThanOrEqual(minCovered("stats", p.query));
+    expect(s.over, detail(r)).toBeLessThanOrEqual(Math.floor(s.compared * 0.001));
+    console.log(`[k6-core] K6.S2 ${p.name} on ${r.adapter}: ${s.compared} values, ${s.covered} non-zero, max ${s.maxUlp.toFixed(2)} f16 ulp, ${s.over} over`);
+    for (const m of p.mutations) {
+      const bad = await run(page, `${p.query}&mutate=${m}`);
+      expect(bad.error, detail(bad)).toBeUndefined();
+      expect(bad.stats!.over, `mutation ${m} must fail: ${detail(bad)}`).toBeGreaterThan(Math.floor(bad.stats!.compared * 0.001));
+      console.log(`[k6-core] K6.S2 ${p.name} mutation ${m}: ${bad.stats!.over} / ${bad.stats!.compared} over`);
+    }
+    expect(errors).toEqual([]);
+  });
+}
+
 test("K6.1 a second identical update builds no pipeline or module; two loads agree", async ({ page }) => {
   test.setTimeout(600_000);
   const r = await run(page, "?probe=gather&swap=1");

@@ -49,8 +49,10 @@ export interface VDBVolumeSourceWgslOptions {
    * `fn vdbSrcDensityStochastic(v: u32, uvw: vec3f, lod: f32, xi: vec3f) -> f32`, the density at lod 0 from ONE
    * voxel picked with probability equal to its trilinear weight (per axis: the upper voxel when `xi.axis < frac`);
    * its expectation over uniform `xi` is `vdbSrcDensity(v, uvw, 0)`. A sparse source reads one tree value instead of
-   * eight; a dense source returns `vdbSrcDensity` (its trilinear is already one hardware fetch). `lod` > 0 falls back
-   * to `vdbSrcDensity`. Default false (not emitted).
+   * eight; a dense source returns `vdbSrcDensity` (its trilinear is already one hardware fetch). The pick replaces the
+   * level-0 trilinear wherever `vdbSrcDensity` reads level 0 (lod `'none'`: at every lod; `'coarse-pyramid'`: below the
+   * pyramid's base level, blended with the base as `vdbSrcDensity` does; `'node-average'`: at lod 0); elsewhere it is
+   * `vdbSrcDensity`. Default false (not emitted).
    */
   readonly stochastic?: boolean;
 }
